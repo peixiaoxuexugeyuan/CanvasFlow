@@ -11855,6 +11855,13 @@ class Handler(SimpleHTTPRequestHandler):
         # server-data holds provider API keys and auth.db; it must never be served as a static file,
         # so resolve the final filesystem path and reject anything inside that directory.
         translated = super().translate_path(path)
+        # Keep image references saved before the role-library directory rename working.
+        try:
+            relative = Path(translated).relative_to(PUBLIC_FILES.root)
+        except ValueError:
+            relative = Path()
+        if relative.parts[:2] == ('_libtv_roles', 'web'):
+            translated = str(PUBLIC_FILES.root / 'role-library' / Path(*relative.parts[1:]))
         if not PUBLIC_FILES.allowed(translated):
             return str(DATA_DIR / '.blocked')
         return translated

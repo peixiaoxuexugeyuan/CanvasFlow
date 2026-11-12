@@ -53,6 +53,18 @@ class LocalAppTest(unittest.TestCase):
         except HTTPError as error:
             return error.code,json.load(error)
 
+    def test_role_library_images_and_saved_legacy_urls(self):
+        expected = (server.ROOT / 'role-library/web/001-1.jpg').read_bytes()
+        for prefix in ('role-library', '_libtv_roles'):
+            with self.subTest(prefix=prefix):
+                with self.client.open(self.base + '/' + prefix + '/web/001-1.jpg', timeout=10) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(response.read(), expected)
+                for suffix in ('/_manifest.json', '/web/../../server.py', '/web/../_manifest.json'):
+                    with self.assertRaises(HTTPError) as error:
+                        self.client.open(self.base + '/' + prefix + suffix, timeout=10)
+                    self.assertEqual(error.exception.code, 404)
+
     def test_video_studio_lists_video_jobs_with_and_without_kind(self):
         fixtures = [
             {'id': 'legacy-video', 'status': 'completed', 'simulated': False},

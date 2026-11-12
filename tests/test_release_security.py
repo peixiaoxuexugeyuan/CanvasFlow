@@ -67,6 +67,18 @@ class ReleaseSecurityTests(unittest.TestCase):
         self.assertTrue(files.allowed(other/'app.js'))
         self.assertFalse(files.allowed(other/'server.py'))
 
+    def test_role_library_only_serves_web_images_from_release_manifest(self):
+        role_image = self.public / 'role-library/web/001-1.jpg'
+        role_image.parent.mkdir(parents=True)
+        role_image.write_bytes(b'role image fixture')
+        self.files['role-library/web/001-1.jpg'] = hashlib.sha256(role_image.read_bytes()).hexdigest()
+        self.manifest()
+        release = PublicFiles(self.root)
+        self.assertTrue(release.allowed(role_image))
+        self.assertFalse(release.allowed(role_image.with_name('unlisted.jpg')))
+        self.assertFalse(release.allowed(self.public / 'role-library/_manifest.json'))
+        self.assertFalse(release.allowed(self.public / 'role-library/original.png'))
+
     def test_manifest_cannot_use_absolute_paths(self):
         self.files[str(self.public/'index.html')]=self.files['index.html'];self.manifest()
         with self.assertRaises(RuntimeError): PublicFiles(self.root)

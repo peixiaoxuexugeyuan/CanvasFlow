@@ -19087,7 +19087,7 @@ const active=currentWorkspace();
 
 
 
-    const LIBTV_ROLE_IMAGE_BASE = '_libtv_roles/web/';
+    const LIBTV_ROLE_IMAGE_BASE = 'role-library/web/';
     const LIBTV_ROLES = [
       ['024', '甜妹/清新少女', ['女主', '女', '现代', '青年', '温柔']],
       ['003', '甜妹/清新少女', ['女主', '女', '现代', '青年', '温柔']],

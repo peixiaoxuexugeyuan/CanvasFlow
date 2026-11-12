@@ -60,7 +60,7 @@ def public_static_path(target, root):
         return False
     if parts[0] in {'assets', 'assets3d', 'vendor', 'camera-thumbs', 'emotion-poses'}:
         return suffix in browser_types or (parts[0] in {'assets3d', 'emotion-poses'} and suffix == '.json')
-    if parts[0] == '_relight_presets' or parts[:2] == ('_libtv_roles', 'web'):
+    if parts[0] == '_relight_presets' or parts[:2] == ('role-library', 'web'):
         return suffix in {'.png', '.jpg', '.jpeg', '.webp', '.svg'}
     if parts[0] == 'learn':
         return suffix in browser_types and (len(parts) == 2 or parts[1] == 'assets')
