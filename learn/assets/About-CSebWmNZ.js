@@ -1,0 +1,1 @@
+import{Nr as e,ci as t}from"./vendor-element-plus-DTNqrLzO.js";import{t as n}from"./XieYi_YeMianJiChu-D9Y_YoMx.js";var r={__name:`About`,setup(r){return(r,i)=>(t(),e(n,{类型:`关于我们`}))}};export{r as default};

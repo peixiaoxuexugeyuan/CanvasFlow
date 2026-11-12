@@ -1,0 +1,1 @@
+function e(e,t=4){let n=Number(e);return Number.isFinite(n)?(Object.is(n,-0)?0:n).toFixed(t).replace(/(\.\d*?[1-9])0+$/,`$1`).replace(/\.0+$/,``):String(e??``)}export{e as t};

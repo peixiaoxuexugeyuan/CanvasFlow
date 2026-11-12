@@ -1,0 +1,1 @@
+function e(e){return!(e&&(e.isComposing||e.keyCode===229))}export{e as t};

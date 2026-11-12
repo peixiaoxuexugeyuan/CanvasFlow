@@ -1,0 +1,11 @@
+{
+  "name": "canvasflow-desktop-tools",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Private Windows desktop build tools for CanvasFlow",
+  "dependencies": {
+    "@electron/packager": "20.3.0",
+    "electron": "44.10.2",
+    "electron-builder": "26.15.3"
+  }
+}

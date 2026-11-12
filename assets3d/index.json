@@ -1,0 +1,286 @@
+{
+ "version": 1,
+ "rig": "epic-ue4-mannequin-v1",
+ "model": "assets3d/models/epic-ue4-mannequin.glb",
+ "motions": [
+  {
+   "id": "epic-thirdpersonidle",
+   "name": "ThirdPersonIdle",
+   "file": "assets3d/motions/ThirdPersonIdle.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-thirdpersonjump_end",
+   "name": "ThirdPersonJump_End",
+   "file": "assets3d/motions/ThirdPersonJump_End.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-thirdpersonjump_loop",
+   "name": "ThirdPersonJump_Loop",
+   "file": "assets3d/motions/ThirdPersonJump_Loop.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-thirdpersonjump_start",
+   "name": "ThirdPersonJump_Start",
+   "file": "assets3d/motions/ThirdPersonJump_Start.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-thirdpersonrun",
+   "name": "ThirdPersonRun",
+   "file": "assets3d/motions/ThirdPersonRun.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-thirdpersonwalk",
+   "name": "ThirdPersonWalk",
+   "file": "assets3d/motions/ThirdPersonWalk.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedattack01",
+   "name": "UnarmedAttack01",
+   "file": "assets3d/motions/UnarmedAttack01.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedattack02",
+   "name": "UnarmedAttack02",
+   "file": "assets3d/motions/UnarmedAttack02.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedattack03",
+   "name": "UnarmedAttack03",
+   "file": "assets3d/motions/UnarmedAttack03.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedchargedattack",
+   "name": "UnarmedChargedAttack",
+   "file": "assets3d/motions/UnarmedChargedAttack.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmeddash",
+   "name": "UnarmedDash",
+   "file": "assets3d/motions/UnarmedDash.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedfallloop",
+   "name": "UnarmedFallLoop",
+   "file": "assets3d/motions/UnarmedFallLoop.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedjogbwd",
+   "name": "UnarmedJogBwd",
+   "file": "assets3d/motions/UnarmedJogBwd.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedjogbwdleft",
+   "name": "UnarmedJogBwdLeft",
+   "file": "assets3d/motions/UnarmedJogBwdLeft.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedjogbwdright",
+   "name": "UnarmedJogBwdRight",
+   "file": "assets3d/motions/UnarmedJogBwdRight.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedjogfwd",
+   "name": "UnarmedJogFwd",
+   "file": "assets3d/motions/UnarmedJogFwd.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedjogfwdleft",
+   "name": "UnarmedJogFwdLeft",
+   "file": "assets3d/motions/UnarmedJogFwdLeft.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedjogfwdright",
+   "name": "UnarmedJogFwdRight",
+   "file": "assets3d/motions/UnarmedJogFwdRight.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedjogleft",
+   "name": "UnarmedJogLeft",
+   "file": "assets3d/motions/UnarmedJogLeft.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedjogright",
+   "name": "UnarmedJogRight",
+   "file": "assets3d/motions/UnarmedJogRight.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedjump",
+   "name": "UnarmedJump",
+   "file": "assets3d/motions/UnarmedJump.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedland",
+   "name": "UnarmedLand",
+   "file": "assets3d/motions/UnarmedLand.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedwalkbwd",
+   "name": "UnarmedWalkBwd",
+   "file": "assets3d/motions/UnarmedWalkBwd.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedwalkbwdleft",
+   "name": "UnarmedWalkBwdLeft",
+   "file": "assets3d/motions/UnarmedWalkBwdLeft.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedwalkbwdright",
+   "name": "UnarmedWalkBwdRight",
+   "file": "assets3d/motions/UnarmedWalkBwdRight.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedwalkfwd",
+   "name": "UnarmedWalkFwd",
+   "file": "assets3d/motions/UnarmedWalkFwd.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedwalkfwdleft",
+   "name": "UnarmedWalkFwdLeft",
+   "file": "assets3d/motions/UnarmedWalkFwdLeft.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedwalkfwdright",
+   "name": "UnarmedWalkFwdRight",
+   "file": "assets3d/motions/UnarmedWalkFwdRight.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedwalkleft",
+   "name": "UnarmedWalkLeft",
+   "file": "assets3d/motions/UnarmedWalkLeft.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedwalkright",
+   "name": "UnarmedWalkRight",
+   "file": "assets3d/motions/UnarmedWalkRight.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  },
+  {
+   "id": "epic-unarmedwalljump",
+   "name": "UnarmedWallJump",
+   "file": "assets3d/motions/UnarmedWallJump.glb",
+   "sourceFps": 24,
+   "durationFrames": null,
+   "sourceKind": "epic_official",
+   "rigVersion": "epic-ue4-mannequin-v1"
+  }
+ ]
+}

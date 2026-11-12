@@ -1,0 +1,1 @@
+import{Fr as e,Ji as t,Ki as n,ci as r,di as i}from"./vendor-element-plus-DTNqrLzO.js";import{t as a}from"./utils-CEPfrwSZ.js";var o={__name:`SheetFooter`,props:{class:{type:null,required:!1}},setup(o){let s=o;return(o,c)=>(r(),e(`div`,{"data-slot":`sheet-footer`,class:t(n(a)(`mt-auto flex flex-col gap-2 p-4`,s.class))},[i(o.$slots,`default`)],2))}};export{o as t};

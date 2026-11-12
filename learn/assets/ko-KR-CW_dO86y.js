@@ -1,0 +1,1 @@
+import{a as e}from"./locale-shared-euxNVKHW.js";export{e as default};

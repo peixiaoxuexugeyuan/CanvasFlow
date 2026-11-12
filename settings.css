@@ -1,0 +1,1184 @@
+/* 智能辅助线：图层挂在 .canvas-stage 内，坐标即画布坐标 */
+.canvas-stage .smart-guide-layer{position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;z-index:6}
+.canvas-stage .smart-guide-layer .smart-guide{position:absolute;display:block;pointer-events:none;opacity:.9}
+
+/* ==========================================================================
+   外观设置 · 主色 / 辅助色的接管
+   --brand（主色）/ --brand-fg（主色上的文字）/ --brand-2（辅助色）未定义时，
+   fallback 到各元素当前生效色 —— 不自定义外观时视觉与改造前完全一致；
+   用户选定颜色后由 JS 写在 <html> 上，全站主操作一起变色。
+   ========================================================================== */
+:root{--accent-fg:#181717}
+html.light{--accent-fg:#ffffff}
+
+/* 主色 · 底部控制条的生成按钮 */
+.dock-send{background:var(--brand,#e7e5e4);color:var(--brand-fg,#0c0a09)}
+html.light .dock-send{background:var(--brand,linear-gradient(180deg,#2e2b28 0%,#171717 100%));color:var(--brand-fg,#ffffff)}
+
+/* 主色 · 画布工具栏「添加节点」 */
+.tool-btn{background:var(--brand,#2b2a2a);color:var(--brand-fg,#d0cfcf)}
+html.light .tool-btn{background:var(--brand,#f5f5f4);color:var(--brand-fg,#44403c)}
+
+/* 辅助色 · 设置面板自身的强调元素（默认沿用面板强调蓝） */
+.settings-switch.is-on{background:var(--brand-2,#4c9dff)}
+.settings-add-btn{border-color:var(--brand-2,#4c9dff)}
+.wizard-btn.primary{background:var(--brand-2,#4c9dff);border-color:var(--brand-2,#4c9dff)}
+.settings-mode-option.is-active{border-color:var(--brand-2,#4c9dff)}
+
+
+
+
+
+
+
+
+/* Preferences and its body-mounted wizard sit above the film drawer (76), Agent (80) and Agent menus (90). */
+.settings-backdrop{position:fixed;inset:0;background:rgba(8,8,8,.72);display:grid;place-items:center;z-index:110;backdrop-filter:blur(6px)}
+.settings-backdrop[hidden]{display:none}
+.settings-shell{width:min(1188px,94vw);height:min(760px,90vh);display:flex;border:1px solid #444242;border-radius:18px;background:#1c1b1b;box-shadow:0 40px 100px rgba(0,0,0,.6);overflow:hidden}
+.settings-sidebar{width:238px;flex-shrink:0;background:#171616;border-right:1px solid #2c2a2a;padding:20px 14px;display:flex;flex-direction:column;gap:4px;overflow-y:auto}
+.settings-sidebar-title{font-size:15px;font-weight:500;color:#f6f6f6;padding:0 10px 14px}
+.settings-nav{display:flex;flex-direction:column;gap:4px}
+.settings-nav-item{height:40px;border-radius:10px;background:transparent;color:#9ca5b0;display:flex;align-items:center;gap:10px;padding:0 11px;text-align:left;font-size:13px;transition:background .15s,color .15s}
+.settings-nav-item:hover{background:rgba(255,255,255,.06);color:#f6f6f6}
+.settings-nav-item.is-active{background:#262525;color:#fafaf9}
+.settings-nav-item svg{width:18px;height:18px;flex-shrink:0}
+.settings-main{flex:1;min-width:0;display:flex;flex-direction:column;position:relative}
+.settings-close{position:absolute;right:14px;top:14px;width:30px;height:30px;border-radius:8px;background:transparent;color:#84909a;font-size:20px;line-height:1;z-index:2}
+.settings-close:hover{background:rgba(255,255,255,.08);color:#f6f6f6}
+.settings-pane{flex:1;min-height:0;overflow-y:auto;padding:26px 28px 34px}
+
+/* 分区头部 */
+.settings-pane-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding-right:44px;margin-bottom:22px}
+.settings-pane-title{margin:0;font-size:19px;font-weight:500;color:#f6f6f6}
+.settings-pane-sub{margin:6px 0 0;font-size:12.5px;line-height:1.6;color:#8f8a8a}
+
+
+.settings-add-btn{flex-shrink:0;height:34px;padding:0 14px;border-radius:8px;background:var(--brand-2,#4c9dff);border:0;color:var(--brand-2-fg,#08131f);font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:6px;transition:filter .15s,transform .15s}
+.settings-add-btn:hover{filter:brightness(1.08)}
+.settings-add-btn:active{transform:scale(.98)}
+.settings-add-btn[disabled]{opacity:.5;cursor:not-allowed}
+/* ★ r888：「拉取已启用模型」用**次级**（空心）按钮 —— 它是刷新动作，不该跟「保存全部修改」
+   抢主按钮的视觉权重。★ 浅色下必须写 `html.light .settings-add-btn.is-ghost`（0,3,1）——
+   `html.light .settings-add-btn`（0,2,1）会把 `.settings-add-btn.is-ghost`（0,2,0）的
+   background/color 压回去（本项目反复踩的层叠坑）。 */
+.settings-add-btn.is-ghost{background:transparent;border:1px solid #3a3838;color:#c9c5c5;font-weight:500}
+.settings-add-btn.is-ghost:hover{border-color:#5a5757;background:#232323;filter:none}
+html.light .settings-add-btn.is-ghost{background:#ffffff;border-color:#e7e5e4;color:#57534e}
+html.light .settings-add-btn.is-ghost:hover{border-color:#a8a29e;background:#fafaf9}
+
+/* 分区通用块 */
+.settings-section{margin-bottom:26px}
+.settings-label{font-size:13px;color:#e7e5e4;margin-bottom:5px}
+.settings-desc{font-size:12px;line-height:1.6;color:#8f8a8a;margin-bottom:12px}
+.settings-empty{padding:28px 20px;border:1px dashed #3a3838;border-radius:12px;text-align:center;color:#8f8a8a;font-size:12.5px;line-height:1.7}
+.settings-hint{font-size:11.5px;color:#8f8a8a;line-height:1.6;margin-top:8px}
+.settings-readonly-note{padding:10px 12px;border:1px solid #3a3838;border-radius:9px;background:#242424;color:#a8a29e;font-size:12px;margin-bottom:16px}
+.settings-reset{height:34px;padding:0 14px;border-radius:9px;background:#242424;border:1px solid rgba(255,255,255,.1);color:#e7e5e4;font-size:12.5px}
+.settings-reset:hover{background:rgba(255,255,255,.07)}
+
+/* 开关行 */
+.settings-toggle-row{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding:14px 0;border-bottom:1px solid #2c2a2a}
+.settings-toggle-row:last-of-type{border-bottom:0}
+.settings-toggle-copy strong{display:block;font-size:13px;font-weight:500;color:#e7e5e4}
+.settings-toggle-copy small{display:block;margin-top:5px;font-size:11.5px;line-height:1.6;color:#8f8a8a}
+.settings-switch{flex-shrink:0;width:38px;height:22px;border-radius:99px;background:#3a3838;padding:2px;transition:background .18s}
+.settings-switch span{display:block;width:18px;height:18px;border-radius:50%;background:#8d99a2;transition:transform .18s,background .18s}
+.settings-switch.is-on{background:#4c9dff}
+.settings-switch.is-on span{transform:translateX(16px);background:#ffffff}
+
+/* 颜色选择 */
+.settings-color-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.settings-color-input{width:44px;height:32px;padding:2px;border:1px solid rgba(255,255,255,.1);border-radius:8px;background:#242424;cursor:pointer}
+.settings-color-hex{font:12px 'DM Mono',monospace;color:#a8a29e;min-width:72px}
+.settings-swatches{display:flex;gap:7px;flex-wrap:wrap}
+.settings-swatch{width:26px;height:26px;border-radius:8px;border:1px solid rgba(255,255,255,.16);padding:0;transition:transform .12s}
+.settings-swatch:hover{transform:scale(1.08)}
+.settings-swatch.is-selected{outline:2px solid #4c9dff;outline-offset:2px}
+
+/* 主题模式 */
+.settings-mode-group{display:inline-flex;gap:8px}
+.settings-mode-option{height:34px;padding:0 16px;border-radius:9px;background:#242424;border:1px solid transparent;color:#c9c5c4;font-size:12.5px}
+.settings-mode-option:hover{background:rgba(255,255,255,.07)}
+.settings-mode-option.is-active{border-color:#4c9dff;background:rgba(76,157,255,.14);color:#a8c7fa}
+
+/* 超时参数 */
+.settings-timeout-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(212px,1fr));gap:10px 14px;margin-top:4px}
+.settings-timeout-field{display:flex;align-items:center;gap:8px;background:#242424;border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:9px 11px}
+.settings-timeout-field span{flex:1;font-size:12px;color:#c9c5c4}
+.settings-timeout-field input{width:62px;height:26px;border-radius:7px;border:1px solid rgba(255,255,255,.12);background:#1c1b1b;color:#f6f6f6;font:12px 'DM Mono',monospace;padding:0 7px;text-align:right}
+.settings-timeout-field em{font-style:normal;font-size:11px;color:#8f8a8a;min-width:20px}
+/* 非管理员只读：保持数值可读，只是不可编辑 */
+.settings-timeout-field input:disabled{opacity:1;color:#a8a29e;cursor:not-allowed}
+/* 生成超时的作用域切换（r803）：我的设置 / 全局默认（后者仅管理员可见） */
+.settings-scope-tabs{display:inline-flex;gap:4px;padding:3px;margin-bottom:12px;border-radius:9px;background:#242424;border:1px solid rgba(255,255,255,.08)}
+.settings-scope-tab{border:0;background:transparent;color:#a8a29e;font-family:inherit;font-size:12px;line-height:1;padding:6px 14px;border-radius:7px;cursor:pointer;transition:background-color .15s,color .15s}
+.settings-scope-tab:hover{color:#f6f6f6}
+.settings-scope-tab.is-active{background:var(--brand-2,#4c9dff);color:var(--brand-2-fg,#08131f);font-weight:600}
+/* 该项已自定义（值来自「我的设置」覆盖层）：描边亮一点 + 出现 ↺ */
+.settings-timeout-field.is-custom{border-color:rgba(76,157,255,.45)}
+.settings-timeout-reset{border:0;background:transparent;color:#8f8a8a;font-size:13px;line-height:1;padding:2px 4px;border-radius:6px;cursor:pointer;transition:background-color .15s,color .15s}
+.settings-timeout-reset:hover{color:#f6f6f6;background:rgba(255,255,255,.08)}
+
+
+
+
+
+
+
+
+
+
+.provider-list{display:flex;flex-direction:column;gap:12px}
+.provider-card{border:1px solid rgba(255,255,255,.14);border-radius:8px;background:#242424;transition:border-color .2s}
+.provider-card.is-expanded{border-color:rgba(255,255,255,.2)}
+.provider-card-header{display:flex;align-items:center;justify-content:space-between;padding:16px}
+.provider-card-head{display:flex;align-items:center;flex:1;min-width:0;padding:0;background:transparent;color:inherit;text-align:left;cursor:pointer}
+.provider-expand-icon{flex:0 0 16px;width:16px;display:flex;align-items:center;color:#8f8a8a;transition:transform .18s}
+.provider-card.is-expanded .provider-expand-icon{transform:rotate(90deg)}
+.provider-logo{flex:0 0 48px;width:48px;height:48px;border-radius:8px;background:#2a2a2a;border:1px solid rgba(255,255,255,.14);color:#e7e5e4;display:grid;place-items:center;font-size:18px;font-weight:700;overflow:hidden}
+.provider-logo img{width:100%;height:100%;object-fit:contain}
+.provider-logo--header{flex-basis:32px;width:32px;height:32px;margin:0 10px;font-size:13px}
+.provider-head-copy{min-width:0;display:block}
+.provider-title{display:block;font-size:13px;font-weight:600;line-height:16px;color:#f6f6f6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.provider-builtin-badge{padding:2px 7px;border:1px solid currentColor;border-radius:5px;color:#a6a2a0;font-size:11px;white-space:nowrap}
+.provider-brand-group{border:1px solid #3c3939;border-radius:10px;overflow:hidden;background:#242323}
+.provider-child-list{display:flex;flex-direction:column;gap:10px;border-top:1px solid #3c3939;padding:14px}
+.provider-brand-group.is-expanded > .provider-card-header .provider-expand-icon{transform:rotate(90deg)}
+.provider-child-list .provider-card{margin:0}
+.provider-add-child{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.provider-child-form{padding:16px;border:1px solid rgba(76,157,255,.35);border-radius:8px;background:rgba(76,157,255,.04)}
+.provider-child-form-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(120px,.5fr);gap:14px}
+.provider-child-hint{margin:10px 0;color:#a8a29e;font-size:12px;line-height:1.6}
+.provider-child-error{margin:8px 0;color:#ef8585;font-size:12px}
+.provider-child-form-actions{display:flex;justify-content:flex-end;gap:8px}
+@media(max-width:640px){.provider-child-form-fields{grid-template-columns:1fr}.provider-brand-group>.provider-card-header{flex-wrap:wrap;gap:8px}.provider-brand-group>.provider-card-header>.provider-card-actions{margin-left:auto}}
+.provider-logo--brand{color:#fafaf9}
+.provider-logo--brand .brand-orb{width:26px;height:26px;flex-shrink:0}
+.provider-subtitle{display:block;margin-top:3px;font-size:12px;line-height:14px;color:#8f8a8a;font-family:'DM Mono',monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.provider-rename-input{width:100%;max-width:280px;height:24px;border-radius:6px;border:1px solid var(--brand-2,#4c9dff);background:#1c1b1b;color:#f6f6f6;font-size:13px;font-weight:600;padding:0 7px}
+.provider-card-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.provider-icon-btn{width:24px;height:24px;border-radius:6px;background:transparent;color:#8f8a8a;display:grid;place-items:center;transition:background .2s,color .2s}
+.provider-icon-btn:hover{background:rgba(255,255,255,.08);color:#e7e5e4}
+.provider-icon-btn.is-danger:hover{background:rgba(226,75,74,.16);color:#f09595}
+.provider-card-body{border-top:1px solid rgba(255,255,255,.1);padding:0 20px 20px}
+.provider-logo-editor{display:flex;align-items:center;gap:12px;margin-top:16px;padding-bottom:4px;flex-wrap:wrap}
+.provider-logo-editor__actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.provider-logo-upload{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:48px;padding:0 14px;border-radius:6px;color:#a8a29e;font-size:12.5px;cursor:pointer;transition:background .16s,color .16s}
+.provider-logo-upload:hover{background:rgba(255,255,255,.07);color:#e7e5e4}
+.provider-logo-upload:focus-within{outline:2px solid var(--brand-2,#4c9dff);outline-offset:2px}
+.provider-logo-upload input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
+.provider-logo-error{flex-basis:100%;font-size:11px;color:#f09595}
+.provider-ghost-btn{height:32px;padding:0 12px;border-radius:6px;background:transparent;border:1px solid rgba(255,255,255,.14);color:#a8a29e;font-size:12px}
+.provider-ghost-btn:hover:not(:disabled){background:rgba(255,255,255,.07);color:#e7e5e4}
+.provider-ghost-btn:disabled{opacity:.45;cursor:not-allowed}
+.provider-config-stack{margin-top:18px;display:grid}
+.provider-section{display:grid;gap:14px;padding:18px 0;border-top:1px solid rgba(255,255,255,.08);min-width:0}
+.provider-section:first-child{border-top:0;padding-top:0}
+.provider-section__header{display:flex;align-items:baseline;justify-content:space-between;gap:16px}
+.provider-section__header strong{font-size:13px;font-weight:600;color:#f6f6f6}
+.provider-section__header span{font-size:11px;color:#8f8a8a;text-align:right}
+.provider-section-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 16px}
+.provider-field{display:flex;flex-direction:column;gap:8px;margin:0;min-width:0}
+.provider-field>span{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:500;color:#c9c5c4}
+.provider-field-icon{color:#8f8a8a}
+.provider-field input,.provider-field select{width:100%;height:37px;box-sizing:border-box;border:1px solid rgba(255,255,255,.14);border-radius:8px;background:#1f1f1f;color:#f6f6f6;font-size:13px;font-family:'DM Mono',monospace;padding:0 12px;transition:border-color .2s,box-shadow .2s}
+.provider-field select{font-family:inherit;font-size:12px;padding:0 28px 0 10px}
+.provider-field input::placeholder{color:#6f6a68}
+.provider-field input:focus,.provider-field select:focus{outline:none;border-color:var(--brand-2,#4c9dff);box-shadow:0 0 0 3px rgba(76,157,255,.16)}
+.provider-field-hint{font-size:11px;line-height:1.55;color:#8f8a8a}
+.provider-field--preset{max-width:520px}
+.provider-endpoint-advanced summary{cursor:pointer;display:flex;align-items:center;gap:7px;font-size:12px;color:#a8a29e;list-style:none}
+.provider-endpoint-advanced summary::-webkit-details-marker{display:none}
+.provider-endpoint-advanced summary::before{content:'';width:0;height:0;border-left:5px solid currentColor;border-top:4px solid transparent;border-bottom:4px solid transparent;transition:transform .15s}
+.provider-endpoint-advanced[open] summary::before{transform:rotate(90deg)}
+.provider-endpoint-advanced summary:hover{color:#e7e5e4}
+.provider-endpoint-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:12px;align-items:start}
+.provider-endpoint-card{display:grid;gap:12px;padding:12px;border:1px solid rgba(255,255,255,.14);border-radius:8px;background:#1f1f1f;min-width:0;align-content:start}
+.provider-endpoint-card__title{font-size:12px;font-weight:600;color:#f6f6f6}
+
+.provider-reference-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.provider-reference{display:grid;grid-template-columns:16px minmax(0,1fr);align-items:start;gap:9px;min-width:0;min-height:62px;box-sizing:border-box;padding:10px 11px;border:1px solid rgba(255,255,255,.14);border-radius:8px;background:#1f1f1f;cursor:pointer;transition:border-color .14s,background-color .14s}
+.provider-reference:hover{border-color:rgba(255,255,255,.24);background:#252525}
+.provider-reference.is-selected{border-color:var(--brand-2,#4c9dff);background:#262626}
+.provider-reference input[type=checkbox]{width:14px;height:14px;margin:2px 0 0;padding:0;accent-color:var(--brand-2,#4c9dff)}
+.provider-reference>span{display:grid;gap:4px;min-width:0}
+.provider-reference b{font-size:12px;font-weight:600;color:#f6f6f6}
+.provider-reference small{font-size:11px;line-height:1.35;color:#8f8a8a}
+.provider-upload-config{display:grid;gap:12px;margin-top:12px}
+.provider-upload-kinds{border:0;margin:0;padding:0;display:grid;gap:8px;min-width:0}
+.provider-upload-kinds legend{margin:0 0 8px;font-size:12px;font-weight:500;color:#c9c5c4}
+.provider-upload-kind-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.provider-upload-kind-options label{display:flex;align-items:center;justify-content:center;gap:7px;min-height:36px;padding:0 10px;border:1px solid rgba(255,255,255,.14);border-radius:7px;background:#1f1f1f;color:#a8a29e;font-size:12px;cursor:pointer}
+.provider-upload-kind-options label.is-selected{color:#f6f6f6;border-color:var(--brand-2,#4c9dff);background:#262626}
+.provider-upload-kind-options input[type=checkbox]{width:14px;height:14px;margin:0;padding:0;accent-color:var(--brand-2,#4c9dff)}
+/* 模型行的请求形态列：定宽占位，类别不同也不会让整列文字左右跳 */
+.provider-model-profile{height:30px;font-size:11px;padding:0 22px 0 8px}
+.provider-card-actions-row{display:flex;align-items:center;gap:10px;margin-top:16px;flex-wrap:wrap}
+.provider-action-btn{height:32px;padding:0 12px;border-radius:6px;border:1px solid rgba(255,255,255,.14);background:#1f1f1f;color:#a8a29e;font-size:12px;font-weight:500;transition:background .15s,color .15s}
+.provider-action-btn:hover:not(:disabled){background:#2a2a2a;color:#f6f6f6}
+.provider-action-btn.is-primary{background:#2a2a2a;color:#f6f6f6}
+.provider-action-btn.is-primary:hover:not(:disabled){background:#333}
+.provider-action-btn:disabled{opacity:.5;cursor:not-allowed}
+.provider-docs-link{margin-left:auto;font-size:12px;color:#8fb7ee;text-decoration:none;transition:color .15s}
+.provider-docs-link:hover{text-decoration:underline}
+.provider-models-section{margin-top:18px;padding-top:18px;border-top:1px solid rgba(255,255,255,.08)}
+.provider-models-header{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:12px;color:#8f8a8a}
+.provider-models-actions{display:flex;align-items:center;gap:8px}
+.provider-models-actions button{padding:0;background:transparent;color:#a8a29e;font-size:12px}
+.provider-models-actions button:hover{color:#e7e5e4}
+.provider-models-actions span{color:#4a4846}
+/* 「删除全部」是破坏性操作：常态就带警示色（不靠 hover 才显形），禁用态退回灰。
+   ★ 用 :not(:disabled) 而不是只靠顺序 —— disabled 元素一样会命中 :hover。 */
+.provider-models-actions button:disabled{color:#57534e;cursor:not-allowed}
+.provider-models-actions button.is-danger:not(:disabled){color:#f87171}
+.provider-models-actions button.is-danger:not(:disabled):hover{color:#fca5a5}
+
+/* 筛选行容器（★ 不要叫 .provider-model-filter：那个类名是下面「筛选按钮」的，
+   曾经两个元素共用一个类名 → 容器吃到了按钮的 border+999px 圆角，整行被画成一个大胶囊框）。 */
+.provider-model-filters{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:10px;flex-wrap:wrap}
+.provider-model-filter-chips{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.provider-model-filter{height:28px;padding:0 12px;border-radius:999px;border:1px solid rgba(255,255,255,.14);background:transparent;color:#a8a29e;font-size:12px}
+.provider-model-filter:hover{color:#e7e5e4;border-color:rgba(255,255,255,.24)}
+.provider-model-filter.is-active{background:#eaebeb;border-color:transparent;color:#0c0a09}
+.provider-model-search{display:flex;align-items:center;gap:7px;height:32px;flex:0 0 260px;border-radius:999px;border:1px solid rgba(255,255,255,.14);background:#242629;padding:0 12px}
+.provider-model-search__icon{display:grid;place-items:center;color:#8f8a8a}
+.provider-model-search input{flex:1;min-width:0;height:100%;border:0;background:transparent;color:#f6f6f6;font-size:12px;font-family:inherit;outline:none}
+.provider-model-search input::placeholder{color:#6f6b69}
+.provider-selected-models{display:flex;align-items:flex-start;gap:10px;margin-top:10px}
+.provider-selected-models__title{flex:0 0 auto;font-size:12px;color:#a8a29e;line-height:28px}
+.provider-selected-models__pills{display:flex;flex-wrap:wrap;gap:6px}
+.provider-selected-pill{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:999px;border:1px solid rgba(255,255,255,.14);background:#2a2a2d;color:#d6d3d1;font-size:12px}
+.provider-selected-pill:hover{border-color:rgba(226,75,74,.5);color:#f09595}
+.provider-selected-pill i{font-style:normal;color:#8f8a8a}
+.provider-selected-pill__check{display:grid;place-items:center;color:#7aa7f0}
+.provider-model-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}
+.provider-model-card{display:grid;grid-template-columns:13px minmax(0,1fr) auto 28px;align-items:center;gap:8px;padding:8px 10px;border-radius:6px;background:#2a2a2d;border:1px solid rgba(255,255,255,.14)}
+.provider-model-card.is-checked{border-color:rgba(76,157,255,.45)}
+/* ★ r889（用户反馈「这个显示有问题」）：底部三个控件（计费方式 / 请求形态 / 删除）收进一整行的
+   flex —— 以前它们靠 grid 自动排布，结果「计费方式」下拉被塞进 **13px 的复选框列**（实测 42px 宽），
+   三个选项挤成一团、基本看不见也点不准。 */
+.provider-model-controls{grid-column:1 / -1;display:flex;align-items:center;gap:8px;min-width:0}
+.provider-model-controls .provider-model-billing{flex:0 0 104px;width:104px;height:32px;font-size:12px;padding:0 22px 0 8px}
+.provider-model-controls .provider-model-profile{flex:1 1 auto;width:auto;min-width:0;height:32px;font-size:12px;padding:0 22px 0 8px}
+.provider-model-controls .provider-model-btn{flex:0 0 28px}
+
+
+.provider-select{box-sizing:border-box;width:100%;height:32px;border:1px solid rgba(255,255,255,.14);border-radius:6px;background:#242629;color:#f6f6f6;font-family:inherit;font-size:12px;padding:0 30px 0 10px;transition:border-color .2s}
+.provider-select:hover{border-color:rgba(255,255,255,.26)}
+.provider-model-check{position:relative;display:grid;place-items:center;width:13px;height:13px;cursor:pointer}
+.provider-model-check input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
+.provider-model-check-box{display:grid;place-items:center;width:13px;height:13px;border-radius:3px;border:1px solid rgba(255,255,255,.28);color:transparent}
+.provider-model-check input:checked+.provider-model-check-box{background:var(--brand-2,#4c9dff);border-color:transparent;color:#0b1220}
+.provider-model-name{min-width:0}
+.provider-model-name strong{display:block;font-size:13px;line-height:15px;font-weight:400;color:#e7e5e4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* ★ r889：副标题独立成行（跨满整行）—— 以前它在 165px 的名字列里，
+   `video-enhance · 密钥已设置 ****abcd` 永远只显示到「密钥已设置 …」，蒙版尾号看不见。 */
+.provider-model-sub{grid-column:1 / -1;display:block;font-size:12px;line-height:15px;color:rgba(255,255,255,.48);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.provider-model-usages{display:inline-flex;align-items:center;gap:4px}
+.provider-model-usage{height:22px;padding:0 7px;border-radius:5px;border:1px solid rgba(255,255,255,.12);background:transparent;color:#8f8a8a;font-size:11px}
+.provider-model-usage:hover{color:#e7e5e4;border-color:rgba(255,255,255,.24)}
+.provider-model-usage.is-active{background:rgba(76,157,255,.18);border-color:rgba(76,157,255,.42);color:#a8c7fa}
+.provider-model-params{width:28px;height:28px;border-radius:6px;background:transparent;color:#8f8a8a;display:grid;place-items:center;flex-shrink:0}
+.provider-model-params:hover{background:rgba(255,255,255,.08);color:#e7e5e4}
+/* 删除按钮：上一轮重建时把这段样式误删了，按钮退回浏览器默认底色（实测截图里是个浅灰方块）。 */
+.provider-model-btn{width:28px;height:28px;border-radius:6px;background:transparent;color:#8f8a8a;display:grid;place-items:center;flex-shrink:0}
+.provider-model-btn:hover{background:rgba(255,255,255,.08);color:#e7e5e4}
+.provider-model-btn.is-danger:hover{background:rgba(226,75,74,.16);color:#f09595}
+
+.provider-params-layer{position:fixed;inset:0;z-index:100300;display:grid;place-items:center;padding:24px;background:rgba(8,8,9,.72)}
+.provider-params-dialog{width:min(540px,calc(100vw - 48px));max-height:min(700px,calc(100vh - 48px));display:flex;flex-direction:column;border:1px solid rgba(255,255,255,.12);border-radius:10px;background:#202022;box-shadow:0 18px 48px rgba(0,0,0,.5);color:#e7e5e4}
+.provider-params-dialog>header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid rgba(255,255,255,.1)}
+.provider-params-dialog>header strong{display:block;font-size:13.5px;font-weight:600}
+.provider-params-dialog>header span{display:block;margin-top:3px;font-size:11.5px;color:#8f8a8a}
+.provider-params-dialog>header button{width:28px;height:28px;border-radius:6px;background:transparent;color:#8f8a8a;display:grid;place-items:center}
+.provider-params-dialog>header button:hover{background:rgba(255,255,255,.08);color:#e7e5e4}
+.provider-params-body{min-height:0;overflow-y:auto;padding:14px 16px;display:grid;gap:14px}
+.provider-params-section h3{margin:0 0 9px;font-size:12.5px;font-weight:600;color:#e7e5e4}
+.provider-params-fields{display:grid;gap:8px}
+.provider-params-row{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:12px;color:#a8a29e}
+.provider-params-row>span{flex:0 0 auto}
+.provider-params-row .provider-select{flex:1;min-width:0;height:30px;font-size:11.5px}
+.provider-params-check{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:#a8a29e;cursor:pointer}
+.provider-params-check input{accent-color:var(--brand-2,#4c9dff)}
+.provider-params-check.is-checked{color:#e7e5e4}
+.provider-params-choice{display:flex;flex-wrap:wrap;gap:5px;justify-content:flex-end}
+.provider-params-choice button{height:24px;padding:0 8px;border-radius:5px;border:1px solid rgba(255,255,255,.12);background:transparent;color:#8f8a8a;font-size:11px}
+.provider-params-choice button.is-active{background:rgba(76,157,255,.18);border-color:rgba(76,157,255,.42);color:#a8c7fa}
+/* ★ r872「可用档位」：多选 chips（1~30s）+ 汇总行。
+   与上面的 choice 的区别：choice 是**单选**且右对齐；chips 是**多选**、要占满整行、需要换行。 */
+.provider-params-row--block{display:block}
+.provider-params-row--block>span{display:block;margin-bottom:7px}
+.provider-params-hint{display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;margin-left:5px;border:1px solid #6b6b6b;border-radius:50%;color:#8f8a8a;font-size:9px;font-style:normal;line-height:1;cursor:help;vertical-align:middle}
+.provider-params-hint::after{content:"?"}
+.provider-params-chips{display:flex;flex-wrap:wrap;gap:4px}
+.provider-params-chips button{min-width:34px;height:24px;padding:0 7px;border-radius:5px;border:1px solid rgba(255,255,255,.12);background:transparent;color:#8f8a8a;font-size:11px;cursor:pointer}
+.provider-params-chips button.is-active{background:rgba(76,157,255,.18);border-color:rgba(76,157,255,.42);color:#a8c7fa}
+.provider-params-chipline{margin-top:6px;font-size:11px;color:#78716c}
+.provider-params-dialog>footer{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-top:1px solid rgba(255,255,255,.1)}
+.provider-params-footer-actions{display:flex;gap:8px}
+/* 拉取候选区（★ 这一整块以前**完全没有基础样式**，只有下面 html.light 里两条覆盖 ——
+   结果是候选按钮退回浏览器默认：inline-block / padding 1px 6px / 无边框 / 16px 字号 /
+   浅灰底 rgb(240,240,240) / white-space:normal → 长模型 ID 直接撑出卡片外，
+   看起来就是用户截图里那几行戳出卡片的灰条。
+   配色与同区其它控件（.provider-selected-pill / .provider-model-filter）保持一致。 */
+.provider-fetch-result{margin-top:14px;padding-top:12px;border-top:1px dashed rgba(255,255,255,.1)}
+.provider-fetch-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;color:#a8a29e}
+.provider-fetch-head>span{flex:1 1 auto;min-width:0}
+.provider-fetch-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.provider-remote-filters{display:flex;align-items:flex-end;flex-wrap:wrap;gap:12px;margin-top:12px}
+.provider-remote-filters label{display:grid;gap:6px;color:#a8a29e;font-size:12px}
+.provider-remote-filters select,.provider-remote-filters input{min-width:0;height:34px;border:1px solid #3a3c40;border-radius:6px;background:#242629;color:#f6f6f6;padding:0 10px;box-sizing:border-box;font:inherit}
+.provider-remote-filters select:focus,.provider-remote-filters input:focus{outline:2px solid var(--brand-2,#4c9dff);outline-offset:1px}
+.provider-remote-search{flex:1;min-width:200px}
+.provider-remote-filters [data-remote-count]{align-self:center;font-size:12px;color:#a8a29e}
+html.light .provider-remote-filters label,html.light .provider-remote-filters [data-remote-count]{color:#57534e}
+html.light .provider-remote-filters select,html.light .provider-remote-filters input{background:#fff;border-color:#d6d3d1;color:#0c0a09}
+.provider-chip{display:inline-flex;align-items:center;height:26px;max-width:100%;padding:0 10px;border-radius:999px;
+  border:1px solid rgba(255,255,255,.14);background:#2a2a2d;color:#d6d3d1;
+  font-family:inherit;font-size:12px;line-height:1;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+.provider-chip:hover{border-color:rgba(76,157,255,.55);color:#f6f6f6}
+/* ★ r864：候选 chip 上标出「模态」与「未开通」。
+   `/v1/models` 会把**没开通**的模型也列出来（实测 19 个开通的它回 23 个），
+   不标出来用户就会以为都能用 —— 加进去只会在画布上得到一个必然失败的模型。 */
+.provider-chip i{padding:1px 6px;margin-left:7px;border-radius:999px;background:rgba(255,255,255,.1);color:#a8a5a1;font-style:normal;font-size:11px}
+.provider-chip em{padding:1px 6px;margin-left:7px;border-radius:999px;background:rgba(240,149,149,.16);color:#f09595;font-style:normal;font-size:11px}
+.provider-chip.is-unavailable{border-style:dashed;color:#8f8b88;opacity:.72}
+.provider-chip.is-unavailable:hover{border-color:rgba(240,149,149,.5);color:#d6d3d1}
+/* ★ r864：**计费方式**徽标（按 Token / 按秒）。「按次」是默认值 → 不显示徽标，
+   免得每一行都拖一条尾巴；只有"不一样"的那种才标出来，一眼就能区分。 */
+.provider-billing{padding:1px 6px;margin-left:6px;border-radius:999px;background:rgba(243,189,82,.16);color:#f3bd52;font-style:normal;font-size:11px}
+.provider-billing.is-second{background:rgba(167,139,250,.18);color:#c4b5fd}
+html.light .provider-billing{background:#fdf3e0;color:#a16207}
+html.light .provider-billing.is-second{background:#f1edfd;color:#6d28d9}
+.provider-fetch-error{margin-top:10px;font-size:12px;color:#f09595}
+/* 模型草稿行（点「＋ 添加模型」或候选 chip 后出现的那一行）。
+   ★ 与上面候选区同一个坑：整块**没有基础样式**，只有 html.light 里一条覆盖，
+   于是深色主题下退回浏览器默认 —— 白底方角输入框、16px 字号、还有那个
+   浅灰占位文字几乎看不见（用户截图里的 `glm-5.2`）。
+   配色逐项对齐同区控件：输入底 #242629（同 .provider-select / .provider-model-search）、
+   边框 rgba(255,255,255,.14)、占位 #6f6b69、字号 12px、圆角 6px。 */
+.provider-model-draft{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;padding:10px;border-radius:8px;
+  border:1px dashed rgba(255,255,255,.14);background:rgba(255,255,255,.03)}
+.provider-model-draft input,.provider-model-draft select{box-sizing:border-box;height:32px;border:1px solid rgba(255,255,255,.14);
+  border-radius:6px;background:#242629;color:#f6f6f6;font-family:inherit;font-size:12px;transition:border-color .2s}
+.provider-model-draft input{flex:1 1 168px;min-width:0;padding:0 10px}
+.provider-model-draft input:focus,.provider-model-draft select:focus{outline:none;border-color:var(--brand-2,#4c9dff)}
+.provider-model-draft input::placeholder{color:#6f6b69}
+.provider-model-draft input[data-draft-name]{flex:0 1 148px}
+/* select 要 apperance:none + 自绘箭头，否则深色主题下 Firefox/Windows 仍画浅色系统箭头 */
+.provider-model-draft select{flex:0 0 auto;min-width:74px;padding:0 26px 0 10px;appearance:none;-webkit-appearance:none;
+  background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a8a29e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 8px center}
+.provider-model-draft select option{background:#242629;color:#f6f6f6}
+/* 两个按钮靠右收尾，避免草稿行在窄卡片里参差不齐 */
+.provider-model-draft .provider-action-btn,.provider-model-draft .provider-ghost-btn{flex:0 0 auto}
+.provider-model-draft .provider-ghost-btn:last-child{margin-left:auto}
+
+
+
+
+.provider-timeout-settings{margin-top:14px;padding-top:12px;border-top:1px dashed rgba(255,255,255,.1)}
+.provider-timeout-header{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.provider-timeout-label{font-size:13px;font-weight:500;color:#e7e5e4}
+.provider-timeout-desc{margin-top:3px;font-size:11.5px;line-height:1.5;color:#8f8a8a}
+
+.provider-switch{position:relative;display:inline-flex;flex:0 0 36px;align-items:center;justify-content:center;
+  width:36px;height:24px;vertical-align:middle;cursor:pointer}
+.provider-switch input{position:absolute;inset:0;z-index:1;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
+.provider-switch-slider{position:absolute;top:4px;left:5px;box-sizing:border-box;width:26px;height:16px;
+  border-radius:999px;background:#47494d;box-shadow:inset 0 0 0 1px #777a80;
+  transition:background-color .16s ease,box-shadow .16s ease;pointer-events:none}
+.provider-switch-slider::before{content:"";position:absolute;top:3px;left:3px;width:10px;height:10px;border-radius:50%;
+  background:#bdc1c6;transition:left .16s ease,width .16s ease,height .16s ease,top .16s ease,background-color .16s ease}
+.provider-switch:hover input:not(:disabled)+.provider-switch-slider{background:#505256;box-shadow:inset 0 0 0 1px #8a8d92}
+.provider-switch input:checked+.provider-switch-slider{background:var(--brand-2,#4c9dff);box-shadow:none}
+.provider-switch input:checked+.provider-switch-slider::before{left:12px;top:2px;width:12px;height:12px;background:#0b1220}
+.provider-switch input:focus-visible+.provider-switch-slider{box-shadow:0 0 0 3px rgba(76,157,255,.35)}
+.provider-switch input:disabled{cursor:not-allowed}
+.provider-switch input:disabled+.provider-switch-slider{opacity:.45}
+
+.provider-timeout-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:14px}
+@media (max-width:760px){.provider-timeout-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.provider-timeout-field{display:grid;gap:6px;min-width:0;font-size:12px;color:#b8bac0}
+.provider-timeout-input-wrap{display:flex;align-items:center;gap:7px;height:32px;padding:0 10px;
+  box-sizing:border-box;border:1px solid rgba(255,255,255,.14);border-radius:6px;background:#242629;
+  transition:border-color .2s}
+.provider-timeout-input-wrap:focus-within{border-color:var(--brand-2,#4c9dff)}
+.provider-timeout-input-wrap input{flex:1;min-width:0;height:100%;border:0;background:transparent;
+  color:#f6f6f6;font-family:inherit;font-size:12px;outline:none;
+  /* 数字输入框去掉上下微调箭头：它在 32px 高的小框里会挤掉数字 */
+  -moz-appearance:textfield;appearance:textfield}
+.provider-timeout-input-wrap input::-webkit-outer-spin-button,
+.provider-timeout-input-wrap input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.provider-timeout-input-wrap small{flex:0 0 auto;font-size:11px;color:#8f8a8a}
+.provider-timeout-field.is-invalid .provider-timeout-input-wrap{border-color:#ee7d77}
+.provider-models-footer{margin-top:10px}
+html.light .provider-timeout-settings{border-top-color:#e7e5e4}
+html.light .provider-timeout-label{color:#0c0a09}
+html.light .provider-timeout-desc{color:#78716c}
+html.light .provider-timeout-field{color:#57534e}
+html.light .provider-timeout-input-wrap{background:#ffffff;border-color:#d6d3d1}
+html.light .provider-timeout-input-wrap input{color:#0c0a09}
+html.light .provider-timeout-input-wrap small{color:#a8a29e}
+html.light .provider-switch-slider{background:#d6d3d1;box-shadow:inset 0 0 0 1px #b4b2a9}
+html.light .provider-switch-slider::before{background:#ffffff}
+html.light .provider-switch:hover input:not(:disabled)+.provider-switch-slider{background:#c7c4c0;box-shadow:inset 0 0 0 1px #a8a29e}
+html.light .provider-switch input:checked+.provider-switch-slider{background:var(--brand-2,#2563eb)}
+html.light .provider-switch input:checked+.provider-switch-slider::before{background:#ffffff}
+.provider-test-result{font-size:11.5px;line-height:1.6}
+.provider-test-result.is-ok{color:#5dcaa5}
+.provider-test-result.is-fail{color:#f09595}
+.provider-test-result.is-busy{color:#a8a29e}
+
+
+
+.provider-fetch-notice{display:flex;align-items:center;gap:8px;margin-top:12px;padding:8px 12px;border-radius:8px;border:1px solid transparent;font-size:12px;line-height:1.5}
+.provider-fetch-notice>svg{flex:0 0 auto}
+.provider-fetch-notice>span{min-width:0;word-break:break-word}
+.provider-fetch-notice.is-ok{color:#79d29a;background:#1d3025;border-color:#31533e}
+.provider-fetch-notice.is-fail{color:#ee7d77;background:#352224;border-color:#5d3437}
+html.light .provider-fetch-notice.is-ok{color:#1d6b3f;background:#eaf6ee;border-color:#b7ddc4}
+html.light .provider-fetch-notice.is-fail{color:#9f2f28;background:#fdecea;border-color:#f2c3be}
+/* 实测链路：分步结果列表（每步带命中端点，便于排查配置） */
+.provider-test-result.is-detailed{display:grid;gap:7px;margin-top:4px}
+.provider-test-step{display:flex;gap:8px;align-items:flex-start;padding:7px 9px;border:1px solid rgba(255,255,255,.08);border-radius:9px;background:rgba(255,255,255,.03)}
+.provider-test-mark{flex:0 0 auto;width:14px;text-align:center;font-weight:700}
+.provider-test-body{min-width:0;display:grid;gap:2px}
+.provider-test-body strong{font-size:11.5px;font-weight:600;color:#e7e5e4}
+.provider-test-body small{font-size:11px;line-height:1.55;color:#a8a29e;word-break:break-all}
+.provider-test-meta{color:#8f8a8a !important}
+.provider-test-result code{font:10.5px 'DM Mono',monospace;padding:1px 5px;border-radius:4px;background:rgba(255,255,255,.07);color:#d6d3d1}
+.provider-test-step.is-ok .provider-test-mark{color:#5dcaa5}
+.provider-test-step.is-fail .provider-test-mark{color:#f09595}
+.provider-test-step.is-skip .provider-test-mark{color:#a8a29e}
+.provider-test-step.is-fail{border-color:rgba(240,149,149,.32);background:rgba(240,149,149,.06)}
+.provider-test-endpoints{margin-top:3px;font-size:10.5px;line-height:1.7;color:#8f8a8a;word-break:break-all}
+
+
+
+
+
+
+
+
+.wizard-layer{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(12,13,15,.72);backdrop-filter:blur(10px)}
+.wizard-dialog{display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;width:min(920px,100vw - 48px);height:min(700px,100vh - 48px);min-height:520px;border:1px solid rgba(255,255,255,.14);border-radius:8px;background:#202022;box-shadow:0 30px 90px rgba(0,0,0,.56);overflow:hidden;color:#e7e5e4}
+.wizard-dialog__header{display:flex;align-items:center;min-height:82px;padding:18px 26px;background:#252628;border-bottom:1px solid #383a3e}
+.wizard-dialog__header>div{display:grid;gap:5px}
+.wizard-dialog__header strong{font-size:17px;font-weight:700;color:#f6f6f6}
+.wizard-dialog__header span{font-size:12px;color:#8f8a8a}
+.wizard-dialog__steps{display:flex;gap:0;padding:14px 26px;background:#1d1e20;border-bottom:1px solid #34363a}
+.wizard-dialog__steps .wizard-step{flex:1 1 0;min-width:0;display:flex;align-items:center;gap:8px;font-size:12px;color:rgba(255,255,255,.42);position:relative}
+.wizard-dialog__steps .wizard-step:last-child{flex:none}
+.wizard-dialog__steps .wizard-step:not(:last-child)::after{content:'';flex:auto;min-width:0;height:1px;background:#3b3d42;transition:background-color .18s}
+.wizard-dialog__steps .wizard-step.is-complete::after{background:var(--brand-2,#4c9dff)}
+.wizard-dialog__steps .wizard-step i{flex:0 0 24px;width:24px;height:24px;border-radius:50%;background:#33353a;color:rgba(255,255,255,.58);display:inline-flex;align-items:center;justify-content:center;font-style:normal;font-size:12px;transition:color .18s,background-color .18s}
+.wizard-dialog__steps .wizard-step b{padding-right:8px;font-weight:500;background:#1d1e20;position:relative;z-index:1}
+.wizard-dialog__steps .wizard-step.is-active,.wizard-dialog__steps .wizard-step.is-complete{color:rgba(255,255,255,.88)}
+.wizard-dialog__steps .wizard-step.is-active i,.wizard-dialog__steps .wizard-step.is-complete i{background:var(--brand-2,#4c9dff);color:var(--brand-2-fg,#08131f)}
+.wizard-dialog__body{min-height:0;overflow-y:auto;padding:24px 26px 30px;scrollbar-gutter:stable}
+.wizard-section{display:grid;gap:18px;max-width:720px;margin:0 auto}
+.wizard-hint{font-size:12px;color:#8f8a8a}
+.wizard-logo-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.wizard-logo-preview{flex:0 0 48px;width:48px;height:48px;border-radius:8px;border:1px solid rgba(255,255,255,.14);background:#242629;color:#e7e5e4;display:grid;place-items:center;font-size:18px;font-weight:700;overflow:hidden}
+.wizard-logo-preview img{width:100%;height:100%;object-fit:contain}
+.wizard-logo-upload{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:6px;height:48px;padding:0 12px;border-radius:6px;border:1px solid rgba(255,255,255,.14);background:#242629;color:#a8a29e;font-size:12px;cursor:pointer}
+.wizard-logo-upload:hover{color:#e7e5e4;background:#2a2c30}
+.wizard-logo-upload input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
+.wizard-logo-error{flex-basis:100%;font-size:11px;color:#f09595}
+.wizard-block{display:grid;gap:14px;padding:18px 0;border-top:1px solid rgba(255,255,255,.08);min-width:0}
+.wizard-block:first-child{border-top:0;padding-top:0}
+.wizard-block__header{display:flex;align-items:baseline;justify-content:space-between;gap:16px}
+.wizard-block__header strong{font-size:13px;font-weight:600;color:#f6f6f6}
+.wizard-block__header span{font-size:11px;color:#8f8a8a;text-align:right}
+.wizard-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 16px}
+.wizard-field{display:grid;gap:8px;margin:0;min-width:0}
+.wizard-field>span{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:650;color:#c9c5c4}
+.wizard-field input,.wizard-field select{width:100%;height:38px;box-sizing:border-box;border:1px solid rgba(255,255,255,.14);border-radius:6px;background:#242629;color:#f6f6f6;font-size:12px;padding:0 12px;outline:none}
+.wizard-field select{padding-right:30px}
+.wizard-field input::placeholder{color:#6f6a68}
+.wizard-field input:focus,.wizard-field select:focus{border-color:var(--brand-2,#4c9dff);background:#2a2c30;box-shadow:0 0 0 2px rgba(76,157,255,.2)}
+.wizard-field-hint{font-size:11px;line-height:1.55;color:#8f8a8a}
+.wizard-field-hint.is-error{color:#f09595}
+.wizard-field--preset{max-width:520px}
+.wizard-endpoint-advanced summary{cursor:pointer;display:flex;align-items:center;gap:7px;font-size:12px;color:#a8a29e;list-style:none}
+.wizard-endpoint-advanced summary::-webkit-details-marker{display:none}
+.wizard-endpoint-advanced summary::before{content:'';width:0;height:0;border-left:5px solid currentColor;border-top:4px solid transparent;border-bottom:4px solid transparent;transition:transform .15s}
+.wizard-endpoint-advanced[open] summary::before{transform:rotate(90deg)}
+.wizard-endpoint-advanced summary:hover{color:#e7e5e4}
+.wizard-endpoint-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:12px;align-items:start}
+.wizard-endpoint-card{display:grid;gap:12px;padding:12px;border:1px solid rgba(255,255,255,.14);border-radius:8px;background:#242629;min-width:0;align-content:start}
+.wizard-endpoint-card__title{font-size:12px;font-weight:600;color:#f6f6f6}
+
+.wizard-reference-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.wizard-reference{display:grid;grid-template-columns:16px minmax(0,1fr);align-items:start;gap:9px;min-width:0;min-height:62px;box-sizing:border-box;padding:10px 11px;border:1px solid rgba(255,255,255,.14);border-radius:8px;background:#242629;cursor:pointer;transition:border-color .14s,background-color .14s}
+.wizard-reference:hover{border-color:rgba(255,255,255,.24);background:#2a2c30}
+.wizard-reference.is-selected{border-color:var(--brand-2,#4c9dff);background:#2c2e32}
+.wizard-reference input[type=checkbox]{width:14px;height:14px;margin:2px 0 0;padding:0;accent-color:var(--brand-2,#4c9dff)}
+.wizard-reference>span{display:grid;gap:4px;min-width:0}
+.wizard-reference b{font-size:12px;font-weight:600;color:#f6f6f6}
+.wizard-reference small{font-size:11px;line-height:1.35;color:#8f8a8a}
+.wizard-upload-config{display:grid;gap:12px}
+.wizard-upload-kinds{border:0;margin:0;padding:0;display:grid;gap:8px;min-width:0}
+.wizard-upload-kinds legend{margin:0 0 8px;font-size:12px;font-weight:500;color:#c9c5c4}
+.wizard-upload-kind-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.wizard-upload-kind-options label{display:flex;align-items:center;justify-content:center;gap:7px;min-height:36px;padding:0 10px;border:1px solid rgba(255,255,255,.14);border-radius:7px;background:#242629;color:#a8a29e;font-size:12px;cursor:pointer}
+.wizard-upload-kind-options label.is-selected{color:#f6f6f6;border-color:var(--brand-2,#4c9dff);background:#2c2e32}
+.wizard-upload-kind-options input[type=checkbox]{width:14px;height:14px;margin:0;padding:0;accent-color:var(--brand-2,#4c9dff)}
+.wizard-model-profile{width:100%;min-width:0;height:30px;font-size:11px;box-sizing:border-box;border:1px solid rgba(255,255,255,.14);border-radius:6px;background:#242629;color:#f6f6f6;padding:0 22px 0 8px;outline:none}
+.wizard-model-profile-spacer{display:block;min-width:0}
+.wizard-connection{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.wizard-connection .is-success{color:#5dcaa5;font-size:12px}
+.wizard-connection .is-error{color:#f09595;font-size:12px}
+.wizard-model-tools{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.wizard-manual-model{display:grid;grid-template-columns:minmax(180px,1fr) 36px;gap:6px;width:min(360px,55%)}
+.wizard-manual-model input{width:100%;min-width:0;height:38px;box-sizing:border-box;border:1px solid rgba(255,255,255,.14);border-radius:6px;background:#242629;color:#f6f6f6;font-size:12px;padding:0 12px;outline:none}
+.wizard-manual-model input:focus{border-color:var(--brand-2,#4c9dff);box-shadow:0 0 0 2px rgba(76,157,255,.2)}
+.wizard-manual-model button{display:inline-flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.14);border-radius:6px;background:#2b2d30;color:#a8a29e;cursor:pointer}
+.wizard-manual-model button:hover{color:#e7e5e4;background:#34363a}
+.wizard-models{display:grid;gap:8px}
+.wizard-model-filters{display:flex;align-items:flex-end;flex-wrap:wrap;gap:12px}
+.wizard-model-filters label{display:grid;gap:6px;font-size:12px;color:#aaa}
+.wizard-model-filters select,.wizard-model-filters input{height:36px;border:1px solid #3a3c40;border-radius:6px;background:#242629;color:#f6f6f6;padding:0 10px;box-sizing:border-box;font:inherit;min-width:0}
+.wizard-model-filters select:focus,.wizard-model-filters input:focus{outline:2px solid var(--brand-2,#4c9dff);outline-offset:1px}
+.wizard-model-search{flex:1;min-width:200px}
+#wizardModelCount{align-self:center;font-size:12px;color:#aaa}
+.wizard-model[hidden],#wizardModelFilterEmpty[hidden]{display:none}
+html.light .wizard-model-filters label,html.light #wizardModelCount{color:#57534e}
+html.light .wizard-model-filters select,html.light .wizard-model-filters input{background:#fff;border-color:#d6d3d1;color:#0c0a09}
+
+.wizard-model{display:grid;grid-template-columns:minmax(170px,1fr) auto minmax(140px,200px) 30px;align-items:center;gap:12px;min-height:52px;padding:8px 10px;border:1px solid #303236;border-radius:6px;background:#1c1d1f}
+.wizard-model.is-enabled{border-color:rgba(255,255,255,.2);background:#292a2d}
+.wizard-model>label{display:flex;align-items:center;gap:8px;min-width:0}
+.wizard-model>label strong{font-size:12px;font-weight:400;color:#e7e5e4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wizard-model input[type=checkbox]{width:14px;height:14px;margin:0;padding:0;accent-color:var(--brand-2,#4c9dff)}
+.wizard-model-usage{display:inline-flex;gap:4px}
+.wizard-model-usage button{height:26px;padding:0 8px;font-size:11px;border:1px solid #3a3c40;border-radius:5px;background:#292b2e;color:rgba(255,255,255,.54);cursor:pointer}
+.wizard-model-usage button.is-active{background:var(--brand-2,#4c9dff);border-color:var(--brand-2,#4c9dff);color:var(--brand-2-fg,#08131f)}
+.wizard-model-remove{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border:1px solid #3a3c40;border-radius:6px;background:#2b2d30;color:rgba(255,255,255,.66);cursor:pointer}
+.wizard-model-remove:hover{color:#f09595;background:rgba(226,75,74,.16)}
+.wizard-model-message{display:block;font-size:11.5px;color:#8f8a8a}
+.wizard-empty{padding:24px;border:1px dashed #3a3c40;border-radius:6px;background:#1c1d1f;color:#8f8a8a;text-align:center;font-size:12px}
+.wizard-summary{padding:0 16px;border:1px solid rgba(255,255,255,.14);border-radius:6px;background:#1c1d1f}
+.wizard-summary dl{display:grid;gap:0;margin:0}
+.wizard-summary dl>div{display:grid;grid-template-columns:110px minmax(0,1fr);gap:18px;padding:11px 0;border-bottom:1px solid rgba(255,255,255,.07)}
+.wizard-summary dl>div:last-child{border-bottom:0}
+.wizard-summary dt{color:#8f8a8a;font-size:12px}
+.wizard-summary dd{margin:0;color:#e7e5e4;font-size:12px;min-width:0;overflow-wrap:anywhere}
+.wizard-summary dd.is-warn{color:#fac775}
+.wizard-summary dd.is-ok{color:#5dcaa5}
+.wizard-enabled-list{display:flex;flex-wrap:wrap;gap:6px;padding:0 0 16px}
+.wizard-enabled-list span{padding:5px 8px;border:1px solid rgba(255,255,255,.14);border-radius:5px;background:#292a2d;color:#e7e5e4;font-size:11px}
+.wizard-footer{display:grid;grid-template-columns:auto 1fr auto auto;align-items:center;gap:8px;min-height:66px;padding:12px 26px;background:#252628;border-top:1px solid #383a3e}
+.wizard-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-width:76px;height:34px;padding:0 12px;border-radius:6px;font-size:12px;cursor:pointer}
+.wizard-btn.ghost{background:#2f3134;border:1px solid #414349;color:rgba(255,255,255,.8)}
+.wizard-btn.ghost:hover{background:#3a3d41;color:#fff}
+.wizard-btn.primary{background:var(--brand-2,#4c9dff);border:1px solid var(--brand-2,#4c9dff);color:var(--brand-2-fg,#08131f)}
+.wizard-btn.primary:hover{filter:brightness(1.08)}
+.wizard-btn[disabled]{opacity:.42;cursor:default;filter:none}
+.wizard-error{padding:9px 12px;border-radius:6px;background:rgba(226,75,74,.14);border:1px solid rgba(226,75,74,.4);color:#f09595;font-size:12px;line-height:1.6}
+
+/* 轻量提示：面板内联的确认条 */
+.settings-toast{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);padding:9px 14px;border-radius:10px;background:#242424;border:1px solid rgba(255,255,255,.12);color:#e7e5e4;font-size:12px;z-index:5;pointer-events:none;opacity:0;transition:opacity .2s}
+.settings-toast.is-show{opacity:1}
+
+/* ---------------- 浅色主题 ---------------- */
+html.light .settings-backdrop{background:rgba(28,25,23,.42)}
+html.light .settings-shell{border-color:#e7e5e4;background:#ffffff;box-shadow:0 40px 100px rgba(28,25,23,.18)}
+html.light .settings-sidebar{background:#fafaf9;border-right-color:#e7e5e4}
+html.light .settings-sidebar-title{color:#0c0a09}
+html.light .settings-nav-item{color:#57534e}
+html.light .settings-nav-item:hover{background:#f0efee;color:#0c0a09}
+html.light .settings-nav-item.is-active{background:#f5f5f4;color:#0c0a09}
+html.light .settings-close{color:#78716c}
+html.light .settings-close:hover{background:#f5f5f4;color:#0c0a09}
+html.light .settings-pane-title{color:#0c0a09}
+html.light .settings-pane-sub{color:#78716c}
+html.light .settings-add-btn{background:var(--brand-2,#2563eb);color:var(--brand-2-fg,#ffffff)}
+html.light .settings-add-btn:hover{filter:brightness(1.08)}
+html.light .settings-label{color:#44403c}
+html.light .settings-desc{color:#78716c}
+html.light .settings-empty{border-color:#d6d3d1;color:#78716c}
+html.light .settings-hint{color:#78716c}
+html.light .settings-readonly-note{background:#f5f5f4;border-color:#e7e5e4;color:#57534e}
+html.light .settings-reset{background:#f5f5f4;border-color:#e7e5e4;color:#44403c}
+html.light .settings-reset:hover{background:#f0efee}
+html.light .settings-toggle-row{border-bottom-color:#e7e5e4}
+html.light .settings-toggle-copy strong{color:#44403c}
+html.light .settings-toggle-copy small{color:#78716c}
+html.light .settings-switch{background:#d6d3d1}
+html.light .settings-switch span{background:#ffffff}
+html.light .settings-switch.is-on{background:#2563eb}
+html.light .settings-color-input{background:#f5f5f4;border-color:#e7e5e4}
+html.light .settings-color-hex{color:#78716c}
+html.light .settings-swatch{border-color:#d6d3d1}
+html.light .settings-mode-option{background:#f5f5f4;color:#57534e}
+html.light .settings-mode-option:hover{background:#f0efee}
+html.light .settings-mode-option.is-active{border-color:#2563eb;background:rgba(37,99,235,.1);color:#1d4ed8}
+html.light .settings-timeout-field{background:#f5f5f4;border-color:#e7e5e4}
+html.light .settings-timeout-field span{color:#57534e}
+html.light .settings-timeout-field input{background:#ffffff;border-color:#d6d3d1;color:#0c0a09}
+html.light .settings-timeout-field input:disabled{color:#78716c}
+html.light .settings-timeout-field em{color:#78716c}
+html.light .settings-scope-tabs{background:#f5f5f4;border-color:#e7e5e4}
+html.light .settings-scope-tab{color:#78716c}
+html.light .settings-scope-tab:hover{color:#1c1917}
+html.light .settings-scope-tab.is-active{background:var(--brand-2,#2563eb);color:var(--brand-2-fg,#ffffff)}
+html.light .settings-timeout-field.is-custom{border-color:rgba(37,99,235,.45)}
+html.light .settings-timeout-reset{color:#78716c}
+html.light .settings-timeout-reset:hover{color:#1c1917;background:rgba(0,0,0,.06)}
+html.light .provider-card{border-color:#e7e5e4;background:#f5f5f4}
+html.light .provider-card.is-expanded{border-color:#d6d3d1}
+html.light .provider-expand-icon{color:#78716c}
+html.light .provider-logo{background:#ffffff;border-color:#e7e5e4;color:#44403c}
+html.light .provider-title{color:#0c0a09}
+html.light .provider-builtin-badge{color:#57534e}
+html.light .provider-brand-group{background:#fafaf9;border-color:#d6d3d1}
+html.light .provider-child-list{border-color:#d6d3d1}
+html.light .provider-logo--brand{color:#1c1917}
+html.light .provider-subtitle{color:#78716c}
+html.light .provider-rename-input{background:#ffffff;color:#0c0a09}
+html.light .provider-icon-btn{color:#78716c}
+html.light .provider-icon-btn:hover{background:#e7e5e4;color:#0c0a09}
+html.light .provider-icon-btn.is-danger:hover{background:#f0d9d6;color:#b3261e}
+html.light .provider-card-body{border-top-color:#e7e5e4}
+html.light .provider-logo-upload{color:#57534e}
+html.light .provider-logo-upload:hover{background:#f0efee;color:#0c0a09}
+html.light .provider-logo-error{color:#b3261e}
+html.light .provider-ghost-btn{border-color:#e7e5e4;color:#57534e}
+html.light .provider-ghost-btn:hover:not(:disabled){background:#f0efee;color:#0c0a09}
+html.light .provider-section{border-top-color:#e7e5e4}
+html.light .provider-section__header strong{color:#0c0a09}
+html.light .provider-section__header span{color:#78716c}
+html.light .provider-field>span{color:#57534e}
+html.light .provider-field-icon{color:#78716c}
+html.light .provider-field input,html.light .provider-field select{background:#ffffff;border-color:#d6d3d1;color:#0c0a09}
+html.light .provider-field input::placeholder{color:#a8a29e}
+html.light .provider-field-hint{color:#78716c}
+html.light .provider-endpoint-advanced summary{color:#57534e}
+html.light .provider-endpoint-advanced summary:hover{color:#0c0a09}
+html.light .provider-endpoint-card{background:#fafaf9;border-color:#e7e5e4}
+html.light .provider-endpoint-card__title{color:#0c0a09}
+html.light .provider-reference{background:#fafaf9;border-color:#e7e5e4}
+html.light .provider-reference:hover{background:#f5f5f4;border-color:#d6d3d1}
+html.light .provider-reference.is-selected{border-color:var(--brand-2,#2563eb);background:#f5f5f4}
+html.light .provider-reference b{color:#0c0a09}
+html.light .provider-reference small{color:#78716c}
+html.light .provider-upload-kinds legend{color:#57534e}
+html.light .provider-upload-kind-options label{background:#ffffff;border-color:#e7e5e4;color:#57534e}
+html.light .provider-upload-kind-options label.is-selected{color:#0c0a09;border-color:var(--brand-2,#2563eb);background:#f5f5f4}
+html.light .provider-action-btn{background:#ffffff;border-color:#e7e5e4;color:#57534e}
+html.light .provider-action-btn:hover:not(:disabled){background:#f0efee;color:#0c0a09}
+html.light .provider-action-btn.is-primary{background:#f0efee;color:#0c0a09}
+html.light .provider-action-btn.is-primary:hover:not(:disabled){background:#e7e5e4}
+html.light .provider-docs-link{color:#2563eb}
+html.light .provider-models-section{border-top-color:#e7e5e4}
+html.light .provider-models-header{color:#78716c}
+html.light .provider-models-actions button{color:#57534e}
+html.light .provider-models-actions button:hover{color:#0c0a09}
+html.light .provider-models-actions span{color:#d6d3d1}
+html.light .provider-models-actions button:disabled{color:#a8a29e}
+html.light .provider-models-actions button.is-danger:not(:disabled){color:#dc2626}
+html.light .provider-models-actions button.is-danger:not(:disabled):hover{color:#b91c1c}
+html.light .provider-model-draft{border-color:#e7e5e4;background:#fafaf9}
+html.light .provider-model-draft input,html.light .provider-model-draft select{background:#ffffff;border-color:#d6d3d1;color:#0c0a09}
+html.light .provider-model-draft input::placeholder{color:#a8a29e}
+html.light .provider-model-draft select option{background:#ffffff;color:#0c0a09}
+html.light .provider-chip{background:#ffffff;border-color:#e7e5e4;color:#44403c}
+html.light .provider-chip:hover{border-color:#2563eb;color:#1d4ed8}
+html.light .provider-chip i{background:#f0efee;color:#78716c}
+html.light .provider-chip em{background:#fdeaea;color:#b42318}
+html.light .provider-chip.is-unavailable{border-color:#e7e5e4;color:#a8a29e}
+html.light .provider-fetch-result{border-top-color:#e7e5e4}
+html.light .provider-fetch-head{color:#78716c}
+html.light .provider-fetch-error{color:#b3261e}
+html.light .provider-model-filter{color:#78716c;border-color:#e7e5e4}
+html.light .provider-model-filter.is-active{color:#0c0a09}
+html.light .provider-model-search{background:#ffffff;border-color:#d6d3d1;color:#0c0a09}
+html.light .provider-selected-pill{background:#ffffff;border-color:#e7e5e4;color:#44403c}
+html.light .provider-model-card{background:#ffffff;border-color:#e7e5e4}
+html.light .provider-select{background:#ffffff;border-color:#d6d3d1;color:#0c0a09}
+html.light .provider-model-sub{color:#78716c}
+html.light .provider-selected-pill{background:#f5f5f4}
+html.light .provider-model-search{background:#ffffff}
+html.light .provider-model-name strong{color:#44403c}
+html.light .provider-model-usage{color:#78716c;border-color:#e7e5e4}
+html.light .provider-model-usage.is-active{color:#0b1220}
+html.light .provider-model-check-box{border-color:#c8c4c2}
+html.light .provider-params-layer{background:rgba(12,10,9,.55)}
+html.light .provider-params-dialog{background:#ffffff;border-color:#e7e5e4;color:#0c0a09}
+html.light .provider-params-dialog>header,html.light .provider-params-dialog>footer{border-color:#e7e5e4}
+html.light .provider-params-section h3{color:#0c0a09}
+html.light .provider-params-row,html.light .provider-params-check{color:#78716c}
+html.light .provider-params-choice button{color:#78716c;border-color:#e7e5e4}
+html.light .provider-params-choice button.is-active{color:#0b1220}
+html.light .provider-params-chips button{color:#78716c;border-color:#e7e5e4}
+html.light .provider-params-chips button.is-active{color:#0b1220}
+html.light .provider-params-chipline{color:#78716c}
+html.light .provider-params-hint{border-color:#a8a29e;color:#78716c}
+html.light .provider-model-copy strong{color:#44403c}
+html.light .provider-model-copy small{color:#78716c}
+html.light .provider-model-tag{background:rgba(37,99,235,.1);color:#1d4ed8}
+html.light .provider-model-tag[data-kind="i2t"]{background:rgba(124,58,237,.1);color:#6d28d9}
+html.light .provider-model-tag[data-kind="video"]{background:rgba(15,110,86,.1);color:#0f6e56}
+html.light .provider-model-tag[data-kind="tts"]{background:rgba(180,83,9,.1);color:#b45309}
+html.light .provider-model-btn{color:#78716c}
+html.light .provider-model-btn:hover{background:#e7e5e4;color:#0c0a09}
+html.light .provider-model-btn.is-danger:hover{background:#f0d9d6;color:#b3261e}
+html.light .provider-add-model{border-color:#d6d3d1;color:#57534e}
+html.light .provider-add-model:hover{border-color:#2563eb;color:#1d4ed8}
+html.light .provider-test-result.is-ok{color:#0f6e56}
+html.light .provider-test-result.is-fail{color:#b3261e}
+html.light .provider-test-result.is-busy{color:#78716c}
+html.light .provider-test-step{border-color:#e7e5e4;background:#fafaf9}
+html.light .provider-test-body strong{color:#0c0a09}
+html.light .provider-test-body small{color:#57534e}
+html.light .provider-test-meta{color:#78716c !important}
+html.light .provider-test-result code{background:#f0efee;color:#44403c}
+html.light .provider-test-step.is-ok .provider-test-mark{color:#0f6e56}
+html.light .provider-test-step.is-fail .provider-test-mark{color:#b3261e}
+html.light .provider-test-step.is-skip .provider-test-mark{color:#78716c}
+html.light .provider-test-step.is-fail{border-color:#f0d9d6;background:#fdf7f6}
+html.light .provider-test-endpoints{color:#78716c}
+html.light .wizard-layer{background:rgba(28,25,23,.42)}
+html.light .wizard-dialog{border-color:#e7e5e4;background:#ffffff;color:#0c0a09;box-shadow:0 30px 90px rgba(28,25,23,.22)}
+html.light .wizard-dialog__header{background:#fafaf9;border-bottom-color:#e7e5e4}
+html.light .wizard-dialog__header strong{color:#0c0a09}
+html.light .wizard-dialog__header span{color:#78716c}
+html.light .wizard-dialog__steps{background:#f5f5f4;border-bottom-color:#e7e5e4}
+html.light .wizard-dialog__steps .wizard-step{color:#a8a29e}
+html.light .wizard-dialog__steps .wizard-step:not(:last-child)::after{background:#d6d3d1}
+html.light .wizard-dialog__steps .wizard-step i{background:#e7e5e4;color:#78716c}
+html.light .wizard-dialog__steps .wizard-step b{background:#f5f5f4}
+html.light .wizard-dialog__steps .wizard-step.is-active,html.light .wizard-dialog__steps .wizard-step.is-complete{color:#0c0a09}
+html.light .wizard-hint{color:#78716c}
+html.light .wizard-logo-preview{background:#f5f5f4;border-color:#e7e5e4;color:#44403c}
+html.light .wizard-logo-upload{background:#f5f5f4;border-color:#e7e5e4;color:#57534e}
+html.light .wizard-logo-upload:hover{background:#f0efee;color:#0c0a09}
+html.light .wizard-logo-error{color:#b3261e}
+html.light .wizard-block{border-top-color:#e7e5e4}
+html.light .wizard-block__header strong{color:#0c0a09}
+html.light .wizard-block__header span{color:#78716c}
+html.light .wizard-field>span{color:#57534e}
+html.light .wizard-field input,html.light .wizard-field select{background:#ffffff;border-color:#d6d3d1;color:#0c0a09}
+html.light .wizard-field input::placeholder{color:#a8a29e}
+html.light .wizard-field-hint{color:#78716c}
+html.light .wizard-field-hint.is-error{color:#b3261e}
+html.light .wizard-endpoint-advanced summary{color:#57534e}
+html.light .wizard-endpoint-advanced summary:hover{color:#0c0a09}
+html.light .wizard-endpoint-card{background:#fafaf9;border-color:#e7e5e4}
+html.light .wizard-endpoint-card__title{color:#0c0a09}
+html.light .wizard-reference{background:#fafaf9;border-color:#e7e5e4}
+html.light .wizard-reference:hover{background:#f5f5f4;border-color:#d6d3d1}
+html.light .wizard-reference.is-selected{border-color:var(--brand-2,#2563eb);background:#f5f5f4}
+html.light .wizard-reference b{color:#0c0a09}
+html.light .wizard-reference small{color:#78716c}
+html.light .wizard-upload-kinds legend{color:#57534e}
+html.light .wizard-upload-kind-options label{background:#ffffff;border-color:#e7e5e4;color:#57534e}
+html.light .wizard-upload-kind-options label.is-selected{color:#0c0a09;border-color:var(--brand-2,#2563eb);background:#f5f5f4}
+html.light .wizard-model-profile{background:#ffffff;border-color:#d6d3d1;color:#0c0a09}
+html.light .wizard-connection .is-success{color:#0f6e56}
+html.light .wizard-connection .is-error{color:#b3261e}
+html.light .wizard-manual-model input{background:#ffffff;border-color:#d6d3d1;color:#0c0a09}
+html.light .wizard-manual-model button{background:#f5f5f4;border-color:#e7e5e4;color:#57534e}
+html.light .wizard-manual-model button:hover{background:#f0efee;color:#0c0a09}
+html.light .wizard-model{background:#ffffff;border-color:#e7e5e4}
+html.light .wizard-model.is-enabled{background:#fafaf9;border-color:#d6d3d1}
+html.light .wizard-model>label strong{color:#44403c}
+html.light .wizard-model-usage button{background:#f5f5f4;border-color:#e7e5e4;color:#57534e}
+html.light .wizard-model-remove{background:#f5f5f4;border-color:#e7e5e4;color:#78716c}
+html.light .wizard-model-remove:hover{background:#f0d9d6;color:#b3261e}
+html.light .wizard-empty{background:#fafaf9;border-color:#d6d3d1;color:#78716c}
+html.light .wizard-model-message{color:#78716c}
+
+
+html.light .wizard-summary{background:#fafaf9;border-color:#e7e5e4}
+html.light .wizard-summary dl>div{border-bottom-color:#e7e5e4}
+html.light .wizard-summary dt{color:#78716c}
+html.light .wizard-summary dd{color:#44403c}
+html.light .wizard-summary dd.is-warn{color:#b45309}
+html.light .wizard-summary dd.is-ok{color:#0f6e56}
+html.light .wizard-enabled-list span{background:#f5f5f4;border-color:#e7e5e4;color:#44403c}
+html.light .wizard-footer{background:#fafaf9;border-top-color:#e7e5e4}
+html.light .wizard-btn.ghost{background:#f5f5f4;border-color:#e7e5e4;color:#44403c}
+html.light .wizard-btn.ghost:hover{background:#f0efee}
+html.light .wizard-btn.primary{background:var(--brand-2,#2563eb);border-color:var(--brand-2,#2563eb);color:var(--brand-2-fg,#ffffff)}
+html.light .wizard-error{background:#fdf7f6;border-color:#f0d9d6;color:#b3261e}
+html.light .settings-toast{background:#ffffff;border-color:#e7e5e4;color:#44403c}
+
+/* 窄屏：面板改为整屏 */
+@media(max-width:900px){
+  .settings-shell{width:100vw;height:100vh;border-radius:0;border:0}
+  .settings-sidebar{width:180px}
+  .wizard-grid,.wizard-endpoint-grid{grid-template-columns:1fr}
+  .provider-section-grid,.provider-endpoint-grid{grid-template-columns:1fr}
+  .provider-reference-grid,.provider-upload-kind-options{grid-template-columns:1fr}
+  .provider-model-profile,.provider-model-profile-spacer{flex-basis:120px;width:120px}
+
+  .wizard-dialog{width:calc(100vw - 32px);height:calc(100vh - 32px);min-height:0}
+  .wizard-dialog__steps{padding-inline:18px}
+  .wizard-dialog__steps .wizard-step{justify-content:center;font-size:0}
+  .wizard-model{grid-template-columns:minmax(0,1fr) auto}
+  .wizard-model-usage,.wizard-model-profile,.wizard-model-profile-spacer{grid-column:1/-1}
+  .wizard-reference-grid,.wizard-upload-kind-options{grid-template-columns:1fr}
+  .wizard-manual-model{width:min(360px,60%)}
+}
+
+/* ===== 提示词编辑（偏好设置 · 仅管理员）=====
+   画布内所有预设的提示词正文统一在这里改。普通用户/VIP 打不开这个分区，
+   他们在画布内也看不到提示词 —— 生成时由服务端按 presetScene 注入。 */
+.preset-prompt-list{display:flex;flex-direction:column;gap:12px}
+.preset-prompt-card{border:1px solid #2f2e2e;border-radius:10px;padding:12px 13px;background:#1b1a1a}
+.preset-prompt-card.is-custom{border-color:#4a3f6b}
+.preset-prompt-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.preset-prompt-head strong{font-size:13px;color:#e7e5e4}
+.preset-prompt-head small{font-size:11.5px;color:#8f8a8a}
+.preset-prompt-badge{padding:1px 7px;border-radius:999px;background:#3b2f5e;color:#c4b5fd;font-size:11px}
+.preset-prompt-text{width:100%;box-sizing:border-box;min-height:96px;padding:9px 10px;border:1px solid #333232;border-radius:8px;background:#141313;color:#e7e5e4;font-size:12.5px;line-height:1.7;font-family:inherit;resize:vertical;outline:none}
+.preset-prompt-text:focus{border-color:#6d5bb5}
+.preset-prompt-foot{display:flex;justify-content:flex-end;margin-top:6px}
+.preset-prompt-count{font-size:11.5px;color:#8f8a8a}
+.preset-prompt-actions{display:flex;gap:10px;margin-top:16px}
+.preset-prompt-actions button{height:34px;padding:0 16px;border-radius:8px;border:1px solid transparent;background:#e7e5e4;color:#1c1917;font-size:12.5px;font-weight:600;cursor:pointer}
+.preset-prompt-actions button.ghost{background:transparent;border-color:#3a3939;color:#d6d3d1}
+.preset-prompt-actions button:hover{opacity:.88}
+html.light .preset-prompt-card{background:#fafaf9;border-color:#e7e5e4}
+html.light .preset-prompt-card.is-custom{border-color:#c4b5fd}
+html.light .preset-prompt-head strong{color:#44403c}
+html.light .preset-prompt-head small{color:#78716c}
+html.light .preset-prompt-badge{background:#ede9fe;color:#6d28d9}
+html.light .preset-prompt-text{background:#fff;border-color:#d6d3d1;color:#292524}
+html.light .preset-prompt-count{color:#78716c}
+html.light .preset-prompt-actions button{background:#292524;color:#fafaf9}
+html.light .preset-prompt-actions button.ghost{background:transparent;border-color:#d6d3d1;color:#44403c}
+
+/* ============================================================================
+   ★★★ 智能合成的字段模板（r782）
+   一排可点击的「整块标注」：点一下往正文里插入 `【字段名】`，
+   退格整块删除、六个字段各有颜色。见 settings.js 的 PROMPT_FIELD_TOKENS。
+   ============================================================================ */
+.preset-prompt-editor{position:relative}
+/* textarea 只留光标：文字透明，可见文字由下面那层 mirror 渲染 */
+.preset-prompt-editor .preset-prompt-text{position:relative;z-index:1;background:transparent;color:transparent;caret-color:#e7e5e4}
+/* ★ mirror 的 padding / 字号 / 行高 / 字体必须和 textarea **逐项一致**，差一点就整段错位 */
+.preset-prompt-mirror{position:absolute;inset:0;z-index:0;overflow:hidden;box-sizing:border-box;padding:9px 10px;border:1px solid transparent;border-radius:8px;background:#141313;color:#e7e5e4;font-size:12.5px;line-height:1.7;font-family:inherit;white-space:pre-wrap;overflow-wrap:break-word;pointer-events:none}
+/* 插入按钮那一排 */
+.preset-prompt-foot{align-items:center;gap:10px}
+.preset-prompt-fields{display:flex;flex-wrap:wrap;gap:6px;margin-right:auto}
+.preset-field-chip{height:24px;padding:0 9px;border:1px solid #3a3937;border-radius:7px;background:#232120;color:#c9c4c0;font-family:inherit;font-size:11.5px;cursor:pointer;transition:border-color .14s,background .14s,color .14s}
+.preset-field-chip:hover{background:#2e2c2a;color:#f2efec}
+.preset-field-chip.is-time{color:#93c5fd;border-color:#2f4a6b}
+.preset-field-chip.is-plot{color:#c4b5fd;border-color:#4a3f6b}
+.preset-field-chip.is-size{color:#7dd3fc;border-color:#2c4f63}
+.preset-field-chip.is-light{color:#fdba74;border-color:#6b4a2f}
+.preset-field-chip.is-spoken{color:#86efac;border-color:#2f6b45}
+.preset-field-chip.is-sound{color:#f9a8d4;border-color:#6b2f52}
+/* 正文里的标注：六个字段六种颜色 */
+.preset-field-mark{border-radius:4px;padding:0 3px;font-weight:600}
+.preset-field-mark.is-time{background:rgba(59,130,246,.20);color:#93c5fd;box-shadow:inset 0 0 0 1px rgba(59,130,246,.35)}
+.preset-field-mark.is-plot{background:rgba(139,92,246,.20);color:#c4b5fd;box-shadow:inset 0 0 0 1px rgba(139,92,246,.35)}
+.preset-field-mark.is-size{background:rgba(14,165,233,.20);color:#7dd3fc;box-shadow:inset 0 0 0 1px rgba(14,165,233,.35)}
+.preset-field-mark.is-light{background:rgba(249,115,22,.20);color:#fdba74;box-shadow:inset 0 0 0 1px rgba(249,115,22,.35)}
+.preset-field-mark.is-spoken{background:rgba(34,197,94,.20);color:#86efac;box-shadow:inset 0 0 0 1px rgba(34,197,94,.35)}
+.preset-field-mark.is-sound{background:rgba(236,72,153,.20);color:#f9a8d4;box-shadow:inset 0 0 0 1px rgba(236,72,153,.35)}
+/* 浅色主题：底色翻白，文字换深色（保证两种主题都读得清） */
+html.light .preset-prompt-mirror{background:#fff;color:#1c1917}
+html.light .preset-prompt-editor .preset-prompt-text{caret-color:#1c1917}
+html.light .preset-field-chip{background:#fafaf9;border-color:#e7e5e4;color:#57534e}
+html.light .preset-field-chip:hover{background:#f2f1ef;color:#1c1917}
+html.light .preset-field-chip.is-time{color:#1d4ed8;border-color:#bfdbfe}
+html.light .preset-field-chip.is-plot{color:#6d28d9;border-color:#ddd6fe}
+html.light .preset-field-chip.is-size{color:#0369a1;border-color:#bae6fd}
+html.light .preset-field-chip.is-light{color:#c2410c;border-color:#fed7aa}
+html.light .preset-field-chip.is-spoken{color:#15803d;border-color:#bbf7d0}
+html.light .preset-field-chip.is-sound{color:#be185d;border-color:#fbcfe8}
+html.light .preset-field-mark.is-time{background:rgba(59,130,246,.13);color:#1d4ed8}
+html.light .preset-field-mark.is-plot{background:rgba(139,92,246,.13);color:#6d28d9}
+html.light .preset-field-mark.is-size{background:rgba(14,165,233,.13);color:#0369a1}
+html.light .preset-field-mark.is-light{background:rgba(249,115,22,.13);color:#c2410c}
+html.light .preset-field-mark.is-spoken{background:rgba(34,197,94,.13);color:#15803d}
+html.light .preset-field-mark.is-sound{background:rgba(236,72,153,.13);color:#be185d}
+
+/* ==========================================================================
+   模型管理（r858）—— 登记表编辑器
+   三类：音频规格（按上游模型）/ 视频规格（全局）/ 摄像机库（四组）。
+   深色为主，末尾统一给 html.light 覆盖（与设置面板其它组件同规矩）。
+   ========================================================================== */
+.spec-tabs{margin:0 0 16px}
+.spec-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:14px}
+/* r865：手输上游名折叠在 <details> 里（已接入的模型走下拉选择，手输是后备路径）。 */
+.spec-manual{margin:-4px 0 14px;border:1px dashed #333131;border-radius:10px;padding:10px 12px}
+.spec-manual>summary{cursor:pointer;font-size:12px;color:#8f8a8a;list-style:none;user-select:none}
+.spec-manual>summary::-webkit-details-marker{display:none}
+.spec-manual>summary::before{content:'▸ ';display:inline-block;transition:transform .15s}
+.spec-manual[open]>summary::before{transform:rotate(90deg)}
+.spec-manual>summary:hover{color:#c9c5c4}
+.spec-manual[open]>summary{margin-bottom:10px}
+.spec-bar--manual{margin-bottom:6px}
+.spec-select{height:34px;min-width:200px;box-sizing:border-box;border:1px solid rgba(255,255,255,.14);border-radius:8px;background:#1f1f1f;color:#f6f6f6;font-size:12.5px;font-family:inherit;padding:0 28px 0 10px}
+.spec-select:focus{outline:none;border-color:var(--brand-2,#4c9dff);box-shadow:0 0 0 3px rgba(76,157,255,.16)}
+.spec-btn{height:30px;padding:0 12px;border:1px solid rgba(255,255,255,.14);border-radius:8px;background:#242424;color:#e7e5e4;font-size:12px;font-family:inherit;cursor:pointer;transition:background-color .15s,border-color .15s,color .15s}
+.spec-btn:hover{background:rgba(255,255,255,.08)}
+.spec-btn:disabled{opacity:.45;cursor:not-allowed}
+.spec-btn--danger{color:#f0a8a8;border-color:rgba(240,168,168,.28)}
+.spec-btn--danger:hover{background:rgba(240,168,168,.12)}
+.spec-btn--tiny{height:24px;padding:0 8px;font-size:11px;border-radius:6px}
+.spec-btn--wide{width:100%;height:34px;margin-top:10px;border-style:dashed}
+.spec-input{height:30px;box-sizing:border-box;border:1px solid rgba(255,255,255,.12);border-radius:7px;background:#1c1c1c;color:#f6f6f6;font-size:12px;font-family:'DM Mono',monospace;padding:0 9px;min-width:0}
+.spec-input::placeholder{color:#6f6a68}
+.spec-input:focus{outline:none;border-color:var(--brand-2,#4c9dff);box-shadow:0 0 0 3px rgba(76,157,255,.14)}
+.spec-input--label{flex:1 1 150px;font-family:inherit}
+.spec-input--key{flex:1 1 170px}
+.spec-input--value{flex:0 1 110px}
+.spec-input--olabel{flex:1 1 130px;font-family:inherit}
+.spec-input--new{flex:0 1 190px;font-family:inherit}
+.spec-rows{display:flex;flex-direction:column;gap:10px}
+.spec-row{border:1px solid #333131;border-radius:10px;background:#1b1b1b;padding:11px 12px}
+.spec-row-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.spec-options{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:9px;padding-top:9px;border-top:1px dashed #333131}
+.spec-option{display:flex;align-items:center;gap:6px}
+.spec-default{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#8f8a8a;white-space:nowrap;cursor:pointer}
+.spec-default input{accent-color:var(--brand-2,#4c9dff);margin:0}
+.spec-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+.spec-block{display:flex;flex-direction:column;margin:0}
+.spec-textarea{width:100%;box-sizing:border-box;border:1px solid rgba(255,255,255,.12);border-radius:8px;background:#1c1c1c;color:#f6f6f6;font-size:12px;font-family:'DM Mono',monospace;line-height:1.6;padding:9px;resize:vertical;min-height:60px}
+.spec-textarea::placeholder{color:#6f6a68}
+.spec-textarea:focus{outline:none;border-color:var(--brand-2,#4c9dff);box-shadow:0 0 0 3px rgba(76,157,255,.14)}
+.spec-cam-list{display:flex;flex-direction:column;gap:10px;margin-top:12px}
+.spec-cam-item{border:1px solid #333131;border-radius:10px;background:#1b1b1b;padding:11px 12px}
+.spec-cam-item .spec-textarea{margin-top:9px}
+.spec-row code,.spec-desc code,.spec-block code{background:rgba(255,255,255,.08);border-radius:4px;padding:1px 5px;font-size:11px}
+
+html.light .spec-select,
+html.light .spec-input,
+html.light .spec-textarea{background:#ffffff;border-color:#d6d3d1;color:#0c0a09}
+html.light .spec-select:focus,
+html.light .spec-input:focus,
+html.light .spec-textarea:focus{border-color:var(--brand-2,#2563eb);box-shadow:0 0 0 3px rgba(37,99,235,.14)}
+html.light .spec-input::placeholder,
+html.light .spec-textarea::placeholder{color:#a8a29e}
+html.light .spec-btn{background:#f5f5f4;border-color:#e0dedc;color:#44403c}
+html.light .spec-btn:hover{background:#eceae8}
+html.light .spec-btn--danger{color:#b91c1c;border-color:rgba(185,28,28,.24)}
+html.light .spec-btn--danger:hover{background:rgba(185,28,28,.08)}
+html.light .spec-row,
+html.light .spec-cam-item{background:#fafaf9;border-color:#e7e5e4}
+html.light .spec-manual{border-color:#e7e5e4}
+html.light .spec-manual>summary{color:#78716c}
+html.light .spec-manual>summary:hover{color:#44403c}
+html.light .spec-options{border-top-color:#e7e5e4}
+html.light .spec-default{color:#78716c}
+html.light .spec-row code,
+html.light .spec-desc code,
+html.light .spec-block code{background:#f0efee;color:#44403c}
+
+
+/* ================= 模型定价（r884） ================= */
+.pricing-toolbar{display:flex;align-items:center;gap:12px;margin:0 0 14px;flex-wrap:wrap}
+.pricing-filters{flex:0 0 auto}
+.pricing-search{display:flex;align-items:center;gap:7px;flex:1 1 auto;min-width:0;height:34px;padding:0 11px;border:1px solid #383636;border-radius:9px;background:#1b1b1b;color:#8a949e}
+.pricing-search input{flex:1;min-width:0;border:0;outline:0;background:transparent;color:#e7e5e4;font-size:12px}
+.pricing-list{display:flex;flex-direction:column;gap:10px}
+.pricing-card{padding:13px 15px;border:1px solid #343232;border-radius:12px;background:#1c1c1c;transition:border-color .16s,background .16s}
+.pricing-card[hidden]{display:none}
+.pricing-card.is-dirty{border-color:#8a7a4a}
+.pricing-card-head{display:flex;align-items:baseline;gap:10px;justify-content:flex-start}
+.pricing-card-title{min-width:0}
+.pricing-card-title strong{display:block;font-size:13px;color:#e9e6e6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pricing-card-title span{display:block;margin-top:3px;font:10px 'DM Mono',monospace;color:#77828c;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* ★ r889：头部改为 flex-start + 这里的 margin-left:auto —— 这样「标题(+未启用徽标) 左、摘要与
+   删除按钮右」是**确定**的；以前用 space-between，加入删除按钮后四段会被均匀摊开、很难看。 */
+.pricing-card-summary{flex:0 0 auto;margin-left:auto;font:11px 'DM Mono',monospace;color:#a8c7fa;white-space:nowrap}
+/* ★★★ r889（用户需求）：定价卡的删除按钮 —— 上游渠道停用后，卡片要能删掉，不然一直占位置。 */
+.pricing-card-del{flex:0 0 auto;align-self:center;width:24px;height:24px;border-radius:6px;background:transparent;color:#8f8a8a;display:grid;place-items:center;transition:background .16s,color .16s}
+.pricing-card-del:hover{background:rgba(226,75,74,.16);color:#f09595}
+html.light .pricing-card-del{color:#78716c}
+html.light .pricing-card-del:hover{background:#f0d9d6;color:#b3261e}
+.pricing-card-summary.is-unpriced{color:#8a8f96}
+.pricing-card-body{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
+.pricing-field{display:flex;flex-direction:column;gap:5px;flex:1 1 150px;min-width:130px}
+.pricing-field>span{font-size:11px;color:#9aa5ae}
+.pricing-field input[type=number],.pricing-field select,.pricing-field input[type=text]{width:100%;height:32px;padding:0 9px;border:1px solid #3c3a3a;border-radius:8px;background:#252424;color:#e2e1e1;font-size:12px}
+.pricing-field input:focus,.pricing-field select:focus{border-color:#5b6b7d;outline:0}
+.pricing-field-note{flex:1 1 100%}
+.pricing-switch{display:flex;align-items:center;gap:8px;flex:1 1 100%;font-size:11px;color:#9aa5ae}
+.pricing-switch input{accent-color:#a8c7fa}
+.pricing-empty{padding:30px;text-align:center;color:#879397;border:1px dashed #3e3d3d;border-radius:12px;font-size:12px}
+.pricing-empty[hidden]{display:none}
+/* ★ r888：定价卡上的「未启用」徽标 —— 让管理员一眼分清「在跑的模型」和「占位的模型」，
+   配合「已启用」范围页签使用。 */
+.pricing-card-badge{flex:0 0 auto;padding:2px 7px;border-radius:6px;font:9px 'DM Mono',monospace;letter-spacing:.4px;white-space:nowrap}
+.pricing-card-badge.is-off{background:rgba(224,139,132,.14);color:#e08b84}
+html.light .pricing-card-badge.is-off{background:rgba(163,45,45,.1);color:#a32d2d}
+.settings-add-btn.is-dirty{box-shadow:0 0 0 2px rgba(168,199,250,.4)}
+
+/* 浅色主题（成对覆盖 —— 深色里写过的每个颜色这里都要有一份，本项目反复踩过遗漏） */
+html.light .pricing-search{border-color:#e7e5e4;background:#ffffff;color:#78716c}
+html.light .pricing-search input{color:#0c0a09}
+html.light .pricing-card{border-color:#e7e5e4;background:#ffffff}
+html.light .pricing-card.is-dirty{border-color:#d8b56a;background:#fffdf6}
+html.light .pricing-card-title strong{color:#0c0a09}
+html.light .pricing-card-title span{color:#78716c}
+html.light .pricing-card-summary{color:#2563eb}
+html.light .pricing-card-summary.is-unpriced{color:#78716c}
+html.light .pricing-field>span{color:#44403c}
+html.light .pricing-field input[type=number],html.light .pricing-field select,html.light .pricing-field input[type=text]{border-color:#e7e5e4;background:#fafaf9;color:#0c0a09}
+html.light .pricing-switch{color:#44403c}
+html.light .pricing-empty{border-color:#d6d3d1;color:#78716c}
+html.light .settings-add-btn.is-dirty{box-shadow:0 0 0 2px rgba(37,99,235,.28)}
+
+.settings-previs-model{display:flex;align-items:center;gap:12px;padding:15px 18px;margin:8px 0;border:1px solid var(--settings-border,#ffffff18);background:var(--settings-card-bg,#ffffff05);border-radius:12px;cursor:pointer}
+.settings-previs-model input{width:16px;height:16px;accent-color:#13b9d5}
+.settings-previs-model span{display:grid;gap:6px;min-width:0}
+.settings-previs-model strong{font-size:13px;overflow-wrap:anywhere}
+.settings-previs-model small{font-size:11px;color:var(--settings-muted,#8995a4)}
+[data-previs-model-save]{margin-top:20px}
+html.light .settings-previs-model{background:#fff;border-color:#e7e5e4}
+html.light .settings-previs-model small{color:#78716c}
+
+/* Launch animation preferences */
+.startup-settings-enable{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:18px 20px;border:1px solid #3a3838;border-radius:12px;background:#232222}
+.startup-settings-enable .settings-desc{margin-bottom:0}.startup-settings-toggle{position:relative;width:38px;height:23px;flex-shrink:0;cursor:pointer}
+.startup-settings-toggle input{position:absolute;inset:0;width:100%;height:100%;opacity:0;margin:0;cursor:pointer;z-index:1}.startup-settings-toggle>span{display:block;height:23px;border-radius:20px;background:#4a4646;transition:background .2s}.startup-settings-toggle>span:after{content:'';position:absolute;left:3px;top:3px;width:17px;height:17px;border-radius:50%;background:#fff;transition:transform .2s}.startup-settings-toggle input:checked+span{background:var(--brand-2,#4c9dff)}.startup-settings-toggle input:checked+span:after{transform:translateX(15px)}.startup-settings-toggle input:focus-visible+span{outline:2px solid #9bcaff;outline-offset:4px}
+.startup-settings-options{display:grid;gap:14px}.startup-settings-card{display:flex;align-items:center;gap:18px;padding:18px;border:1px solid #3a3838;border-radius:12px;background:#222121}.startup-settings-card.is-selected{border-color:var(--brand-2,#4c9dff);background:#202631}.startup-settings-card .settings-add-btn{flex-shrink:0}
+.startup-settings-choice{display:flex;align-items:center;gap:15px;flex:1;min-width:0;cursor:pointer}.startup-settings-choice>input{width:15px;height:15px;flex-shrink:0;accent-color:var(--brand-2,#4c9dff)}
+.startup-settings-thumb{position:relative;display:grid;place-items:center;flex-shrink:0;width:90px;height:84px;overflow:hidden;border:1px solid #344055;border-radius:9px;background:radial-gradient(ellipse,#23364b,#10151d)}.startup-settings-thumb>span{display:block;width:34px;height:32px;background:linear-gradient(180deg,#c4efff 0 46%,#75bffd 47%,#4780e8 100%);clip-path:polygon(50% 0%,100% 100%,0% 100%)}.startup-settings-thumb.is-flip:after{content:'';position:absolute;right:9px;bottom:12px;width:39px;height:26px;border:1px solid #aabfe099;border-radius:3px;background:linear-gradient(120deg,#1a2738,#6283a933);box-shadow:0 0 15px #789bf52a}
+.startup-settings-copy{display:grid;gap:7px;min-width:0}.startup-settings-copy strong{font-size:13px;line-height:1.5;color:#ece9e9}.startup-settings-copy small{width:fit-content;padding:2px 7px;border-radius:4px;background:#8daff517;color:#a9bfe1;font-size:10px}.startup-settings-copy>span{font-size:12px;line-height:1.7;color:#9c9797}
+html.light .startup-settings-enable,html.light .startup-settings-card{background:#fff;border-color:#e7e5e4}html.light .startup-settings-card.is-selected{background:#f0f6ff;border-color:var(--brand-2,#4c9dff)}html.light .startup-settings-copy strong{color:#292524}html.light .startup-settings-copy>span{color:#78716c}html.light .startup-settings-copy small{color:#47628f;background:#e6eefc}
+@media(max-width:850px){.startup-settings-card{align-items:flex-start;flex-wrap:wrap}.startup-settings-card>.settings-add-btn{margin-left:37px}.startup-settings-thumb{width:66px;height:72px}}
+
+
+/* About CanvasFlow */
+.about-page {
+  --about-card: #222222;
+  --about-line: #363636;
+  --about-text: #f3f3f3;
+  --about-muted: #a3a3a3;
+  --about-hover: #ffffff06;
+  max-width: 850px;
+  margin: 0 auto;
+  color: var(--about-text);
+}
+.about-page .settings-pane-head { margin-bottom: 26px; }
+.about-card {
+  border: 1px solid var(--about-line);
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--about-card);
+}
+.about-product {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 30px;
+}
+.about-identity { display: flex; align-items: center; gap: 18px; min-width: 0; }
+.about-logo {
+  display: grid;
+  place-items: center;
+  flex: 0 0 60px;
+  width: 60px;
+  height: 60px;
+  border: 1px solid var(--about-line);
+  border-radius: 16px;
+  background: linear-gradient(145deg, #ffffff0c, #ffffff02);
+}
+.about-logo .brand-orb { width: 34px; height: 36px; flex: none; }
+.about-identity h3 { margin: 0; font-size: 25px; font-weight: 650; letter-spacing: -.6px; line-height: 1.3; }
+.about-version { margin: 7px 0 0; color: var(--about-muted); font-size: 12px; line-height: 1.5; }
+.about-link {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+  padding: 10px 15px;
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: filter .15s;
+}
+.about-link-primary { background: var(--brand-2, #4c9dff); color: var(--brand-2-fg, #08131f); }
+.about-link:hover { filter: brightness(1.08); }
+.about-intro { padding: 25px 30px; border-top: 1px solid var(--about-line); }
+.about-tagline { margin: 0 0 10px; font-size: 19px; font-weight: 550; letter-spacing: .3px; }
+.about-description { margin: 0; color: var(--about-muted); font-size: 13px; line-height: 1.9; max-width: 580px; }
+.about-details { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-top: 18px; color: var(--about-muted); font-size: 11px; line-height: 1.7; }
+.about-details span { display: inline-flex; align-items: center; gap: 7px; }
+.about-details span::before { content: ''; width: 4px; height: 4px; border-radius: 50%; background: #7b9eac; }
+.about-link:focus-visible { outline: 2px solid var(--brand-2, #4c9dff); outline-offset: 3px; }
+html.light .about-page {
+  --about-card: #ffffff;
+  --about-line: #e4e4e7;
+  --about-text: #202024;
+  --about-muted: #68686e;
+  --about-hover: #f5f6f8;
+}
+html.light .about-logo { background: #f6f7f9; }
+html.light .about-link-primary { background: var(--brand-2, #2563eb); color: var(--brand-2-fg, #ffffff); }
+@media (max-width: 850px) {
+  .about-product { flex-wrap: wrap; gap: 18px; padding: 22px; }
+  .about-intro { padding: 22px; }
+}
+@media (max-width: 600px) {
+  .about-identity h3 { font-size: 21px; }
+}
+
+.about-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; padding: 18px 30px; border-top: 1px solid var(--about-line); }
+.about-link-secondary { border: 1px solid var(--about-line); background: transparent; color: var(--about-text); cursor: pointer; font-weight: 500; }
+.about-link-secondary:hover { background: var(--about-hover); }
+.about-actions-note { color: var(--about-muted); font-size: 12px; }
+.about-update-control { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 7px; }
+.about-update-button { min-width: 110px; }
+.about-update-button.about-link-primary { border-color: transparent; background: var(--brand-2, #4c9dff); color: var(--brand-2-fg, #08131f); }
+html.light .about-update-button.about-link-primary { background: var(--brand-2, #2563eb); color: var(--brand-2-fg, #ffffff); }
+.about-update-button:disabled { opacity: .7; cursor: progress; }
+.about-update-button [data-update-icon] { display: inline-block; font-size: 17px; line-height: 1; }
+.about-update-button.is-busy [data-update-icon] { animation: about-star-turn 1.1s linear infinite; }
+.about-update-status { color: var(--about-muted); font-size: 11px; line-height: 1.5; max-width: 290px; text-align: right; overflow-wrap: anywhere; }
+.about-update-status.is-error { color: #e98585; }
+html.light .about-update-status.is-error { color: #b42336; }
+.about-support { display: flex; align-items: center; gap: 13px; padding: 20px 24px; background: #ffb74b0c; border-top: 1px solid var(--about-line); }
+.about-star { display: inline-block; flex-shrink: 0; font-size: 26px; line-height: 1; color: #f5a623; animation: about-star-turn 10s linear infinite; }
+@keyframes about-star-turn { to { transform: rotate(360deg); } }
+.about-support p { flex: 1; margin: 0; font-size: 12px; line-height: 1.7; }
+.about-repo-status { color: var(--about-muted); font-size: 11px; white-space: nowrap; }
+.about-dismiss { display: grid; place-items: center; flex-shrink: 0; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--about-muted); font-size: 20px; cursor: pointer; }
+.about-dismiss:hover { background: var(--about-hover); color: var(--about-text); }
+.about-dismiss:focus-visible { outline: 2px solid var(--brand-2, #4c9dff); outline-offset: 2px; }
+.about-updates-dialog {
+  width: min(620px, calc(100vw - 40px));
+  max-height: min(750px, calc(100dvh - 60px));
+  padding: 0;
+  border: 1px solid var(--about-line);
+  border-radius: 20px;
+  background: var(--about-card);
+  color: var(--about-text);
+  box-shadow: 0 30px 90px #0006;
+}
+.about-updates-dialog[open] { display: flex; flex-direction: column; }
+.about-updates-dialog::backdrop { background: #0008; backdrop-filter: blur(3px); }
+.about-updates-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 26px 30px 20px; flex-shrink: 0; }
+.about-updates-heading h3 { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 20px; font-weight: 600; }
+.about-updates-heading h3 span { font-size: 26px; }
+.about-updates-scroll { overflow-y: auto; min-height: 0; padding: 6px 30px 24px; scrollbar-width: thin; }
+.about-release + .about-release { margin-top: 28px; padding-top: 24px; border-top: 1px solid var(--about-line); }
+.about-release header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.about-release h4 { margin: 0; font-size: 16px; font-weight: 600; }
+.about-release-status { font-size: 11px; color: var(--about-muted); }
+.about-release ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.about-release li { display: flex; align-items: flex-start; gap: 12px; font-size: 13px; line-height: 1.8; }
+.about-change-type { flex-shrink: 0; border-radius: 5px; background: #8882; color: var(--about-muted); padding: 1px 7px; font-size: 11px; margin-top: 2px; }
+.about-updates-footer { display: flex; justify-content: flex-end; padding: 18px 30px 24px; border-top: 1px solid var(--about-line); flex-shrink: 0; }
+.about-updates-footer button { cursor: pointer; min-width: 90px; border: 0; }
+html.light .about-support { background: #fff5e8; }
+@media (max-width: 850px) {
+  .about-actions { padding: 18px 22px; }
+  .about-support { flex-wrap: wrap; gap: 10px; padding: 18px 22px; }
+  .about-support p { min-width: 150px; }
+}
+@media (prefers-reduced-motion: reduce) { .about-star { animation: none; } }

@@ -1,0 +1,13 @@
+/* Keep the scoped landing-page brand aligned with the canvas brand animation. */
+.xl-head .xl-brand .xl-brand-name,.aurora-text{background:linear-gradient(90deg,#fafaf9 0%,#fafaf9 32%,#5fe0f0 50%,#a8a29e 62%,#fafaf9 78%,#fafaf9 100%);background-size:220% 100%;background-clip:text;-webkit-background-clip:text;color:transparent;-webkit-text-fill-color:transparent;animation:cfBrandAurora 7s ease-in-out infinite}
+@keyframes cfBrandAurora{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
+/* The legal backdrop is at 250; support must remain below its controls. */
+.xl-fab{z-index:100!important}
+#cf-legal-root .legal-footer button{background:#f2f7fb;color:#111827;border:1px solid #e2e8f0}
+@media(prefers-reduced-motion:reduce){.xl-head .xl-brand .xl-brand-name,.aurora-text{animation:none;background-position:50% 50%}}
+
+/* CanvasFlow: approved option 05, full spectrum prism, 7 seconds. Logo unchanged. */
+:is(.xl-head .xl-brand .xl-brand-name,.aurora-text,.cf-brand-prism){background-image:linear-gradient(110deg,#99efff 0%,#80bdff 18%,#aa88ff 35%,#f389cf 51%,#ffd29a 68%,#a9f1cc 84%,#99efff 100%);background-size:240% 100%;background-position:100% 50%;background-clip:text;-webkit-background-clip:text;color:transparent;-webkit-text-fill-color:transparent;animation:canvasflow-brand-prism 7s ease-in-out infinite}
+html.light :is(.xl-head .xl-brand .xl-brand-name,.aurora-text,.cf-brand-prism),html[data-theme="light"] :is(.xl-head .xl-brand .xl-brand-name,.aurora-text,.cf-brand-prism),html[data-na-resolved-theme="light"] :is(.xl-head .xl-brand .xl-brand-name,.aurora-text,.cf-brand-prism),body.light :is(.xl-head .xl-brand .xl-brand-name,.aurora-text,.cf-brand-prism){background-image:linear-gradient(110deg,#167d98 0%,#2d71c1 18%,#7945bf 35%,#b83d8d 51%,#a56c22 68%,#218167 84%,#167d98 100%)}
+@keyframes canvasflow-brand-prism{0%,100%{background-position:100% 50%}50%{background-position:0% 50%}}
+@media(prefers-reduced-motion:reduce){:is(.xl-head .xl-brand .xl-brand-name,.aurora-text,.cf-brand-prism){animation:none;background-position:48% 50%}}

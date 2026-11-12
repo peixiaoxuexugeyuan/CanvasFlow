@@ -1,0 +1,1 @@
+import{Li as e}from"./vendor-element-plus-DTNqrLzO.js";e(!1),e(null);function t(e=null){let t=e?.id??e?.模型id??``,n=`${window.location.origin}/api/pricing`;return t?`${n}?model=${encodeURIComponent(t)}`:n}function n(e=null){window.open(t(e),`_blank`,`noopener`)}export{n as t};

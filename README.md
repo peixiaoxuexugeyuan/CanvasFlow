@@ -20,7 +20,7 @@
   <a href="#community">社区交流</a>
 </p>
 
-<p align="center"><sub>当前先发布项目介绍，源码与配套文档将随后上传。页面展示开发版工作流，新功能的桌面发行进度以对应版本发布说明为准。</sub></p>
+<p align="center"><sub>本仓库公开 CanvasFlow 源码与配套文档，采用非商用授权。页面展示开发版工作流，新功能的桌面发行进度以对应版本发布说明为准。</sub></p>
 
 <p align="center">
   <img src="docs/images/canvasflow-workbench.png" alt="CanvasFlow 创作画布：空白无限画布界面" width="100%">
@@ -109,7 +109,7 @@
 
 ## 本地运行与开发
 
-> 源码与配套文档正在整理上传。以下说明适用于取得完整源码后的本地开发环境。
+> 以下说明适用于从本仓库取得完整源码后的本地开发环境。运行组件需按对应文档单独准备。
 
 <details>
 <summary><strong>展开 Windows 源码启动与模型配置说明</strong></summary>
@@ -139,7 +139,7 @@ python launch_local.py --port 5181 --no-open
 
 **感谢 Blender 基金会和开源社区。** CanvasFlow 通过本地 Blender 连接，让创作者可以在 3D 预演工作流中使用 Blender 建模。[Blender 官方源码仓库](https://github.com/blender/blender)
 
-也感谢 Three.js 和 Mediabunny 的贡献者。它们分别支持 CanvasFlow 的 3D 场景显示和预演视频封装。第三方组件的版本及许可证将在源码上传时一并提供。
+也感谢 Three.js 和 Mediabunny 的贡献者。它们分别支持 CanvasFlow 的 3D 场景显示和预演视频封装。第三方组件的版本及许可证见 [第三方组件声明](THIRD-PARTY-NOTICES.md)。
 
 <a id="community"></a>
 
@@ -165,10 +165,10 @@ python launch_local.py --port 5181 --no-open
 
 第三方代码和组件继续遵循各自的许可证及版权声明，本声明不改变其原有授权条款，也不限制第三方许可证已经授予的权利。
 
-授权咨询：[3161751283@qq.com](mailto:3161751283@qq.com)。
+完整条款见 [LICENSE](LICENSE)。授权咨询：[3161751283@qq.com](mailto:3161751283@qq.com)。
 
 ## 欢迎一起改进
 
-欢迎通过 Issue 分享需求和问题，也欢迎在源码上传后通过 Pull Request 贡献供应商适配、剪辑功能、文档或示例项目。
+欢迎通过 Issue 分享需求和问题，也欢迎通过 Pull Request 贡献供应商适配、剪辑功能、文档或示例项目。
 
 <p align="center"><strong>如果 CanvasFlow 帮到了你，请在 GitHub 点个 Star，这对我们意义重大。</strong></p>

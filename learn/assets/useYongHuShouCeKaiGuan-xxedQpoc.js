@@ -1,0 +1,1 @@
+import{Li as e}from"./vendor-element-plus-DTNqrLzO.js";import{Mr as t,Nr as n}from"./router-uga91Xdy.js";function r(){let r=n(),i=e(r?r.是否开启用户手册===!0:!1);return t().then(e=>{i.value=e.是否开启用户手册===!0}).catch(()=>{}),i}export{r as t};

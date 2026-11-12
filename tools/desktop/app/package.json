@@ -1,0 +1,9 @@
+{
+  "name": "canvasflow-desktop",
+  "productName": "CanvasFlow",
+  "version": "1.0.0",
+  "description": "CanvasFlow 本地创作工作台",
+  "main": "main.cjs",
+  "author": "CanvasFlow",
+  "license": "UNLICENSED"
+}

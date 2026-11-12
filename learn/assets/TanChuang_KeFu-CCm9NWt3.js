@@ -1,0 +1,1 @@
+import{ot as e}from"./router-uga91Xdy.js";export{e as default};

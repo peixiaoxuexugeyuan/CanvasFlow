@@ -1,0 +1,30 @@
+{
+  "ffmpeg": {
+    "version": "9.0.2-essentials_build",
+    "checkedAt": "2026-11-09",
+    "checksumSource": "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip.sha256",
+    "source": "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+    "sha256": "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba"
+  },
+  "playwright": {
+    "version": "1.61.1",
+    "chromiumHeadlessBuild": 1228
+  },
+  "openfilm": {
+    "version": "0.3.2",
+    "source": "https://registry.npmjs.org/openfilm/-/openfilm-0.3.2.tgz",
+    "desktopCommit": "758b1a3888819bf191db191f690c4ca2fcb292af",
+    "desktopSource": "https://github.com/openfilm/openfilm/tree/758b1a3888819bf191db191f690c4ca2fcb292af/apps/desktop"
+  },
+  "node": {
+    "version": "24.19.0",
+    "source": "https://nodejs.org/dist/v24.19.0/",
+    "license": ".runtime/node/LICENSE"
+  },
+  "git": {
+    "version": "2.56.0.windows.4",
+    "origin": "Bundled Git for Windows runtime, copied without modification",
+    "source": "https://github.com/git-for-windows/git/releases/tag/v2.56.0.windows.4",
+    "license": ".runtime/openfilm-git/LICENSE.txt"
+  }
+}

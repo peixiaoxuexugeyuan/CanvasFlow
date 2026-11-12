@@ -1,0 +1,1 @@
+import{Nr as e,ci as t}from"./vendor-element-plus-DTNqrLzO.js";import{t as n}from"./WenBenS2-SBFi5FVw.js";var r={__name:`GongWenS2`,setup(r){return(r,i)=>(t(),e(n,{zhiNengTiBiaoShi:`gongwen`}))}};export{r as default};

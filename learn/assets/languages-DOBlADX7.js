@@ -1,0 +1,1 @@
+function e(e){if(e){switch(e){case`zhCN`:return`zh-CN`;case`zhTW`:return`zh-TW`}try{return Intl.getCanonicalLocales(e)[0]}catch{return}}}export{e as t};

@@ -1,0 +1,1 @@
+var e=`/icons/dianshang.svg`;export{e as t};

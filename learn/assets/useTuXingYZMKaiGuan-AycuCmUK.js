@@ -1,0 +1,1 @@
+import{Li as e}from"./vendor-element-plus-DTNqrLzO.js";import{Mr as t,Nr as n}from"./router-uga91Xdy.js";function r(){let r=n(),i=e(!r||r.登录图形验证码_启用!==!1);return t().then(e=>{i.value=e.登录图形验证码_启用!==!1}).catch(()=>{}),i}export{r as t};

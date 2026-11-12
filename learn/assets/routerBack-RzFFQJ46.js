@@ -1,0 +1,1 @@
+function e(e,t=`/home`){typeof window<`u`&&window.history&&window.history.state&&window.history.state.back?e.back():e.push(t)}export{e as t};

@@ -1,0 +1,1 @@
+var e=[`dbto`,`ck`];function t(){return e.includes(`production`)}var n=[`Telegram群`,`WhatsApp群`];function r(e){return n.includes(e)}export{r as n,t};
