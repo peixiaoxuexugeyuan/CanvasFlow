@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="460" viewBox="0 0 1280 460" role="img" aria-labelledby="title desc">
+<title id="title">CanvasFlow 无限画布</title><desc id="desc">让灵感，开始流动。将分镜、生成、预演与剪辑连接在同一个创作空间。</desc>
+<defs>
+<linearGradient id="bg" x2="1" y2="1"><stop stop-color="#121821"/><stop offset=".55" stop-color="#131422"/><stop offset="1" stop-color="#1f1630"/></linearGradient>
+<linearGradient id="brand"><stop stop-color="#9ee5ff"/><stop offset=".42" stop-color="#93a5ff"/><stop offset=".75" stop-color="#d99aef"/><stop offset="1" stop-color="#f4bdb4"/></linearGradient>
+<linearGradient id="line"><stop stop-color="#7ecbf6"/><stop offset="1" stop-color="#ba9bed"/></linearGradient>
+<radialGradient id="glow"><stop stop-color="#8067db" stop-opacity=".24"/><stop offset="1" stop-color="#8067db" stop-opacity="0"/></radialGradient>
+<pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r=".8" fill="#8c98b8" opacity=".16"/></pattern>
+</defs>
+<rect width="1280" height="460" rx="24" fill="url(#bg)"/><rect width="1280" height="460" rx="24" fill="url(#dots)"/>
+<ellipse cx="1030" cy="235" rx="370" ry="300" fill="url(#glow)"/>
+<g font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, sans-serif">
+<g transform="translate(52 39) scale(.68)" fill="#f9fbff"><path d="M32 8 56 52H8Z"/><path d="M20 52 44 20l-6-4L14 46Z" opacity=".55"/></g>
+<text x="102" y="69" fill="#b9c5d9" font-size="15" letter-spacing="2.6">CREATE · PREVISUALIZE · EDIT</text>
+<text x="55" y="169" fill="url(#brand)" font-size="65" font-weight="750" letter-spacing="-2">CanvasFlow</text>
+<text x="58" y="222" fill="#f1f4fd" font-size="30" font-weight="600" letter-spacing="5">无限画布</text>
+<text x="58" y="281" fill="#e3e8f5" font-size="26">让灵感，开始流动。</text>
+<text x="58" y="320" fill="#a2aec4" font-size="17">将分镜、生成、预演与剪辑连接在同一个创作空间。</text>
+<rect x="58" y="362" width="118" height="33" rx="16.5" fill="#a3bdff" fill-opacity=".08" stroke="#343d56"/><text x="117" y="384" fill="#b6c9f5" font-size="13" text-anchor="middle">本地创作</text>
+<rect x="188" y="362" width="118" height="33" rx="16.5" fill="#a3bdff" fill-opacity=".08" stroke="#343d56"/><text x="247" y="384" fill="#b6c9f5" font-size="13" text-anchor="middle">模型自由接入</text>
+<rect x="318" y="362" width="118" height="33" rx="16.5" fill="#a3bdff" fill-opacity=".08" stroke="#343d56"/><text x="377" y="384" fill="#b6c9f5" font-size="13" text-anchor="middle">完整视频工作流</text>
+<g fill="none" stroke="url(#line)" stroke-width="2" opacity=".8">
+<path d="M846 151C897 151 885 234 932 234"/><path d="M846 330C897 330 885 254 932 254"/>
+</g>
+<rect x="658" y="92" width="188" height="118" rx="17" fill="#191f2c" stroke="#44516e"/>
+<text x="680" y="123" fill="#a7cfff" font-size="12" letter-spacing="1.4">01 / 创作画布</text>
+<text x="680" y="157" fill="#f2f5ff" font-size="20" font-weight="600">把灵感连接起来</text>
+<text x="680" y="185" fill="#889bb8" font-size="13">分镜 · 参考 · AI 生成</text>
+<rect x="658" y="271" width="188" height="118" rx="17" fill="#1e1d2e" stroke="#51476b"/>
+<text x="680" y="302" fill="#c7b8fa" font-size="12" letter-spacing="1.4">02 / 3D 预演台</text>
+<text x="680" y="336" fill="#f2f5ff" font-size="20" font-weight="600">先把镜头演一遍</text>
+<text x="680" y="364" fill="#9c93b6" font-size="13">场景 · 机位 · 动画</text>
+<rect x="932" y="168" width="278" height="164" rx="19" fill="#202033" stroke="#656080"/>
+<text x="956" y="201" fill="#d3c5ff" font-size="12" letter-spacing="1.4">03 / 成片工作台</text>
+<text x="956" y="240" fill="#f5f3ff" font-size="24" font-weight="600">让创意成为影片</text>
+<text x="956" y="270" fill="#a5a3c0" font-size="14">时间轴剪辑 · AI 助手 · 导出</text>
+<rect x="956" y="293" width="62" height="10" rx="4" fill="#638abf"/><rect x="1023" y="293" width="102" height="10" rx="4" fill="#8377b5"/><rect x="1130" y="293" width="55" height="10" rx="4" fill="#a882b2"/>
+<circle cx="846" cy="151" r="4" fill="#9ebbf3"/><circle cx="846" cy="330" r="4" fill="#bfa8ed"/><circle cx="932" cy="244" r="5" fill="#c2b6fc"/>
+</g></svg>
