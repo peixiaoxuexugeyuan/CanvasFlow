@@ -23,8 +23,8 @@
 <p align="center"><sub>当前先发布项目介绍，源码与配套文档将随后上传。页面展示开发版工作流，新功能的桌面发行进度以对应版本发布说明为准。</sub></p>
 
 <p align="center">
-  <img src="docs/images/canvasflow-workbench.png" alt="CanvasFlow 开发版：创作画布与 AI 剪辑助手联动界面" width="100%">
-  <br><sub>CanvasFlow 开发版界面 · 创作画布与 AI 助手</sub>
+  <img src="docs/images/canvasflow-workbench.png" alt="CanvasFlow 创作画布：空白无限画布界面" width="100%">
+  <br><sub>CanvasFlow 创作画布</sub>
 </p>
 
 **CanvasFlow 是一个以无限画布为入口的本地 AI 视频创作工作台。** 从脚本和分镜开始，用节点组织参考素材与生成结果，在 3D 场景中试机位和运镜，再把镜头送进成片工作台剪辑、预览与导出。项目和素材保存在本机，在线模型服务由你选择。
