@@ -3223,7 +3223,7 @@ return TAB_DEFS.filter(tab => !['providers','pricing'].includes(tab.id));
 
   // ---------------------------------------------------------------- 通用设置
 
-  function releaseNotesMarkup(id, version = '1.0.0') {
+  function releaseNotesMarkup(id, version = '1.0.1') {
     return `<dialog class="about-updates-dialog" id="${esc(id)}" aria-labelledby="${esc(id)}Title">
         <header class="about-updates-heading"><h3 id="${esc(id)}Title"><span aria-hidden="true">✧</span> 近期更新</h3>
           <button type="button" class="about-dismiss" aria-label="关闭近期更新" data-updates-close>×</button>
@@ -3358,7 +3358,7 @@ return TAB_DEFS.filter(tab => !['providers','pricing'].includes(tab.id));
         <div class="about-product">
           <div class="about-identity">
             <span class="about-logo" aria-hidden="true"><span class="brand-orb"></span></span>
-            <div><h3 class="cf-brand-prism">CanvasFlow</h3><p class="about-version" data-desktop-version>版本 1.0.0 · 浏览器预览</p></div>
+            <div><h3 class="cf-brand-prism">CanvasFlow</h3><p class="about-version" data-desktop-version>版本 1.0.1 · 浏览器预览</p></div>
           </div>
           <a class="about-link about-link-primary" href="https://video.zzzapi.xyz/" target="_blank" rel="noopener noreferrer">官方网站 <span aria-hidden="true">↗</span></a>
         </div>
