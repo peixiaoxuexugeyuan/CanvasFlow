@@ -10,6 +10,8 @@ if (!input.startsWith(root+path.sep) || !output.startsWith(root+path.sep)) throw
 if (fs.existsSync(path.join(input,'desktop-config.json'))) throw Error('Developer configuration cannot be distributed');
 if (fs.existsSync(output) && fs.readdirSync(output).some(file=>/\.(?:exe|zip|7z)$/.test(file))) throw Error('Choose a fresh release output directory; an old NSIS archive must never be reused');
 if (!fs.existsSync(path.join(input,'resources/app.asar'))) throw Error('Packaged desktop application is missing');
+const built = JSON.parse(fs.readFileSync(path.join(input, 'canvasflow-build.json'), 'utf8'));
+if (built.version !== version || !Number.isSafeInteger(built.buildNumber) || built.buildNumber <= 0) throw Error('Rebuild the desktop app with a valid version/build number before packaging');
 const stage=path.join(root,'build-private','package-stage-'+require('node:crypto').randomUUID());
 fs.cpSync(input,stage,{recursive:true,filter:file=>!file.split(path.sep).includes('__pycache__') && !/\.(?:log|pyc)$/.test(file)});
 const installerConfig=require('./windows-installer-config.cjs');
@@ -19,7 +21,7 @@ build({prepackaged:stage,projectDir:path.join(__dirname,'app'),config:{...instal
   electronVersion:require('electron/package.json').version,directories:{output},publish:null}})
   .then(async files=>{
     const installer = path.join(output, `CanvasFlow-${version}-x64-Setup.exe`);
-    const updateManifest = await require('./update-manifest.cjs').writeUpdateManifest(installer, version, output);
+    const updateManifest = await require('./update-manifest.cjs').writeUpdateManifest(installer, version, output, built.buildNumber);
     console.log(JSON.stringify({version, files, updateManifest}));
   })
   .catch(error=>{console.error(error);process.exitCode=1;});

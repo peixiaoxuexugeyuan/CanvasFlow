@@ -633,6 +633,7 @@ return TAB_DEFS.filter(tab => !['providers','pricing'].includes(tab.id));
   };
 
   const ICONS = {
+    github: '<path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 6v-3.9a3.4 3.4 0 0 0-.9-2.6c3-.3 6.2-1.5 6.2-6.8a5.3 5.3 0 0 0-1.4-3.7 5 5 0 0 0-.1-3.7s-1.1-.3-3.8 1.4a13.4 13.4 0 0 0-7 0C5.3.9 4.2 1.3 4.2 1.3A5 5 0 0 0 4.1 5a5.3 5.3 0 0 0-1.4 3.7c0 5.3 3.2 6.5 6.2 6.8a3.4 3.4 0 0 0-.9 2.6V22"/>',
     caret: '<path d="M9 6l6 6-6 6"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
     globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.4 2.7 2.4 15.3 0 18M12 3c-2.4 2.7-2.4 15.3 0 18"/>',
@@ -3231,6 +3232,7 @@ return TAB_DEFS.filter(tab => !['providers','pricing'].includes(tab.id));
           <section class="about-release">
             <header><h4>v${esc(version)}</h4><span class="about-release-status">当前版本</span></header>
             <ul>
+              <li><span class="about-change-type">新增</span><span>桌面应用启动后自动检查更新，发现新版本可选择稍后更新或立即更新，并查看下载进度。</span></li>
               <li><span class="about-change-type">新增</span><span>关闭窗口时可选择收起到系统托盘或直接退出，支持记住选择。</span></li>
               <li><span class="about-change-type">新增</span><span>关于 CanvasFlow 页面与近期更新记录。</span></li>
               <li><span class="about-change-type">新增</span><span>新版本首次启动自动展示近期更新，同一版本不再重复提醒。</span></li>
@@ -3275,13 +3277,14 @@ return TAB_DEFS.filter(tab => !['providers','pricing'].includes(tab.id));
       void showPendingNotes();
     }
     async function showPendingNotes() {
+      let updates;
       try {
         const info = await desktop.getInfo();
         if (!info.releaseNotesPending) return;
         const host = document.createElement('div');
         host.className = 'about-page about-updates-host';
         host.innerHTML = releaseNotesMarkup('startupUpdatesDialog', info.version);
-        const updates = host.querySelector('dialog');
+        updates = host.querySelector('dialog');
         bindReleaseNotesDialog(updates);
         const onKey = event => {
           if (event.key !== 'Escape' || !updates.open) return;
@@ -3292,6 +3295,7 @@ return TAB_DEFS.filter(tab => !['providers','pricing'].includes(tab.id));
         updates.addEventListener('close', () => {
           window.removeEventListener('keydown', onKey, true);
           host.remove();
+          document.documentElement.dataset.canvasflowNoticesReady = 'true';
         }, {once: true});
         document.body.append(host);
         try { updates.showModal(); }
@@ -3300,6 +3304,7 @@ return TAB_DEFS.filter(tab => !['providers','pricing'].includes(tab.id));
         // Record only after the visible modal was successfully opened.
         await desktop.markReleaseNotesShown(info.version);
       } catch (error) { console.warn('无法完成新版本更新提示：', error); }
+      finally { if (!updates?.open) document.documentElement.dataset.canvasflowNoticesReady = 'true'; }
     }
     checkReady();
   }
@@ -3373,7 +3378,7 @@ return TAB_DEFS.filter(tab => !['providers','pricing'].includes(tab.id));
         <div class="about-support">
           <span class="about-star" aria-hidden="true">★</span>
           <p>如果 CanvasFlow 帮到了你，请在 GitHub 点个 Star，这对我们意义重大</p>
-          <span class="about-repo-status">开源仓库筹备中</span>
+          <a class="about-link about-link-secondary about-repo-link" href="https://github.com/peixiaoxuexugeyuan/CanvasFlow" target="_blank" rel="noopener noreferrer">${svgIcon('github', 16)} 去点 Star</a>
           <button type="button" class="about-dismiss" aria-label="关闭支持提示" data-about-dismiss>×</button>
         </div>
       </section>

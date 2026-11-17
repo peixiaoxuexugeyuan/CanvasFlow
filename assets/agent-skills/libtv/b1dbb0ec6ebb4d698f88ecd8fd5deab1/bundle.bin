@@ -1,0 +1,28 @@
+{
+  "templateUuid": "b1dbb0ec6ebb4d698f88ecd8fd5deab1",
+  "name": "中式美学微电影",
+  "version": "1.0.0",
+  "description": "将一句话变成属于你的中式美学",
+  "useScenario": "微电影，短片，中式美学",
+  "inputType": "可以生成视频，三视图，场景图",
+  "outputContent": "将剧本，故事变成中式美学微电影",
+  "ownerName": "韩周佳",
+  "ownerAvatar": "https://liblibai-online.liblib.cloud/web/avatar/avatar3.png",
+  "primarySkillFilePath": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "把想法变成属于你的中式美学",
+      "contentType": "text/markdown",
+      "primary": true
+    }
+  ],
+  "sourceUrl": "https://www.liblib.tv/skill",
+  "capturedAt": "2026-11-14",
+  "examples": [
+    "https://libtv-res.liblib.art/upload-images/4d06129429a5484d8fee9d503f7225bc/30f4a33fa59cfd8d200f3988c314f9a361dccc38.mp4",
+    "https://libtv-res.liblib.art/upload-images/4d06129429a5484d8fee9d503f7225bc/67af2b46640a92e5fb49c9217fe10b2cb6c97b9d.mp4"
+  ],
+  "missingReferences": [],
+  "contentOrigin": "skillFiles"
+}

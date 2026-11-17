@@ -35,6 +35,7 @@ from bounded_http import ThreadingHTTPServer
 from pathlib import Path
 from local_app import LOCAL_ID, LOCAL_CONTEXT, LocalStorage, local_content, local_job, retired_route, installation_id
 from workspace_materials import build_catalog, summary_item, category_list, media_kind as material_media_kind
+from community_skills import CommunitySkills, CommunityError
 from blender_bridge import BlenderBridge, BlenderUnavailable
 from film_workbench import FilmWorkbench, FilmUnavailable
 from urllib.parse import parse_qs, quote, unquote, urlparse
@@ -58,6 +59,7 @@ mimetypes.add_type('image/svg+xml', '.svg')
 mimetypes.add_type('image/webp', '.webp')
 DATA_DIR = Path(os.environ.get('CANVASFLOW_DATA_DIR') or ROOT / 'server-data').resolve()
 DATA_DIR.mkdir(exist_ok=True)
+COMMUNITY_SKILLS = CommunitySkills(DATA_DIR / 'community-skill-catalog.json')
 FILM_WORKBENCH = FilmWorkbench(ROOT, DATA_DIR)
 # 视频/大文件落盘目录。**不走 assets.json** —— 那是内联 base64，已经 150MB+，
 # 而且 read_json 有 8MB 上限，视频塞进去必然爆。这里存独立文件，节点只记文件名。
@@ -4320,13 +4322,15 @@ def agent_skill_view(item):
         'id': item.get('id'), 'name': item.get('name') or '未命名技能',
         'description': item.get('description') or '', 'prompt': item.get('prompt') or '',
         'icon': item.get('icon') or 'wand', 'source': item.get('source') or 'user',
-        'createdAt': item.get('createdAt') or '',
+        'files': item.get('files') or [], 'primarySkillFilePath': item.get('primarySkillFilePath') or '',
+        'metadata': item.get('metadata') or {},
+        'createdAt': item.get('createdAt') or '', 'updatedAt': item.get('updatedAt') or '',
     }
 
 
-def save_agent_skill(user_id, name, description='', prompt='', icon='wand', source='user'):
+def save_agent_skill(user_id, name, description='', prompt='', icon='wand', source='user', files=None, primary_path='', skill_id=None, create_only=False, metadata=None):
     """存一个技能（用户在面板里手写/导入，或 Agent 用 create_skill 工具存）。
-    返回 (skill, error)。重名就直接覆盖 —— 技能是「按名字认」的，同名再存一遍是最自然的更新方式。
+    返回 (skill, error)。编辑器及 update_skill 按 ID 更新；create_only 防止新建时覆盖同名条目。
     技能**不按工作区隔离**：它是「我这个人的能力」，换个空间也该带着走，所以重名判据只看 userId。"""
     name = str(name or '').strip()[:60]
     prompt = str(prompt or '').strip()
@@ -4334,22 +4338,90 @@ def save_agent_skill(user_id, name, description='', prompt='', icon='wand', sour
         return None, '技能名不能为空'
     if not prompt:
         return None, '技能内容不能为空'
+    if metadata is not None:
+        if not isinstance(metadata, dict): return None, '无效的 Skill 信息'
+        clean = {}
+        for key, label in (('useScenario', '使用场景'), ('inputType', '如何使用'), ('outputContent', '输出内容')):
+            value = metadata.get(key)
+            if not isinstance(value, str) or not value.strip(): return None, f'请填写{label}'
+            if len(value) > 5000: return None, f'{label}不能超过 5000 字'
+            clean[key] = value.strip()
+        clean['kind'] = metadata.get('kind', '图片')
+        if clean['kind'] not in ('图片', '视频', '音频', '文本'): return None, '无效的 Skill 类型'
+        clean['cover'] = metadata.get('cover') or ''
+        if not isinstance(clean['cover'], str) or (clean['cover'] and not re.fullmatch(r'/media/[A-Za-z0-9_-]+\.(?:png|jpg|jpeg|webp|gif)', clean['cover'], re.I)):
+            return None, '请上传有效的 Skill 封面图片'
+        metadata = clean
+    documents = []
+    if files is not None:
+        if not isinstance(files, list) or len(files) > 100:
+            return None, 'Skill 最多包含 100 个文档'
+        for file in files:
+            if not isinstance(file, dict): return None, '无效的 Skill 文档'
+            path = str(file.get('path') or '').replace('\\', '/')
+            if not path or path.startswith('/') or ':' in path or any(part in ('', '.', '..') for part in path.split('/')):
+                return None, '无效的 Skill 文件路径'
+            if not path.lower().endswith(('.md', '.markdown', '.txt')): return None, '只支持 Markdown 文档'
+            documents.append({'path': path, 'content': str(file.get('content') or ''), 'primary': path == primary_path})
+        if len({file['path'].lower() for file in documents}) != len(documents): return None, 'Skill 文件路径重复'
+        if sum(len(file['content'].encode('utf-8')) for file in documents) > 2_000_000: return None, 'Skill 文档超过 2 MB'
+        if documents and primary_path not in {file['path'] for file in documents}: return None, '缺少主 Skill 文件'
     with LOCK:
         items = read_agent_skills()
-        exist = next((i for i in items if i.get('userId') == user_id and i.get('name') == name), None)
+        named = next((i for i in items if i.get('userId') == user_id and i.get('name') == name), None)
+        exist = next((i for i in items if i.get('userId') == user_id and i.get('id') == skill_id), None) if skill_id else named
+        if skill_id and not exist: return None, '技能不存在或无权编辑'
+        if (skill_id and named and named is not exist) or (create_only and named): return None, '已有同名技能，请修改名称'
         if exist:
-            exist.update({'description': str(description or '').strip()[:200], 'prompt': prompt,
+            if files is None and exist.get('files'):
+                if prompt != exist.get('prompt'):
+                    return None, '多文档 Skill 请使用 update_skill 按 ID 更新指定文件，不能用单段正文覆盖'
+                documents = exist['files']
+                primary_path = exist.get('primarySkillFilePath', '')
+            exist.update({'name': name, 'description': str(description or '').strip()[:200], 'prompt': prompt,
                           'icon': icon or 'wand', 'updatedAt': now()})
+            exist.update(files=documents, primarySkillFilePath=primary_path if documents else '')
+            if metadata is not None: exist['metadata'] = metadata
             write_agent_skills(items)
             return agent_skill_view(exist), None
         skill = {
             'id': f"skill-{secrets.token_hex(6)}", 'userId': user_id, 'name': name,
             'description': str(description or '').strip()[:200], 'prompt': prompt,
             'icon': icon or 'wand', 'source': source, 'createdAt': now(), 'updatedAt': now(),
+            'files': documents, 'primarySkillFilePath': primary_path if documents else '',
+            'metadata': metadata or {},
         }
         items.append(skill)
         write_agent_skills(items)
         return agent_skill_view(skill), None
+
+
+def update_agent_skill(user_id, skill_id, changes):
+    """Patch an owned skill atomically. Unmentioned documents and metadata survive."""
+    if not isinstance(changes, dict): return None, '无效的 Skill 更新'
+    with LOCK:
+        old = next((s for s in read_agent_skills() if s.get('id') == skill_id and s.get('userId') == user_id), None)
+        if not old: return None, '技能不存在或无权编辑'
+        documents = [dict(f) for f in old.get('files', [])]
+        primary = old.get('primarySkillFilePath') or (documents[0]['path'] if documents else 'SKILL.md')
+        if not documents: documents = [{'path': primary, 'content': old.get('prompt', '')}]
+        updates = changes.get('fileUpdates', [])
+        if not isinstance(updates, list) or len(updates) > 100: return None, '无效的文档更新'
+        seen = set()
+        for update in updates:
+            if not isinstance(update, dict) or not isinstance(update.get('path'), str) or not isinstance(update.get('content'), str):
+                return None, '文档更新需要 path 和 content'
+            path = update['path']
+            if path.lower() in seen: return None, '文档更新路径重复'
+            seen.add(path.lower())
+            current = next((f for f in documents if f['path'].lower() == path.lower()), None)
+            if current: current['content'] = update['content']
+            else: documents.append({'path': path, 'content': update['content']})
+        if not next((f['content'].strip() for f in documents if f['path'] == primary), ''):
+            return None, '主 Skill 文件内容不能为空'
+        prompt = documents[0]['content'] if len(documents) == 1 else '\n\n'.join(f"文件：{f['path']}\n{f['content']}" for f in documents)
+        return save_agent_skill(user_id, changes.get('name', old['name']), changes.get('description', old.get('description', '')),
+                                prompt, icon=old.get('icon', 'wand'), files=documents, primary_path=primary, skill_id=skill_id)
 
 
 def tool_result_summary(text, name=''):
@@ -8306,8 +8378,10 @@ def build_image_reference_body(body_kind, model, prompt, size, reference_images,
                     parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"\r\n\r\n{value}\r\n'.encode('utf-8'))
                     continue
                 return None, None, None, f'第 {index + 1} 张参考图数据无效'
+            # 接收端依靠 filename 区分文件与文本；只有 Content-Type 会让图片落入普通表单字段。
+            filename = f'reference-{index + 1}{MEDIA_EXT_BY_MIME.get(mime.lower(), ".bin")}'
             parts.append(
-                f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"\r\n'
+                f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"; filename="{filename}"\r\n'
                 f'Content-Type: {mime}\r\n\r\n'.encode('utf-8') + raw + b'\r\n')
         parts.append(f'--{boundary}--\r\n'.encode('utf-8'))
         return None, b''.join(parts), f'multipart/form-data; boundary={boundary}', None
@@ -9693,7 +9767,8 @@ def build_agent_ctx(user, canvas, brain, project_id='', anchor_node_id='', works
 
     def save_skill(name, description='', prompt=''):
         # 注入给 create_skill 工具用；运行时本身不碰文件
-        skill, error = save_agent_skill(user.get('id'), name, description, prompt, source='agent')
+        skill, error = save_agent_skill(user.get('id'), name, description, prompt, source='agent', create_only=True)
+        if error and '同名' in error: error = '已有同名技能。编辑或改名请先 list_skills 获取原 ID，再使用 update_skill，不能另建副本'
         return (skill or {}), error
 
     def pick(kind, override_id=''):
@@ -9778,6 +9853,8 @@ def build_agent_ctx(user, canvas, brain, project_id='', anchor_node_id='', works
         'submit_video': submit_video,
         'resolve_node_image': resolve_node_image,
         'save_skill': save_skill,
+        'update_skill': lambda skill_id, changes: update_agent_skill(user.get('id'), skill_id, changes),
+        'list_skills': lambda: [agent_skill_view(s) for s in read_agent_skills() if s.get('userId') == user.get('id')],
         'anchorNodeId': str(anchor_node_id or ''),
         'mode': mode, 'genMode': gen_mode,
     }
@@ -11720,6 +11797,14 @@ class Handler(SimpleHTTPRequestHandler):
             job_id = path.split('/')[-1]
             job = self.find_job(job_id, user['id'])
             return self.send_json({'job': job_view(job)} if job else {'error': 'job_not_found'}, 200 if job else 404)
+        if path == '/api/agent/community-skills' or path.startswith('/api/agent/community-skills/'):
+            user = self.authenticated_user()
+            if not user: return self.send_json({'error': 'unauthenticated'}, 401)
+            try:
+                payload = COMMUNITY_SKILLS.catalog(force=parse_qs(urlparse(self.path).query).get('refresh') == ['1']) if path == '/api/agent/community-skills' else COMMUNITY_SKILLS.detail(path[len('/api/agent/community-skills/'):])
+                return self.send_json(payload, headers={'Cache-Control': 'no-store'})
+            except CommunityError as exc:
+                return self.send_json({'error': 'community_unavailable', 'message': str(exc)}, exc.status)
         if path == '/api/agent/skills':
             # 用户自己存的技能（手写 / 导入 / Agent 用 create_skill 存的）。
             # 内置技能在前端 AGENT_SKILLS 里，不走这里 —— 这里只返回「我的」。
@@ -11728,7 +11813,7 @@ class Handler(SimpleHTTPRequestHandler):
             # 技能不按工作区隔离：技能是「我这个人的能力」，换个空间也该跟着走。
             items = [agent_skill_view(i) for i in read_agent_skills() if i.get('userId') == user['id']]
             items.sort(key=lambda i: i.get('createdAt') or '', reverse=True)
-            return self.send_json({'skills': items})
+            return self.send_json({'skills': items, 'supportsDocumentEditing': True, 'skillEditorVersion': 2})
         if path == '/api/agent/models':
             # 给对话面板的「选择模型」用：列出全部模型 + 标注哪些真能用（有 Key / 已启用），
             # 并告诉前端「不指定时服务端会自动挑哪个」—— 用户看到生成失败时能立刻知道为什么。
@@ -11889,6 +11974,16 @@ class Handler(SimpleHTTPRequestHandler):
             return self.previs_assets_api(path, 'PUT', self.read_json())
         user = self.authenticated_user()
         if not user: return self.send_json({'error': 'unauthenticated', 'message': '请先登录'}, 401)
+        if re.fullmatch(r'/api/agent/skills/[^/]+', path):
+            incoming = self.read_json()
+            skill, error = save_agent_skill(
+                user['id'], incoming.get('name'), incoming.get('description'), incoming.get('prompt'),
+                icon=incoming.get('icon') or 'doc', files=incoming.get('files'),
+                primary_path=str(incoming.get('primarySkillFilePath') or ''), skill_id=path.split('/')[-1], metadata=incoming.get('metadata'))
+            if error:
+                status = 404 if error == '技能不存在或无权编辑' else 409 if error == '已有同名技能，请修改名称' else 400
+                return self.send_json({'error': 'invalid_skill', 'message': error}, status)
+            return self.send_json({'skill': skill})
         if path.startswith('/api/admin/ai-providers/'):
             scope, err = self.model_scope_request(user)
             if err: return self.send_json(err, 403)
@@ -13241,7 +13336,8 @@ class Handler(SimpleHTTPRequestHandler):
             skill, error = save_agent_skill(
                 user['id'], name, str(incoming.get('description') or ''),
                 prompt, icon=str(incoming.get('icon') or 'wand'),
-                source=str(incoming.get('source') or 'user'))
+                source=str(incoming.get('source') or 'user'), files=incoming.get('files'),
+                primary_path=str(incoming.get('primarySkillFilePath') or ''), create_only=bool(incoming.get('createOnly')), metadata=incoming.get('metadata'))
             if error: return self.send_json({'error': 'invalid_skill', 'message': error}, 400)
             return self.send_json({'skill': skill})
         return self.send_json({'error': 'not_found'}, 404)

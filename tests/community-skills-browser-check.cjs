@@ -1,0 +1,83 @@
+// Isolated local browser regression; community and AI responses are fixtures, no public writes.
+const assert=require('node:assert/strict');
+const fs=require('node:fs'),path=require('node:path'),os=require('node:os');
+const {spawn}=require('node:child_process');
+const {chromium}=require('../tools/openfilm/node_modules/.pnpm/playwright-core@1.61.1/node_modules/playwright-core');
+const root=path.resolve(__dirname,'..'),data=fs.mkdtempSync(path.join(os.tmpdir(),'canvasflow-community-check-'));
+const port=5198,origin=`http://127.0.0.1:${port}`,endpoint='/api/agent/community-skills';
+const server=spawn(path.join(root,'.runtime/python/python.exe'),['server.py',String(port)],{cwd:root,env:{...process.env,CANVASFLOW_DATA_DIR:data},windowsHide:true,stdio:'ignore'});
+const output=path.join(root,'build-private/community-sync-check');fs.mkdirSync(output,{recursive:true});
+const wait=ms=>new Promise(r=>setTimeout(r,ms));let browser;
+(async()=>{
+  for(let i=0;i<60;i++){try{if((await fetch(origin)).ok)break;}catch{}await wait(250);}
+  browser=await chromium.launch({executablePath:path.join(root,'.runtime/openfilm-browser/chromium_headless_shell-1228/chrome-headless-shell-win64/chrome-headless-shell.exe'),headless:true});
+  const context=await browser.newContext({viewport:{width:1092,height:871},reducedMotion:'reduce'});
+  await context.addInitScript(()=>localStorage.setItem('canvasflow-startup-animation',JSON.stringify({enabled:false})));
+  const page=await context.newPage(),errors=[],messages=[];
+  page.on('pageerror',e=>errors.push(e.message));
+  const item={id:'community-browser-test',name:'社区镜头测试',description:'完整多文件技能包',type:'视频',category:'专业影视',author:'测试创作者',contentHash:'a'.repeat(64),fileCount:2,primarySkillFilePath:'SKILL.md',scenario:'测试场景',usage:'提供镜头要求',output:'分镜表'};
+  const mirror={...item,id:'app-hub-film-shot',appId:'hub-film-shot',origin:'application',name:'AI电影镜头设计师'};
+  const files=[{path:'SKILL.md',content:'# 社区镜头测试\n[镜头参考](references/camera.md)'},{path:'references/camera.md',content:'完整参考正文：保持空间轴线。'}];
+  let items=[mirror,item],offline=false,withdrawn=false,version='a';
+  await context.route('**/*',route=>{
+    const req=route.request(),url=new URL(req.url());
+    if(url.origin!==origin)return route.abort();
+    if(url.pathname===endpoint)return route.fulfill({status:offline?502:200,json:offline?{message:'社区暂时无法连接，本地技能仍可使用'}:{schemaVersion:1,skills:items,count:items.length,syncedAt:Date.now()/1000}});
+    if(url.pathname===endpoint+'/'+item.id)return route.fulfill({status:withdrawn?404:200,json:withdrawn?{message:'该社区 Skill 已下架'}:{skill:{...item,contentHash:version.repeat(64),files:files.map((f,i)=>i?{...f,content:f.content+' 版本'+version}:f)}}});
+    if(url.pathname==='/api/agent/models')return route.fulfill({json:{models:[{id:'test-text',name:'测试文本模型',model:'test-text',type:'text',enabled:true,hasKey:true}],autoPick:{text:'test-text'}}});
+    if(url.pathname==='/api/agent/quote')return route.fulfill({json:{quote:{canAfford:true,requiredBalance:0,amount:0,items:[]}}});
+    if(url.pathname==='/api/agent/chat'){messages.push(req.postDataJSON());return route.fulfill({contentType:'text/event-stream',body:'data: '+JSON.stringify({type:'text',delta:'已收到完整文档'})+'\n\ndata: '+JSON.stringify({type:'done'})+'\n\n'});}
+    return route.continue();
+  });
+  await page.goto(origin,{waitUntil:'domcontentloaded'});
+  await page.locator('[data-view="agent-hub"]').click();
+  await page.locator('.cah-community-status').filter({hasText:'已同步 2'}).waitFor();
+  await page.locator('.cah-categories').getByRole('button',{name:'社区',exact:true}).click();
+  assert.equal(await page.locator('.cah-card').count(),2,'Mirror and built-in share one card');
+  assert.match(await page.locator('.cah-card').first().innerText(),/测试创作者/);
+  await page.getByRole('button',{name:'查看技能：社区镜头测试',exact:true}).click();
+  await page.locator('.cah-dialog').waitFor();
+  assert.equal(await page.locator('.cah-file-select option').count(),2);
+  await page.getByRole('combobox',{name:'选择 Skill 文件'}).selectOption({label:'references/camera.md'});
+  assert.match(await page.locator('.cah-file-content').innerText(),/保持空间轴线/);
+  await page.getByRole('button',{name:'收藏技能',exact:true}).click();
+  await page.getByRole('button',{name:'关闭技能详情',exact:true}).click();
+  await page.screenshot({path:path.join(output,'community-library.png')});
+  offline=true;await page.getByRole('button',{name:'同步社区',exact:true}).click();
+  await page.locator('.cah-community-status').filter({hasText:'无法连接'}).waitFor();
+  assert.equal(await page.locator('.cah-card').count(),2,'Offline catalog preserves entries');
+  offline=false;await page.getByRole('button',{name:'同步社区',exact:true}).click();
+  await page.locator('.cah-community-status').filter({hasText:'已同步 2'}).waitFor();
+  await page.getByRole('button',{name:'查看技能：社区镜头测试',exact:true}).click();
+  await page.getByRole('button',{name:'添加 Skill',exact:true}).click();
+  // A new published version between catalog and send must reach expansion, not an empty prompt.
+  version='b';
+  await page.getByRole('textbox',{name:'描述你的创作灵感'}).fill('拍摄一个雨夜镜头');
+  await page.getByRole('button',{name:'开始工作流',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector('#agentDrawer')&&!document.querySelector('#agentDrawer').hidden);
+  for(let i=0;i<80&&!messages.length;i++)await wait(100);
+  assert.equal(messages.length,1);assert.match(messages[0].message,/完整参考正文/);assert.match(messages[0].message,/版本b/);
+  assert.ok(!messages[0].message.includes('[[技能:'));assert.ok(messages[0].canvas.projectId);
+  await page.waitForFunction(()=>!document.querySelector('#agentInput').disabled);
+  // The canvas chat also resolves unloaded tokens and checks publication again before each send.
+  await page.locator('#agentInput').fill('[[技能:community-browser-test]] 再试一个镜头');
+  await page.locator('#agentInput').press('Enter');
+  for(let i=0;i<80&&messages.length<2;i++)await wait(100);
+  assert.equal(messages.length,2);assert.match(messages[1].message,/完整参考正文/);
+  await page.waitForFunction(()=>!document.querySelector('#agentInput').disabled);
+  withdrawn=true;
+  await page.locator('#agentInput').fill('[[技能:community-browser-test]] 不应发送');
+  await page.locator('#agentInput').press('Enter');
+  await page.getByText('该社区 Skill 已下架',{exact:true}).waitFor();
+  assert.equal(messages.length,2);
+  const showSidebar=page.getByRole('button',{name:'显示侧边栏',exact:true});
+  if(await showSidebar.isVisible())await showSidebar.click();
+  await page.locator('[data-view="agent-hub"]').click();
+  items=[mirror];await page.getByRole('button',{name:'同步社区',exact:true}).click();
+  await page.locator('.cah-community-status').filter({hasText:'已同步 1'}).waitFor();
+  assert.equal(await page.getByRole('button',{name:'查看技能：社区镜头测试',exact:true}).count(),0);
+  await page.setViewportSize({width:390,height:844});
+  assert.ok(await page.locator('.cah-library-head').evaluate(e=>e.scrollWidth<=e.clientWidth+1));
+  assert.deepEqual(errors,[]);
+  console.log(JSON.stringify({ok:true,checks:['mirror dedup','community filtering','actual author','all reference documents','offline fallback','version change before send','new canvas auto-send','canvas chat integration','withdrawal blocks execution','mobile controls'],screenshots:output}));
+})().catch(e=>{console.error(e);process.exitCode=1;}).finally(async()=>{await browser?.close();server.kill();});

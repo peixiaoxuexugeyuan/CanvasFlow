@@ -77,11 +77,22 @@ ipcMain.handle('desktop:set-close-action', (event, action) => {
   saveCloseAction(action);
   return {closeAction};
 });
-const updater = require('./updater.cjs').createUpdater({version:app.getVersion(), directory:path.join(profile, 'updates'),
+const updater = require('./updater.cjs').createUpdater({version:app.getVersion(), buildNumber:require('./package.json').buildNumber || 0, directory:path.join(profile, 'updates'),
   onChange:status => {
-    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) mainWindow.webContents.send('desktop:update-status', status);
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) mainWindow.webContents.send('desktop:update-status', updateNoticeState(status));
   }});
 let installingUpdate = false;
+let startupUpdateChecked = false, dismissedUpdateNotice = '';
+const updateNoticeKey = state => `${state.version}:${state.buildNumber || 0}`;
+function updateNoticeState(state = updater.getState()) {
+  return {...state, notificationDismissed:dismissedUpdateNotice === updateNoticeKey(state)};
+}
+async function checkStartupUpdate() {
+  if (startupUpdateChecked || !updateSupported() || quitting || closing || process.argv.includes('--desktop-self-test')) return;
+  startupUpdateChecked = true;
+  // Checking never blocks loading the workspace and never downloads without a user choice.
+  try { await updater.check(); } catch (error) { log('Startup update check failed: ' + error.message); }
+}
 function updateSupported() { return app.isPackaged && process.platform === 'win32' && process.arch === 'x64'; }
 function requireUpdateSender(event) {
   if (!validSender(event)) throw Error('无效的调用来源');
@@ -89,12 +100,18 @@ function requireUpdateSender(event) {
 }
 ipcMain.handle('desktop:update-state', event => {
   if (!validSender(event)) throw Error('无效的调用来源');
-  return updateSupported() ? updater.getState() : {status:'unsupported', message:'请在 Windows 安装版中检查更新'};
+  return updateSupported() ? updateNoticeState() : {status:'unsupported', message:'请在 Windows 安装版中检查更新'};
+});
+ipcMain.handle('desktop:dismiss-update-notice', (event, release) => {
+  requireUpdateSender(event);
+  const state = updater.getState();
+  if (release?.version === state.version && (release.buildNumber || 0) === (state.buildNumber || 0)) dismissedUpdateNotice = updateNoticeKey(state);
+  return updateNoticeState();
 });
 ipcMain.handle('desktop:check-update', async event => {
   requireUpdateSender(event);
   if (!installingUpdate) await updater.check();
-  return updater.getState();
+  return updateNoticeState();
 });
 ipcMain.handle('desktop:install-update', async event => {
   requireUpdateSender(event);
@@ -169,7 +186,11 @@ async function requestWindowClose() {
   }
 }
 
-ipcMain.on('desktop:ready', event => { if (validSender(event)) rendererReady = true; });
+ipcMain.on('desktop:ready', event => {
+  if (!validSender(event)) return;
+  rendererReady = true;
+  void checkStartupUpdate();
+});
 ipcMain.on('desktop:close-result', (event, payload) => { if (validSender(event) && typeof payload?.ok === 'boolean') closeResult?.(payload.ok); });
 
 function startHost() {
@@ -272,7 +293,11 @@ async function createWindow() {
   mainWindow.on('page-title-updated', event => {event.preventDefault(); mainWindow.setTitle('CanvasFlow');});
   mainWindow.on('close', event => {if (!allowClose) {event.preventDefault(); void requestWindowClose();}});
   mainWindow.webContents.on('did-start-navigation', (_event, _url, inPlace, isMainFrame) => {if (isMainFrame && !inPlace) rendererReady = false;});
-  for (const eventName of ['will-navigate','will-redirect']) mainWindow.webContents.on(eventName, (event, url) => {
+  for (const eventName of ['will-navigate','will-redirect']) mainWindow.webContents.on(eventName, (event, url, _inPlace, isMainFrame) => {
+    // Redirects also fire for sandboxed iframes (including OpenFilm's /open
+    // authentication redirect). Only top-level navigation belongs in the browser.
+    if ((event.isMainFrame ?? isMainFrame) === false) return;
+    url = event.url ?? url;
     if (!sameOrigin(url, origin)) {event.preventDefault(); openExternal(url);}
   });
   mainWindow.webContents.setWindowOpenHandler(({url}) => {

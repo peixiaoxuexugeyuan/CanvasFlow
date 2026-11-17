@@ -88,6 +88,80 @@ test('new canvas waits for the previous save and rejects double-clicks while it 
   assert.equal(env.state.projectCreationPending,false);assert(env.notices.some(text=>text.includes('尚未保存成功')));
 });
 
+function workflowContext(){
+  const env=context(['agentHubStartWorkflow','generationContext','generationContextActive'],{
+    agentState:{running:false,pendingAsk:null},agentEls:{input:{value:''}},
+    agentLeaveFilm:()=>{},agentAutoGrow:()=>{},agentRenderHighlight:()=>{},
+    agentStartNewConversation:()=>{},agentToggle:()=>{},
+    agentPrepareSkillTokens:async()=>{},
+  });
+  env.newProject=async()=>{env.calls.push('create');env.state.projectId='workflow';env.state.canvasEpoch=1;env.navigationEpoch++;return 'workflow';};
+  env.saveProject=async()=>{assert.equal(env.state.draftPersistenceRequested,true);env.calls.push('save');return true;};
+  env.agentSubmit=()=>{env.calls.push('send');env.agentState.running=true;};
+  return env;
+}
+
+test('skill-only workflow persists its new empty canvas before automatically sending',async()=>{
+  const env=workflowContext();
+  assert.equal(await env.agentHubStartWorkflow('skill instructions',[],{title:'Film skill'}),true);
+  assert.deepEqual(env.calls,['create','save','send']);
+  assert.equal(env.state.projectName,'Film skill');assert.equal(env.agentEls.input.value,'skill instructions');
+  assert.equal(env.agentState.hubStarting,false);
+});
+
+test('missing Skill documents prevent canvas creation and keep the existing draft',async()=>{
+  const env=workflowContext();env.agentPrepareSkillTokens=async()=>{throw Error('Skill 文件读取失败');};
+  assert.equal(await env.agentHubStartWorkflow('[[技能:libtv-example]]'),false);
+  assert.deepEqual(env.calls,[]);assert.equal(env.state.projectId,'only');assert.equal(env.agentState.hubStarting,false);
+});
+
+test('navigation during lazy Skill loading cannot create a late workflow',async()=>{
+  const env=workflowContext();let finish;env.agentPrepareSkillTokens=()=>new Promise(resolve=>{finish=resolve;});
+  const work=env.agentHubStartWorkflow('[[技能:libtv-example]]');env.navigationEpoch++;finish();
+  assert.equal(await work,false);assert.deepEqual(env.calls,[]);
+});
+
+test('creating a Skill persists a separate canvas and opens intake without sending a model request',async()=>{
+  const env=workflowContext();
+  env.agentStartCreateSkill=options=>{assert.equal(options.fresh,true);env.calls.push('intake');};
+  assert.equal(await env.agentHubStartWorkflow('',[],{title:'创建 Skill',skillIntake:true}),true);
+  assert.deepEqual(env.calls,['create','save','intake']);
+  assert.equal(env.agentState.running,false);assert.equal(env.agentState.hubStarting,false);
+});
+
+test('double submission during workflow creation creates and sends only once',async()=>{
+  const env=workflowContext();let finish,reached;const saving=new Promise(resolve=>{reached=resolve;});
+  env.saveProject=()=>new Promise(resolve=>{finish=resolve;reached();});
+  const first=env.agentHubStartWorkflow('first');await saving;
+  assert.equal(await env.agentHubStartWorkflow('second'),false);
+  finish(true);assert.equal(await first,true);
+  assert.deepEqual(env.calls,['create','send']);assert.equal(env.agentEls.input.value,'first');
+});
+
+test('workflow cancelled by navigation, canvas replacement or workspace switch cannot send a late chat',async()=>{
+  for(const change of [env=>env.navigationEpoch++,env=>env.state.canvasEpoch++,env=>{env.workspaceHeader=()=>({'X-Workspace-Id':'other'});}]){
+    const env=workflowContext();let finish,reached;const saving=new Promise(resolve=>{reached=resolve;});env.saveProject=()=>new Promise(resolve=>{finish=resolve;reached();});
+    const work=env.agentHubStartWorkflow('should not send');await saving;change(env);finish(true);
+    assert.equal(await work,false);assert.deepEqual(env.calls,['create']);assert.equal(env.agentState.hubStarting,false);
+  }
+});
+
+test('failed workflow save never sends and releases the startup lock',async()=>{
+  const env=workflowContext();env.saveProject=async()=>false;
+  assert.equal(await env.agentHubStartWorkflow('keep draft'),false);
+  assert.deepEqual(env.calls,['create']);assert.equal(env.agentState.hubStarting,false);
+  assert.ok(env.notices.some(text=>text.includes('新画布尚未保存成功')));
+});
+
+test('declined new canvas or an active Agent task prevents workflow launch',async()=>{
+  const env=workflowContext();env.newProject=async()=>undefined;
+  assert.equal(await env.agentHubStartWorkflow('keep draft'),false);assert.equal(env.state.projectId,'only');
+  for(const flag of ['running','pendingAsk']){
+    const busy=workflowContext();busy.agentState[flag]=true;
+    assert.equal(await busy.agentHubStartWorkflow('keep draft'),false);assert.deepEqual(busy.calls,[]);
+  }
+});
+
 test('deletion from the project list also removes a cached last project that is not currently open',()=>{
   let list;
   const env=context(['removeLocalProject'],{state:{projectId:'',projectLoadPending:true},localProjectsStorage:{set:value=>{list=value;}}});

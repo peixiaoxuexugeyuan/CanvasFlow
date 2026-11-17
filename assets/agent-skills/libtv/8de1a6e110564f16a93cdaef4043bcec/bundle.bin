@@ -1,0 +1,30 @@
+{
+  "templateUuid": "8de1a6e110564f16a93cdaef4043bcec",
+  "name": "香港老电影复古胶片风格",
+  "version": "1.0.3",
+  "description": "给它一句话创意，输出同基调成片、分镜表与逐镜提示词。港风怀旧",
+  "useScenario": "港风怀旧主题配图 / 封面（内容站、公众号、小红书） / 复古电影感 AI 生图（主流生图模型） / 老港片风格短视频封面与分镜参考 / 前端怀旧主题 UI 的设计参考（色板可直接取用） / 品牌复古 Campaign 视觉方向（港风奶茶/餐饮/文创）",
+  "inputType": "描述你想拍的内容即可：一句话创意或剧本片段，可选补充时长、画幅、主体设定；不指定就用 15 秒 / 16:9。它会先锁死色板、构图与光线，再拆成分镜逐镜生成。",
+  "outputContent": "一条成片（MP4）+ 分镜表（镜号/景别/画面/运镜/时长）+ 逐镜提示词清单，可选 3 秒试片。",
+  "ownerName": "道哥的上升期",
+  "ownerAvatar": "https://thirdwx.qlogo.cn/mmopen/vi_32/qwNG8Q9okswtOw9HxZeSEqpKdVnE7vA3LEM0yiaQTybLViakyhJ1LMfQ6UWFibSPiaxia2icEJxFY7m6Jlv258EZxxAQ/132",
+  "primarySkillFilePath": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "### 技能用途\n\n本 Skill 专注于将简单的创意描述转化为 80-90 年代经典香港电影风格的视觉规格。通过锁定特定的影调、质感与构图准则，为视觉创作提供完整的高还原度复古方案。\n\n### 适用输入\n\n- **创意核心**：一句话创意或剧本片段（如“深夜霓虹下的茶餐厅”）。\n- **补充参数**：可选输入时长、画幅（默认 16:9）及核心主体设定。\n\n### 操作步骤\n\n1. **风格锚定**：根据输入自动匹配琥珀色与青蓝色对冲的经典港片视觉基调。\n2. **视觉构建**：注入 35mm 胶片感、光晕溢出及湿滑地面反射等视觉指纹参数。\n3. **结构化拆解**：将创意拆分为具体的镜号、景别、画面描述及运镜建议。\n4. **提示词生成**：生成适用于主流 AI 绘画工具的高精度中英文生图提示词。\n\n### 输出要求\n\n- **视觉方案**：包含 HEX 色彩配比、胶片颗粒度建议及电影级画幅规格。\n- **分镜列表**：详细的镜号、景别（特写/全景）、画面描述及时长分配。\n- **提示词清单**：提供中英文双语 Prompt，并附加排除现代数字锐利感的负面约束。\n\n### 注意事项\n\n- **风格边界**：擅长表现怀旧、潮湿、暧昧的市井江湖气；不适用于现代高科技或极简商业摄影。\n- **视觉禁忌**：严禁使用高饱和荧光色或具有明显现代 HDR 通透感的效果。",
+      "contentType": "text/markdown",
+      "primary": true
+    }
+  ],
+  "sourceUrl": "https://www.liblib.tv/skill",
+  "capturedAt": "2026-11-14",
+  "examples": [
+    "https://libtv-res.liblib.art/upload-images/3941c7915d0c43048e6b517c7d8d9fb7/f83fb45f292eb6fe3cf0f06eb230a16f0120a1a6.jpg",
+    "https://libtv-res.liblib.art/upload-images/3941c7915d0c43048e6b517c7d8d9fb7/2e2f48fb6f424ab6c3129bd0bf836312bc5e0493.jpg",
+    "https://libtv-res.liblib.art/upload-images/3941c7915d0c43048e6b517c7d8d9fb7/5789813c29d354e3ef7a683c0e87e62c46dfeea0.jpg",
+    "https://libtv-res.liblib.art/upload-images/3941c7915d0c43048e6b517c7d8d9fb7/d9f1191fc5e3f8880ca12cf7c5cc332dfe72efe4.jpg"
+  ],
+  "missingReferences": [],
+  "contentOrigin": "skillFiles"
+}

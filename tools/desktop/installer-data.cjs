@@ -16,7 +16,8 @@ function collectInstalledFiles(root) {
     }
   }
   visit(root);
-  return [...new Set([...files, MANIFEST_NAME, 'Uninstall CanvasFlow.exe'])].sort();
+  // electron-builder adds its elevation helper after this inventory is generated.
+  return [...new Set([...files, MANIFEST_NAME, 'Uninstall CanvasFlow.exe', 'resources/elevate.exe'])].sort();
 }
 function safeRelative(file) {
   return typeof file === 'string' && file && !/[\x00-\x1f:*?"<>|]/.test(file)

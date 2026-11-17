@@ -287,10 +287,10 @@ test('image history replacement clears stale media and uses the restored image a
 function providersFixture() {
   const calls = [], backdrop = { hidden: false };
   const scope = {
-    providerSaveTimer: null, providerSaveInFlight: null, pendingProviderPatches: new Map(),
+    aboutUpdateCleanup: null, providerSaveTimer: null, providerSaveInFlight: null, pendingProviderPatches: new Map(),
     PROVIDER_SAVE_DELAY: 600, setTimeout: () => 1, clearTimeout() {},
     patchProvider: async (group, patch) => { calls.push({ id: group.providerId, patch: { ...patch } }); return true; },
-    panelToast() {}, $id: () => backdrop, wizard: {}, renderWizardLayer() {},
+    panelToast() {}, $id: id => id === "settingsBackdrop" ? backdrop : null, wizard: {}, renderWizardLayer() {},
   };
   load(scope, ['queueProviderPatch', 'flushProviderPatch', 'close'], settings);
   return { scope, calls, backdrop };

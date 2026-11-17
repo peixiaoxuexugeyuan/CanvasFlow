@@ -1,0 +1,27 @@
+{
+  "templateUuid": "6bee595717b0484ca560bcfbba239935",
+  "name": "分镜图生成器",
+  "version": "1.0.1",
+  "description": "很牛逼的分镜图生成方法",
+  "useScenario": "哈哈哈啊",
+  "inputType": "哈哈哈",
+  "outputContent": "哈哈哈啊",
+  "ownerName": "微信用户040e2b",
+  "ownerAvatar": "https://liblibai-online.liblib.cloud/web/avatar/avatar1.png",
+  "primarySkillFilePath": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "哈哈哈哈哈哈哈哈哈哈",
+      "contentType": "text/markdown",
+      "primary": true
+    }
+  ],
+  "sourceUrl": "https://www.liblib.tv/skill",
+  "capturedAt": "2026-11-14",
+  "examples": [
+    "https://libtv-res.liblib.art/upload-images/ac21935be56c4e8a93c00fb7572e660b/8999dde4eb225678a6341aa9de79f4ddb53125a0.png"
+  ],
+  "missingReferences": [],
+  "contentOrigin": "skillFiles"
+}

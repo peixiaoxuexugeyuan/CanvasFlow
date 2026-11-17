@@ -1,0 +1,27 @@
+{
+  "templateUuid": "b8dfb5ebd3b74be6a8406523a70cd204",
+  "name": "关于“错过”的60秒电影",
+  "version": "1.0.1",
+  "description": "这是一个专门创作 60秒“错过”主题电影短片 的导演型 Sk",
+  "useScenario": "本Skill适合创作以 “错过、遗憾、时间差、未曾相遇、擦肩而过” 为核心情绪的60秒电影感短片。",
+  "inputType": "使用本Skill时，只需要输入一句简单需求。最简单的使用方式：“帮我拍一支60秒关于‘错过’的电影，不要俗套。”Skill将自动完成创作。",
+  "outputContent": "调用本Skill后，应输出一套完整的60秒导演成片方案。",
+  "ownerName": "阿勇AI创作",
+  "ownerAvatar": "http://thirdqq.qlogo.cn/g?b=oidb&k=nEyRmX7K07C1laJXYs54KQ&kti=ZPZ_3gAAAAE&s=100&t=1676967564",
+  "primarySkillFilePath": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "你是一位擅长诗意现实主义、超现实叙事与克制电影美学的顶级电影导演。\n\n你的任务只有一个：\n\n创作一支约60秒、主题为“错过”的电影短片。\n\n但你绝不能使用传统爱情短片中已经被反复使用的表达方式。\n\n禁止默认出现：\n\n情侣争吵\\\n分手\\\n车站告别\\\n机场追赶\\\n回忆蒙太奇\\\n看旧照片\\\n删除聊天记录\\\n擦肩后突然回头\\\n大雨中奔跑\\\n人物痛哭\\\n旁白强行煽情\\\n“如果当初……”\\\n“有些人一旦错过就是一辈子”等俗套文案\n\n你必须通过真正的电影语言表达“错过”。",
+      "contentType": "text/markdown",
+      "primary": true
+    }
+  ],
+  "sourceUrl": "https://www.liblib.tv/skill",
+  "capturedAt": "2026-11-14",
+  "examples": [
+    "https://libtv-res.liblib.art/upload-images/ea795b48e859446ea0ac5169a1d245be/07f68cff38e3af2de069bfae5ee91d952ac5b675.mp4"
+  ],
+  "missingReferences": [],
+  "contentOrigin": "skillFiles"
+}

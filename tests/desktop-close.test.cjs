@@ -12,7 +12,7 @@ function harness(existingFiles = new Map(), version = '1.0.0', updateOptions = {
   let updateState = {status:updateOptions.status || 'idle',version:'1.0.1'};
   const updateManager = {
     getState:()=>({...updateState}),
-    check:async()=>{updateEvents.push('check');updateState.status='available';},
+    check:async()=>{updateEvents.push('check');if(updateOptions.checkThrows)throw Error('offline');updateState.status=updateOptions.checkStatus||'available';},
     download:async()=>{updateEvents.push('download');updateState.status='ready';return '/profile/updates/test/CanvasFlow-Setup.exe';},
     verifyInstaller:async()=>{updateEvents.push('verify');if(updateOptions.invalidFile)throw Error('invalid installer');return '/profile/updates/test/CanvasFlow-Setup.exe';},
     cancel:async()=>{updateEvents.push('cancel');},
@@ -49,11 +49,11 @@ function harness(existingFiles = new Map(), version = '1.0.0', updateOptions = {
     if(name==='./updater.cjs')return {createUpdater:()=>updateManager};
     if(name.startsWith('./'))return require(path.join(__dirname,'../tools/desktop/app',name));
     return require(name);
-  },process:{execPath:'/app/CanvasFlow.exe',platform:'win32',arch:'x64'},__dirname:'/app',setTimeout,clearTimeout});
+  },process:{execPath:'/app/CanvasFlow.exe',platform:'win32',arch:'x64',argv:[]},__dirname:'/app',setTimeout,clearTimeout});
   vm.runInContext(source + `
     globalThis.control = {
       initialize(window) { mainWindow=window; origin='http://127.0.0.1:5181'; rendererReady=true; },
-      requestWindowClose, prepareClose, saveCloseAction, showWindow,
+      requestWindowClose, prepareClose, saveCloseAction, showWindow, checkStartupUpdate,
       get action(){return closeAction;}, get allowed(){return allowClose;}
     };
   `,context);
@@ -196,4 +196,44 @@ test('updater IPC rejects foreign callers and unpackaged runtimes',async()=>{
     if(!packaged) await assert.rejects(h.handlers.get('desktop:check-update')(h.event));
     assert.equal(h.updateEvents.length,0);
   }
+});
+
+test('desktop readiness starts one background check per launch, never a download',async()=>{
+  const h=harness(new Map(),'1.0.0',{packaged:true});
+  const ready=h.handlers.get('desktop:ready');
+  ready({});assert.deepEqual(h.updateEvents,[]);
+  ready(h.event);ready(h.event);await h.control.checkStartupUpdate();
+  assert.deepEqual(h.updateEvents,['check']);
+  assert.equal(h.counters.prompts,0);assert.equal(h.counters.closed,0);
+});
+
+test('later choice survives renderer reload but resets on a new application launch',async()=>{
+  const h=harness(new Map(),'1.0.0',{packaged:true});await h.control.checkStartupUpdate();
+  const state=()=>h.handlers.get('desktop:update-state')(h.event);
+  assert.equal(state().notificationDismissed,false);
+  const dismiss=h.handlers.get('desktop:dismiss-update-notice');
+  dismiss(h.event,{version:'9.9.9'});assert.equal(state().notificationDismissed,false);
+  assert.throws(()=>dismiss({},{version:'1.0.1'}));
+  dismiss(h.event,{version:'1.0.1'});assert.equal(state().notificationDismissed,true);
+  h.handlers.get('desktop:ready')(h.event);assert.equal(state().notificationDismissed,true);
+  assert.deepEqual(h.updateEvents,['check']);
+  const next=harness(h.files,'1.0.0',{packaged:true});await next.control.checkStartupUpdate();
+  assert.equal(next.handlers.get('desktop:update-state')(next.event).notificationDismissed,false);
+});
+
+test('startup check quietly tolerates offline/current releases and skips development',async()=>{
+  for(const options of [{packaged:false},{packaged:true,checkThrows:true},{packaged:true,checkStatus:'up-to-date'}]){
+    const h=harness(new Map(),'1.0.0',options);await h.control.checkStartupUpdate();await h.control.checkStartupUpdate();
+    assert.equal(h.updateEvents.length,options.packaged?1:0);
+    assert.equal(h.counters.prompts,0);assert.equal(h.errors.length,0);assert.equal(h.counters.closed,0);
+  }
+});
+
+test('manual check remains available after a postponed startup notification',async()=>{
+  const h=harness(new Map(),'1.0.0',{packaged:true});await h.control.checkStartupUpdate();
+  h.handlers.get('desktop:dismiss-update-notice')(h.event,{version:'1.0.1'});
+  await h.handlers.get('desktop:check-update')(h.event);
+  assert.deepEqual(h.updateEvents,['check','check']);
+  h.replies.push({response:0});await h.handlers.get('desktop:install-update')(h.event);
+  assert.deepEqual(h.updateEvents.slice(2),['download','save','verify','open-installer','close']);
 });

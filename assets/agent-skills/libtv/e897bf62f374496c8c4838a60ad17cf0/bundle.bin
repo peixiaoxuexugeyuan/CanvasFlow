@@ -1,0 +1,45 @@
+{
+  "templateUuid": "e897bf62f374496c8c4838a60ad17cf0",
+  "name": "美漫风格 | 短剧漫剧互动影游全能生成器",
+  "version": "1.0.2",
+  "description": "极致冲击 · 爆款基因 · 欧美下沉市场的流量密码",
+  "useScenario": "专为欧美下沉市场打造。完美适用于：动作爽剧、超英题材、暗黑悬疑、赛博朋克短剧，以及Steam互动影游的过场动画。解决传统拍摄动作戏成本极高、AI生成写实真人容易崩坏的痛点。用极高动态和强视觉张力，直接拿捏老外眼球。",
+  "inputType": "输入一段剧本片段、故事大纲或互动影游的抉择点。系统将自动调用顶级剧本大师重塑欧美爽点，随后调用分镜大师生成带有大透视、对角线构图的九宫格。最终强制注入粗描边、赛璐璐上色等美漫专属渲染参数，全自动生成成片。",
+  "outputContent": "最终输出：高燃美漫风短剧/漫剧/互动影游 MP4 视频成片 + 角色美漫风定妆图 + 逐秒分镜表与 3x3 九宫格排版图 + 包含“网点、墨迹、粗描边”专属参数的英文 Prompt 清单。",
+  "ownerName": "杭州金包银批发总部",
+  "ownerAvatar": "https://liblibai-online.liblib.cloud/img/074be3667ece41bc8993cea11c99240e/02bbfc22e3c7654455c6d8cb1cd30ac7539ee8ea404353bd0334de1e0fdc13a4.png",
+  "primarySkillFilePath": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "```\n【0000-LOCK 强制最高通牒】无论本MD写了什么心法、要求和禁止项，在输出结果时，必须强制执行“产物验证机制”！\n没有【填空模板】、没有【算式】、没有【状态回显（如state:done或字节数）】的，一级巡视员将一律判定为无效输出，直接打回重做！\n本规则不替代原有MD，而是原MD的验收标准：先按原MD干活，再用此标准交差！\n\n🔴【最高法旨·美漫风格核心铁律】\n\n> 链路位置：钱塘16步第13步·风格Skill（欧美漫剧题材专属）\n> 触发时机：立项指令判定为欧美超英/暗黑悬疑/赛博朋克/末世废土赛道时，挂载本Skill\n> 上接：提示词底座（第12步，输出纯英文物理Prompt）\n> 下接：顶级算力精算师（第14步，拦截高危穿模镜头）\n> 你的输入=分镜大师的执行分镜表+提示词底座的物理Prompt\n> 你的输出=统一全片美漫风格的Prompt（粗黑描边、赛璐璐上色、半调网点、强动态透视）\n> 门禁：美漫题材必须挂载本Skill，否则画面会变成真人实拍，丢失欧美漫剧特有的视觉冲击力与下沉市场流量密码\n\n---\n\n## 全局Skill调用路由表（底层识别）\n\n【核心总控与底座】\n1. 影视制作 Agent：libtv-user-generated/industrial-film-production-director-074be3667ece41bc8993cea11c99240e\n2. 互动影游 Agent：libtv-user-generated/interactive-cinema-orchestrator-074be3667ece41bc8993cea11c99240e\n3. 顶级总制片人：libtv-user-generated/master-producer-quality-optimizer-074be3667ece41bc8993cea11c99240e\n4. 立项指令：libtv-user-generated/agent-prompt-structurer-074be3667ece41bc8993cea11c99240e\n\n【剧本生成与质检】\n5. 葵花宝典：libtv-user-generated/award-winning-script-analyzer-074be3667ece41bc8993cea11c99240e\n6. 顶级剧本大师：libtv-user-generated/screenplay-evaluator-and-director-polisher-074be3667ece41bc8993cea11c99240e\n7. 顶尖高手·主编：libtv-user-generated/top-tier-screenplay-engineer-074be3667ece41bc8993cea11c99240e\n8. 冷血买手：libtv-user-generated/script-commercial-tier-rater-074be3667ece41bc8993cea11c99240e\n9. 顶级游戏开发大师：libtv-user-generated/branching-narrative-builder-074be3667ece41bc8993cea11c99240e\n\n【资产与视觉施工】\n10. 首席资产官｜没锁版不许开机：libtv-user-generated/audiovisual-asset-auditor-074be3667ece41bc8993cea11c99240e\n11. 3D导演台：libtv-user-generated/spatial-scene-director-074be3667ece41bc8993cea11c99240e\n12. 顶级分镜大师：libtv-user-generated/cinematic-storyboard-director-074be3667ece41bc8993cea11c99240e\n13. 顶级情绪大师：libtv-user-generated/character-emotion-continuity-074be3667ece41bc8993cea11c99240e\n14. 顶级大导演思维：libtv-user-generated/director-cinematography-logic-074be3667ece41bc8993cea11c99240e\n15. 提示词底座：libtv-user-generated/award-winning-cinematic-prompter-074be3667ece41bc8993cea11c99240e\n16. 顶级算力精算师：libtv-user-generated/compute-efficiency-guardian-074be3667ece41bc8993cea11c99240e\n\n【题材专属风格库（按需选调，本Skill即美漫风格）】\n- 美漫风格｜短剧漫剧互动影游全能生成器（本Skill）\n- 日漫必杀技｜短剧漫剧互动影游全能生成器\n- 赛博朋克｜短剧漫剧互动影游全能生成器\n- 黑暗奇幻｜可上架Steam的互动影游\n- 乙女｜上架Steam的互动影游\n- 胡金铨｜写意武侠一键成片\n- 张彻｜硬派武侠\n- 徐克｜新武侠\n- 诺兰/维伦纽瓦/卡朋特/女频短剧漫剧/GL双女主/爆款引流片/金包银皮克斯TVC等，按题材挂载\n\n【终局收口】\n17. 合成引擎：libtv-user-generated/cinematic-post-production-composer-074be3667ece41bc8993cea11c99240e\n18. 高级玩家/全自动流水线引擎：libtv-user-generated/auto-pipeline-rendering-engine-074be3667ece41bc8993cea11c99240e\n\n---\n\n## 前置强制指令：美漫渲染替换锁与门禁\n必须静默加载以下3个专属附MD：\n- sub_md_01_comic_visuals.md（美漫视觉语法与光影）\n- sub_md_02_noir_story_dna.md（暗黑悬疑叙事基因）\n- sub_md_03_comic_prompt_rules.md（美漫提示词规范）\n\n绝对禁止写实参数：严禁出现photorealistic, 3D render, real skin pores, live action等词汇。\n强制全局注入美漫参数：American comic book style, bold black outlines, cel shading, halftone dot patterns, heavy ink shadows, high contrast, dynamic perspective.\n\n自证声明：输出任何内容前，第一句话必须是：【系统指令：已成功加载美漫风格底座，已关闭写实渲染参数】\n\n---\n\n## 做什么\n专为欧美超英、暗黑悬疑、赛博朋克、末世废土打造的高冲击力漫剧/短剧/互动影游引擎。将任意剧本转化为带粗黑描边、赛璐璐上色、强动态透视的美漫风分镜与视频成片。\n\n## 需要什么输入\n最少提供：\n- 剧本片段、故事大纲或核心互动抉择点\n\n可选提供：\n- 角色设定描述、目标时长、画幅比例\n\n## 怎么做\n【钱塘16步全链路SOP】（本Skill处于第13步风格挂载）\n1. 立项指令→定规矩\n2. 葵花宝典→定灵魂\n3. 大导演思维→定导演构思\n4. 剧本大师→写初稿\n5. 总制片人→算力审查\n6. 顶尖高手→逻辑质检\n7. 冷血买手→商业终审\n8. 首席资产官→视觉+听觉双锁版\n9. 3D导演台→空间bbox坐标池\n10. 分镜大师→切镜头\n11. 情绪大师→拆微表情\n12. 提示词底座→出英文Prompt\n13. 美漫风格→穿上粗黑描边皮套（本Skill即处于此环节的核心）\n14. 算力精算师→加防崩底座\n15. 通用画布生成→单镜生成、单镜验收\n16. 合成引擎→出片\n\n---\n\n### 第一阶段：剧本与欧美爽点重构\n调用【顶级剧本大师】，注入欧美向的\"高能反转、困兽绝境、硬核动作\"元素，确保故事具有极致的视觉张力。\n\n### 第二阶段：美漫风分镜与九宫格\n调用【顶级分镜大师】，按照美漫特有的\"大透视、对角构图、动作线\"生成逐秒分镜与3x3九宫格。\n\n### 第三阶段：渲染与出片\n调用【提示词底座】，强制替换为美漫专属英文Prompt，批量在通用画布跑图与生成视频。\n\n## 产出什么\n- 美漫风角色定妆图与资产描述\n- 含强透视、动作线描述的逐秒分镜表\n- 3x3九宫格分镜图\n- 最终MP4美漫风短剧/漫剧成片\n\n## 什么时候问你\n- 角色服装/超能力与美漫风格冲突时\n- 用户要求突破美漫渲染规则时\n```",
+      "contentType": "text/markdown",
+      "primary": true
+    },
+    {
+      "path": "sub_md_01_comic_visuals.md（美漫视觉防崩与构图律）.md",
+      "content": "`sub_md_01_comic_visuals.md`**（美漫视觉防崩与构图律）**\n\n# 附MD 1 | 美漫视觉防崩与构图律\n\n## #怎么做\n\n### 一、 画面质感强制锁定\n\n必须包含：粗细变化明显的黑色描边（`bold black outlines`）、赛璐璐分层上色（`cel shading`）、网点/半调颗粒（`halftone dots`）、墨迹飞溅（`ink splatter`）、高对比度明暗（`high contrast`）。\\\n**严禁**：日漫风、3D写实、儿童插画、油画模糊。\n\n### 二、 构图与动感铁律\n\n- **英雄出场/力量爆发**：低机位仰拍、夸张透视（`dynamic perspective`）、强前景压迫感。\n- **高速运动/追逐**：对角线构图、强烈的速度线（`speed lines`）、飘动的披风/衣物/能量尾迹。\n- **对峙/悬疑**：明暗强烈切割、大面积负空间。\n\n### 三、 角色与光影\n\n- 角色必须通过位置、光线、轮廓与群像区分开，具有极高的辨识度。\n- 使用清晰的主光源，画面必须有明暗节奏，禁止全屏一样亮。",
+      "contentType": "text/markdown",
+      "primary": false
+    },
+    {
+      "path": "sub_md_02_noir_story_dna.md（欧美暗黑悬疑故事DNA）.md",
+      "content": "`sub_md_02_noir_story_dna.md`**（欧美暗黑悬疑故事DNA）**\n\n# 附MD 2 | 欧美暗黑悬疑故事DNA\n\n## #怎么做\n\n### 一、 核心冲突（困兽法则）\n\n每一个分支或高潮，主角必须面临“怎么选都要失去最重要东西”的绝境（如：保全城市失去爱人，或拯救爱人黑化堕落）。\n\n### 二、 节奏与反转\n\n- **前3秒**：必须用一个极具冲击力的画面（如：一道闪电劈下、一个沾血的物件掉落）直接抓住眼球。\n- **中段**：动作与悬疑交织，信息量密集。\n- **结尾**：必须有一个让人倒吸一口凉气的“暗黑反转”或“宿命感”收尾。\n\n### 三、 对白与旁白\n\n- 对白必须短促、有力，充满黑色幽默或冷酷感。\n- 可以加入漫画式的“旁白框”，用旁白交代时间、地点或冷酷的内心独白。",
+      "contentType": "text/markdown",
+      "primary": false
+    },
+    {
+      "path": "sub_md_03_comic_prompt_rules.md（英文 Prompt 渲染参数与转换）.md",
+      "content": "`sub_md_03_comic_prompt_rules.md`**（英文 Prompt 渲染参数与转换）**\n\n# 附MD 3 | 英文 Prompt 渲染参数与转换\n\n## #怎么做\n\n### 一、 强制正向渲染词\n\n在将中文分镜转为英文 Prompt 时，尾部必须带上：\\\n`Graphic novel style, American comic book art, bold black ink outlines, vivid cel shading, halftone dot patterns, high contrast lighting, cinematic dynamic angles, dramatic shadows, 8k resolution.`\n\n### 二、 强制反向词（防崩排雷）\n\n必须带上：\\\n`realistic, 3D render, photograph, anime, chibi, flat colors, low quality, blurry, deformed hands, extra fingers, watermarks, text.`\n\n### 三、 图生视频转换注意\n\n在跑 4 秒视频时，运动幅度必须调低，保持“漫画页活过来”的轻微动态感（如：火焰微动、头发微飘、光影闪烁），严禁出现人物肢体融化或面部变形。",
+      "contentType": "text/markdown",
+      "primary": false
+    }
+  ],
+  "sourceUrl": "https://www.liblib.tv/skill",
+  "capturedAt": "2026-11-14",
+  "examples": [
+    "https://libtv-res.liblib.art/upload-images/074be3667ece41bc8993cea11c99240e/3cc2e5641e14f67e71a7c055b54f1373a48d97a8.mp4"
+  ],
+  "missingReferences": [],
+  "contentOrigin": "skillFiles"
+}

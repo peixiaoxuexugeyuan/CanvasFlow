@@ -1,0 +1,27 @@
+{
+  "templateUuid": "92698d5020024373b87b325aafd54f3b",
+  "name": "美妆广告TVC视频",
+  "version": "1.0.1",
+  "description": "适用于制作宣传TVC美妆类广告",
+  "useScenario": "适用于美妆短视频广告TVC视频制作",
+  "inputType": "产品与人物；广告旁白词。",
+  "outputContent": "人物产品图,分镜图prompt，完整成片",
+  "ownerName": "JACKPOORS",
+  "ownerAvatar": "https://liblibai-online.liblib.cloud/img/6fe77fcad9614c799944a901d1cc568a/1065f9839d0ec32ef5f3028f34eac4cb14f006373d85d57f70d03f79199758c4.jpg",
+  "primarySkillFilePath": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "### 用途\n\n本 Skill 提供了美妆短视频广告的标准化创作方法论，核心为“四幕七段式”叙事框架。它集成了品牌文字展示规范与全片音频统一体系，旨在帮助用户生成具备商业质感、音画高度同步的专业美妆 TVC 分镜脚本及生成提示词。\n\n### 适用输入\n\n- **品牌信息**：品牌名称（BRAND NAME）、LOGO 风格、Slogan。\n- **产品详情**：品类（口红、粉底等）、质地（膏体、液态）、核心卖点。\n- **视觉偏好**：模特特征（肤色、发型）、色调倾向（如高饱和或低饱和）、场景（居家、职场、户外）。\n\n### 操作步骤\n\n1. **叙事规划**：将广告拆分为产品特写（10%）、取料展示（10%）、上妆实操（20%）、三段场景蒙太奇（45%）及定格收尾（15%）。\n2. **视觉对齐**：锁定单一模特身份，统一全局柔光照明与主色调，确保产品在不同镜头下的色准一致性。\n3. **音频设计**：配置统一的 BGM（85-110BPM）、单一人声旁白及专属音效库，明确音画卡点位置。\n4. **提示词生成**：为每一段落生成包含运镜、构图、光影及音频配合说明的详细 Prompt。\n\n### 输出要求\n\n- **分镜脚本**：包含 7 段镜头的详细时长分配、视觉画面描述与音频执行细节。\n- **提示词组**：提供符合 8K 商业摄影质感的提示词，允许展示指定品牌文字与 LOGO。\n- **校验清单**：提供从模特一致性到音频层级（旁白 -12dB &gt; 音乐 -18dB &gt; 音效 -22dB）的质量核验标准。\n\n### 注意事项\n\n- 严禁出现除主品牌外的第三方竞品标识。\n- 全程必须保持模特五官、发型与妆容基底的恒定。\n- 镜头切换节点必须严格对齐音频节拍重音。",
+      "contentType": "text/markdown",
+      "primary": true
+    }
+  ],
+  "sourceUrl": "https://www.liblib.tv/skill",
+  "capturedAt": "2026-11-14",
+  "examples": [
+    "https://libtv-res.liblib.art/upload-images/6fe77fcad9614c799944a901d1cc568a/c0776a0c0820e7099b36d20af7254575dbae8741.mp4"
+  ],
+  "missingReferences": [],
+  "contentOrigin": "skillFiles"
+}

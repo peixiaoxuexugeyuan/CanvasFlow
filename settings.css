@@ -1146,7 +1146,7 @@ html.light .about-update-status.is-error { color: #b42336; }
 .about-star { display: inline-block; flex-shrink: 0; font-size: 26px; line-height: 1; color: #f5a623; animation: about-star-turn 10s linear infinite; }
 @keyframes about-star-turn { to { transform: rotate(360deg); } }
 .about-support p { flex: 1; margin: 0; font-size: 12px; line-height: 1.7; }
-.about-repo-status { color: var(--about-muted); font-size: 11px; white-space: nowrap; }
+.about-repo-link { gap: 8px; background: var(--about-card); white-space: nowrap; }
 .about-dismiss { display: grid; place-items: center; flex-shrink: 0; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--about-muted); font-size: 20px; cursor: pointer; }
 .about-dismiss:hover { background: var(--about-hover); color: var(--about-text); }
 .about-dismiss:focus-visible { outline: 2px solid var(--brand-2, #4c9dff); outline-offset: 2px; }

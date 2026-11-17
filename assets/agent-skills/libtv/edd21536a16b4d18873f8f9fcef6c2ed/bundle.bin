@@ -1,0 +1,45 @@
+{
+  "templateUuid": "edd21536a16b4d18873f8f9fcef6c2ed",
+  "name": "赛博朋克 | 短剧漫剧互动影游全能生成器",
+  "version": "1.0.2",
+  "description": "UE5电影级渲染，一键生成《爱死机》级赛博朋克CG短片。",
+  "useScenario": "专为科幻、赛博朋克、未来战争、机器人觉醒题材打造。完美适用于：科幻悬疑短剧、赛博风漫剧、互动影游的过场 CG 动画、以及游戏 PV 概念预告片。彻底解决实景拍摄无法呈现“高科技低生活”视觉奇观的痛点。",
+  "inputType": "输入你的故事创意（如：一个黑客发现公司的核心机密是一段假记忆）、角色设定、目标时长和参考感觉（如：赛博朋克2077）。系统将自动调用顶级分镜大师，按三幕式结构拆解，并强制注入 UE5 级渲染参数与义体设定，全自动生成带电子工业音效的成片。",
+  "outputContent": "最终输出：UE5 电影级赛博朋克 MP4 动画短片 + 完整三幕式剧情脚本 + 逐秒分镜表与 3x3 九宫格排版图 + 包含“义体、霓虹、体积雾、光线追踪”专属参数的工程级英文 Prompt 清单。",
+  "ownerName": "杭州金包银批发总部",
+  "ownerAvatar": "https://liblibai-online.liblib.cloud/img/074be3667ece41bc8993cea11c99240e/02bbfc22e3c7654455c6d8cb1cd30ac7539ee8ea404353bd0334de1e0fdc13a4.png",
+  "primarySkillFilePath": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "```\n【0000-LOCK 强制最高通牒】无论本MD写了什么心法、要求和禁止项，在输出结果时，必须强制执行“产物验证机制”！\n没有【填空模板】、没有【算式】、没有【状态回显（如state:done或字节数）】的，一级巡视员将一律判定为无效输出，直接打回重做！\n本规则不替代原有MD，而是原MD的验收标准：先按原MD干活，再用此标准交差！\n\n🔴【最高法旨·赛博朋克核心铁律】\n\n> 链路位置：钱塘16步第13步·风格Skill（赛博朋克题材专属）\n> 触发时机：立项指令判定为科幻/赛博朋克/未来战争/机器人赛道时，挂载本Skill\n> 上接：提示词底座（第12步，输出纯英文物理Prompt）\n> 下接：顶级算力精算师（第14步，拦截高危穿模镜头）\n> 你的输入=分镜大师的执行分镜表+提示词底座的物理Prompt\n> 你的输出=统一全片赛博朋克风格的Prompt（UE5渲染、霓虹雨夜、体积雾、高科技低生活）\n> 门禁：赛博朋克题材必须挂载本Skill，否则画面会变成普通都市剧，丢失《爱死机》级的CG质感与未来废墟感\n\n---\n\n## 全局Skill调用路由表（底层识别）\n\n【核心总控与底座】\n1. 影视制作 Agent：libtv-user-generated/industrial-film-production-director-074be3667ece41bc8993cea11c99240e\n2. 互动影游 Agent：libtv-user-generated/interactive-cinema-orchestrator-074be3667ece41bc8993cea11c99240e\n3. 顶级总制片人：libtv-user-generated/master-producer-quality-optimizer-074be3667ece41bc8993cea11c99240e\n4. 立项指令：libtv-user-generated/agent-prompt-structurer-074be3667ece41bc8993cea11c99240e\n\n【剧本生成与质检】\n5. 葵花宝典：libtv-user-generated/award-winning-script-analyzer-074be3667ece41bc8993cea11c99240e\n6. 顶级剧本大师：libtv-user-generated/screenplay-evaluator-and-director-polisher-074be3667ece41bc8993cea11c99240e\n7. 顶尖高手·主编：libtv-user-generated/top-tier-screenplay-engineer-074be3667ece41bc8993cea11c99240e\n8. 冷血买手：libtv-user-generated/script-commercial-tier-rater-074be3667ece41bc8993cea11c99240e\n9. 顶级游戏开发大师：libtv-user-generated/branching-narrative-builder-074be3667ece41bc8993cea11c99240e\n\n【资产与视觉施工】\n10. 首席资产官｜没锁版不许开机：libtv-user-generated/audiovisual-asset-auditor-074be3667ece41bc8993cea11c99240e\n11. 3D导演台：libtv-user-generated/spatial-scene-director-074be3667ece41bc8993cea11c99240e\n12. 顶级分镜大师：libtv-user-generated/cinematic-storyboard-director-074be3667ece41bc8993cea11c99240e\n13. 顶级情绪大师：libtv-user-generated/character-emotion-continuity-074be3667ece41bc8993cea11c99240e\n14. 顶级大导演思维：libtv-user-generated/director-cinematography-logic-074be3667ece41bc8993cea11c99240e\n15. 提示词底座：libtv-user-generated/award-winning-cinematic-prompter-074be3667ece41bc8993cea11c99240e\n16. 顶级算力精算师：libtv-user-generated/compute-efficiency-guardian-074be3667ece41bc8993cea11c99240e\n\n【题材专属风格库（按需选调，本Skill即赛博朋克风格）】\n- 赛博朋克｜短剧漫剧互动影游全能生成器（本Skill）\n- 黑暗奇幻｜可上架Steam的互动影游\n- 乙女｜上架Steam的互动影游\n- 胡金铨｜写意武侠一键成片\n- 张彻｜硬派武侠\n- 徐克｜新武侠\n- 诺兰/维伦纽瓦/卡朋特/女频短剧漫剧/GL双女主/爆款引流片/金包银皮克斯TVC等，按题材挂载\n\n【终局收口】\n17. 合成引擎：libtv-user-generated/cinematic-post-production-composer-074be3667ece41bc8993cea11c99240e\n18. 高级玩家/全自动流水线引擎：libtv-user-generated/auto-pipeline-rendering-engine-074be3667ece41bc8993cea11c99240e\n\n---\n\n## 前置强制指令：UE5赛博渲染锁\n必须静默加载以下3个专属附MD：\n- sub_md_01_cyberpunk_visuals.md（赛博朋克视觉语法与光影）\n- sub_md_02_cyberpunk_audio.md（电子工业配乐与机械底噪）\n- sub_md_03_cyberpunk_story.md（高科技低生活叙事内核）\n\n绝对禁止写实/日漫参数，强制全局注入：Unreal Engine 5 rendering, Cyberpunk 2077 aesthetic, cinematic 3D animation, neon streets, rain night reflections, volumetric fog.\n\n自证声明：输出任何内容前，第一句话必须是：【系统指令：已成功加载赛博朋克UE5引擎】\n\n---\n\n## 做什么\n专为科幻、赛博朋克、未来战争、机器人剧情打造的电影级CG动画短片/漫剧生成器。输出像Netflix《爱死机》般的高质量赛博朋克成片。\n\n## 需要什么输入\n- 故事创意、角色设定、目标时长、参考感觉（如：赛博朋克2077、银翼杀手）\n\n## 怎么做\n【钱塘16步全链路SOP】（本Skill处于第13步风格挂载）\n1. 立项指令→定规矩\n2. 葵花宝典→定灵魂\n3. 大导演思维→定导演构思\n4. 剧本大师→写初稿\n5. 总制片人→算力审查\n6. 顶尖高手→逻辑质检\n7. 冷血买手→商业终审\n8. 首席资产官→视觉+听觉双锁版\n9. 3D导演台→空间bbox坐标池\n10. 分镜大师→切镜头\n11. 情绪大师→拆微表情\n12. 提示词底座→出英文Prompt\n13. 赛博朋克风格→穿上UE5皮套（本Skill即处于此环节的核心）\n14. 算力精算师→加防崩底座\n15. 通用画布生成→单镜生成、单镜验收\n16. 合成引擎→出片\n\n---\n\n### 第一阶段：赛博朋克叙事重构\n调用剧本大师，注入\"高科技低生活、巨型企业阴谋、义体改造、AI觉醒\"等赛博内核。\n\n### 第二阶段：分镜与视觉转化\n调用分镜大师与提示词底座，使用强制UE5渲染词，生成三幕式分镜（钩子-冲突-反转）与3x3九宫格。\n\n### 第三阶段：合成出片\n生成画面与视频，配上电子工业音乐与飞行器/机械底噪，合成MP4。\n\n## 产出什么\n- 完整三幕式赛博朋克剧情\n- UE5电影级分镜图与九宫格\n- 最终MP4 CG动画短片\n\n## 什么时候问你\n- 主角的义体设定与剧情冲突时\n- 用户要求突破UE5渲染规则时\n```",
+      "contentType": "text/markdown",
+      "primary": true
+    },
+    {
+      "path": "sub_md_01_cyberpunk_visuals.md（UE5视觉与防崩锁）.md",
+      "content": "### `sub_md_01_cyberpunk_visuals.md`**（UE5视觉与防崩锁）**\n\n# 附MD 1 | 赛博朋克UE5视觉与防崩锁\n\n## #做什么\n\n锁定 Netflix《爱死机》/《赛博朋克：边缘行者》级别的视觉质感，杜绝低劣塑料感和平庸光照。\n\n## #需要什么输入\n\n- 剧本场景描述、角色设定。\n\n## #怎么做\n\n### 一、 强制正向渲染词（必须出现在 Prompt 尾部）\n\n`Unreal Engine 5 rendering, Cyberpunk 2077 aesthetic, cinematic 3D animation, cinematic lighting, ray tracing, volumetric fog, rain night reflections, high detailed textures, neon lights (cyan, magenta, orange).`\n\n### 二、 城市与环境法则\n\n- **环境层次**：必须包含“高科技，低生活”的对比（如：全息广告牌下堆满垃圾的暗巷）。\n- **材质细节**：潮湿的柏油路、生锈的管道、发光的电缆、全息UI界面。\n- **光影**：强对比！要有霓虹灯的光晕（Bloom）和底部的体积光（Volumetric Lighting）。\n\n### 三、 角色与义体设定\n\n- 角色必须带有明显的科技改造痕迹（如：发光的机械义眼、太阳穴的金属植入体、机械手臂）。\n- 保持跨镜头一致性：机械部件颜色、发型、脸部特征绝不改变。\n\n### 四、 强制反向词（防崩底线）\n\n`photorealistic, 2D anime, flat lighting, cheap plastic, low quality, deformed hands, extra fingers, missing limbs, text, watermark.`",
+      "contentType": "text/markdown",
+      "primary": false
+    },
+    {
+      "path": "sub_md_02_cyberpunk_audio.md（赛博听觉与音效库）.md",
+      "content": "### `sub_md_02_cyberpunk_audio.md`**（赛博听觉与音效库）**\n\n# 附MD 2 | 赛博听觉与音效库\n\n## #做什么\n\n建立赛博朋克专属的听觉体系，用声音构建压抑、冰冷、电子化的未来世界。\n\n## #需要什么输入\n\n- 分镜情绪节点、动作节点。\n\n## #怎么做\n\n### 一、 BGM类型强制匹配\n\n- **悬疑/对峙**：低频合成器（Synthwave）、冰冷的电子脉冲音、心跳声。\n- **动作/追逐**：重型电子工业音乐、高速鼓点、Cyberpunk Techno。\n- **宏大/企业压迫**：史诗级管弦乐叠加合成器、诡异的唱诗班和声。\n\n### 二、 物理音效库（Foley）\n\n- **机械交互**：沉重的气密门开合声、液压杆的嘶嘶声、金属义体摩擦声、硬解芯片的插入声。\n- **环境音**：暴雨打在霓虹招牌上的嘶嘶声、远处飞车的引擎轰鸣、无人机旋翼的低频白噪音。\n- **数据音**：系统报错的刺耳蜂鸣、全息键盘的打字声、数据流传输的电子杂音。\n\n### 三、 人声处理\n\n- 若有台词，可加入轻微的无线电通讯失真感（Radio distortion）或金属混响。\n- **绝对禁止**：自然鸟鸣、古典乐器、乡村民谣。",
+      "contentType": "text/markdown",
+      "primary": false
+    },
+    {
+      "path": "sub_md_03_cyberpunk_story.md（三幕式企业阴谋叙事律）.md",
+      "content": "### `sub_md_03_cyberpunk_story.md`**（三幕式企业阴谋叙事律）**\n\n# 附MD 3 | 三幕式企业阴谋叙事律\n\n## #做什么\n\n确保赛博朋克故事不流于表面，注入深层的社会批判与“困兽法则”。\n\n## #需要什么输入\n\n- 故事大纲或互动影游分支。\n\n## #怎么做\n\n### 一、 核心赛博冲突\n\n- 主角面临的绝境必须与“数据篡改、记忆伪造、企业洗脑、阶级压迫”相关。\n- **困兽抉择**：选择揭露真相会害死亲友，选择保持沉默会成为企业的傀儡。\n\n### 二、 三幕式节奏控制\n\n- **第一幕（0-5s 钩子）**：一个极其反常的科技现象（如：主角的机械义眼看到了不属于自己的记忆）。\n- **第二幕（冲突升级）**：遭到巨型企业（Megacorp）的追杀，必须潜入暗网或地下黑市寻找线索。\n- **第三幕（高潮反转）**：最大的视觉冲击（如：拉开企业高管的皮囊，发现底下是仿生机器人；或者发现自己才是那个被伪造出来的“假冒伪劣品”）。\n\n### 三、 对白风格\n\n- 冷酷、短促、带有黑色幽默或虚无主义。\n- 避免长篇大论，多用指令性语言或自言自语。",
+      "contentType": "text/markdown",
+      "primary": false
+    }
+  ],
+  "sourceUrl": "https://www.liblib.tv/skill",
+  "capturedAt": "2026-11-14",
+  "examples": [
+    "https://libtv-res.liblib.art/upload-images/074be3667ece41bc8993cea11c99240e/1627f8b65ce7209a2596b79dbfa1ebc74734bbc4.mp4"
+  ],
+  "missingReferences": [],
+  "contentOrigin": "skillFiles"
+}

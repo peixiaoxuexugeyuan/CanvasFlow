@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('CanvasFlowDesktop', Object.freeze({
   getUpdateState: () => ipcRenderer.invoke('desktop:update-state'),
   checkForUpdates: () => ipcRenderer.invoke('desktop:check-update'),
   installUpdate: () => ipcRenderer.invoke('desktop:install-update'),
+  dismissUpdateNotice: release => ipcRenderer.invoke('desktop:dismiss-update-notice', release),
   onUpdateStatus(handler) {
     if (typeof handler !== 'function') return () => {};
     const listener = (_event, status) => handler(status);

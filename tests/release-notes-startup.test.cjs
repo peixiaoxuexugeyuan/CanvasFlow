@@ -40,12 +40,14 @@ test('startup notice waits for canvas readiness and animation, then opens and re
   assert.equal(h.counts.shown, 0);
   h.finishAnimation(); await tick();
   assert.equal(h.counts.shown, 1); assert.equal(h.counts.marked, 1);
+  assert.notEqual(h.document.documentElement.dataset.canvasflowNoticesReady, 'true');
   h.schedule(); h.ready(); await tick();
   assert.equal(h.counts.shown, 1);
   assert.match(h.host.innerHTML, /v1\.0\.0/);
   let intercepted = false;
   h.listeners.get('keydown')({key:'Escape', preventDefault(){}, stopImmediatePropagation(){intercepted=true;}});
   assert.equal(intercepted, true); assert.equal(h.counts.removed, 1);
+  assert.equal(h.document.documentElement.dataset.canvasflowNoticesReady, 'true');
   assert.equal(h.listeners.has('keydown'), false);
 });
 
@@ -53,6 +55,7 @@ test('seen version, ordinary browser, and failed opening do not acknowledge a ne
   for (const options of [{pending:false}, {desktop:false}, {failOpen:true}]) {
     const h = harness({...options, animation:false}); h.schedule(); h.ready(); await tick();
     assert.equal(h.counts.shown, 0); assert.equal(h.counts.marked, 0);
+    if(options.desktop!==false)assert.equal(h.document.documentElement.dataset.canvasflowNoticesReady, 'true');
     if(options.failOpen) assert.equal(h.counts.removed, 1);
   }
 });

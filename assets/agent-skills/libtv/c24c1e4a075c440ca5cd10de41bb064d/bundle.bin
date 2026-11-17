@@ -1,0 +1,27 @@
+{
+  "templateUuid": "c24c1e4a075c440ca5cd10de41bb064d",
+  "name": "时钟推广",
+  "version": "1.0.0",
+  "description": "特点：时间、星期、温度、湿度、闹钟、舒适度一屏显示，桌挂两用",
+  "useScenario": "家居装饰",
+  "inputType": "特点：时间、星期、温度、湿度、闹钟、舒适度一屏显示，桌挂两用，",
+  "outputContent": "推广",
+  "ownerName": "137****4558",
+  "ownerAvatar": "https://liblibai-online.liblib.cloud/web/avatar/avatar5.png",
+  "primarySkillFilePath": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "特点：时间、星期、温度、湿度、闹钟、舒适度一屏显示，桌挂两用，",
+      "contentType": "text/markdown",
+      "primary": true
+    }
+  ],
+  "sourceUrl": "https://www.liblib.tv/skill",
+  "capturedAt": "2026-11-14",
+  "examples": [
+    "https://libtv-res.liblib.art/upload-images/a048a3d74be54a588fa9a1630a5aac91/1943ca96b4d341d096012ce9886ace894afca0f5.jpeg"
+  ],
+  "missingReferences": [],
+  "contentOrigin": "skillFiles"
+}

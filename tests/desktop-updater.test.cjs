@@ -33,6 +33,23 @@ test('versions compare numerically and downgrade/equal releases are not updates'
   assert.equal(isNewer('1.0.0','2.0.0'), false);
   assert.throws(()=>isNewer('1.01.0','1.0.0'));
 });
+test('equal versions compare monotonic build numbers while older versions never upgrade',()=>{
+  assert.equal(isNewer('1.0.0','1.0.0',2026111602,2026111601),true);
+  assert.equal(isNewer('1.0.0','1.0.0',2026111601,2026111601),false);
+  assert.equal(isNewer('1.0.0','1.0.0',2026111501,2026111601),false);
+  assert.equal(isNewer('0.9.9','1.0.0',2026111609,2026111601),false);
+  assert.equal(isNewer('1.0.1','1.0.0',0,2026111601),true);
+  for(const buildNumber of [-1,1.5,'2026111602',Number.MAX_SAFE_INTEGER+1,null])assert.throws(()=>validateManifest({...manifest,buildNumber}));
+});
+test('same-version build update downloads once and stops offering after installation',async t=>{
+  const h=await harness(t);const next={...manifest,version:'1.0.0',buildNumber:2026111602,url:manifest.url.replace('1.0.1','1.0.0')};
+  const options={version:'1.0.0',buildNumber:2026111601,directory:h.directory,fetchImpl:async url=>new Response(url===FEED_URL?JSON.stringify(next):bytes)};
+  const current=createUpdater(options);await current.check();assert.equal(current.getState().status,'available');
+  assert.match(current.getState().message,/2026111602/);assert.ok(await current.download());assert.ok(await current.verifyInstaller());
+  const installed=createUpdater({...options,buildNumber:2026111602});await installed.check();assert.equal(installed.getState().status,'up-to-date');
+  const legacyFeed=createUpdater({...options,fetchImpl:async()=>new Response(JSON.stringify({...next,buildNumber:undefined}))});
+  await legacyFeed.check();assert.equal(legacyFeed.getState().status,'up-to-date');
+});
 test('manifest permits only the official HTTPS versioned Windows installer',()=>{
   assert.equal(validateManifest(manifest).version,'1.0.1');
   for (const patch of [
@@ -101,4 +118,11 @@ test('packaging writes a real size and hash without overwriting an existing rele
   assert.equal(actual.size,bytes.length); assert.equal(actual.sha256,manifest.sha256);
   assert.deepEqual(validateManifest(actual),validateManifest(manifest));
   await assert.rejects(writeUpdateManifest(installer,'1.0.1',h.directory),/EEXIST/);
+});
+test('packaging records the actual desktop build in the update manifest',async t=>{
+  const h=await harness(t),installer=path.join(h.directory,'CanvasFlow-1.0.1-x64-Setup.exe');await fs.promises.writeFile(installer,bytes);
+  const target=await writeUpdateManifest(installer,'1.0.1',h.directory,2026111601);
+  const actual=validateManifest(JSON.parse(await fs.promises.readFile(target,'utf8')));
+  assert.equal(actual.buildNumber,2026111601);
+  assert.equal(new URL(actual.url).searchParams.get('build'),'2026111601');
 });

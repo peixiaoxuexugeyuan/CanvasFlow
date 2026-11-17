@@ -210,7 +210,7 @@ window.createDirectorPrevis=function(h){
   const t=e.target.closest('[data-pv-back],[data-pv-close],[data-pv-save],[data-pv-mode],[data-pv-play],[data-pv-preview-play],[data-pv-timeline],[data-pv-tree],[data-pv-inspector],[data-pv-undo],[data-pv-redo],[data-pv-shot],[data-pv-export],[data-pv-share],[data-pv-camera],[data-pv-loop],[data-pv-duration]');if(!t)return;
   const d=t.dataset;
   if(S.recording){if(d.pvExport!==undefined)h.toggleRecording();return;}
-  if(d.pvBack!==undefined){setWorkspace(false);return;}
+  if(d.pvBack!==undefined){if(S.onClose)h.close();else setWorkspace(false);return;}
   if(d.pvClose!==undefined){h.close();return;}
   if(d.pvSave!==undefined){h.persist(true);h.toast('场景已保存');}
   if(d.pvMode)setMode(d.pvMode);
@@ -248,7 +248,8 @@ window.createDirectorPrevis=function(h){
   const monitorName=monitors.querySelector('[data-monitor-name]'),name=cam?.name||'未添加机位';if(monitorName.textContent!==name)monitorName.textContent=name;const monitorPlay=monitors.querySelector('.pv-monitor-play');monitorPlay.disabled=S.recording||!cam;if(monitorPlay.dataset.playing!==String(S.playing)){monitorPlay.dataset.playing=String(S.playing);monitorPlay.innerHTML=S.playing?ICONS.pause:ICONS.play;}monitorPlay.ariaLabel=S.playing?'暂停监视器机位':'播放监视器机位';
   const key=[cam?.id,cam?.name,cam?.aspectRatio,S.selectedId,S.playing,S.recording,S.exportState?.saving,S.undoStack.length,S.redoStack.length,S.loopWorkArea,h.isLocked?.(cam?.id),total].join('|');
   if(key!==lastUi){lastUi=key;
-   controls.querySelector('[data-pv-title]').textContent='3D预演台';
+   controls.querySelector('[data-pv-title]').textContent=S.onClose?'CanvasFlow 3D-BOX':'3D预演台';
+   controls.querySelectorAll('[data-pv-back]').forEach(b=>{const label=S.onClose?'返回 3D-BOX':'返回3D导演台';if(b.closest('.pv-menu'))b.textContent=label;b.setAttribute('aria-label',label);b.title=label;});
    button('[data-pv-shot-name]').textContent=cam?.name||'未添加机位';button('[data-pv-shot-duration]').textContent=timecode(total);
    for(const q of ['[data-pv-play]','[data-pv-preview-play]']){const b=button(q);b.innerHTML=S.playing?ICONS.pause:ICONS.play;b.setAttribute('aria-label',q.includes('preview')?(S.playing?'暂停机位预览':'播放机位预览'):(S.playing?'暂停预演':'播放预演'));b.setAttribute('aria-pressed',String(S.playing));}
    button('[data-pv-loop]').setAttribute('aria-pressed',String(S.loopWorkArea));button('[data-pv-undo]').disabled=!S.undoStack.length||S.recording;button('[data-pv-redo]').disabled=!S.redoStack.length||S.recording;

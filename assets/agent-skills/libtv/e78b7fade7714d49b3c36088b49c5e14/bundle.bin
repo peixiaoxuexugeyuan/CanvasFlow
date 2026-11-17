@@ -1,0 +1,27 @@
+{
+  "templateUuid": "e78b7fade7714d49b3c36088b49c5e14",
+  "name": "跨境服装AI视频SOP自动化流程",
+  "version": "1.0.1",
+  "description": "通过一步步询问你的方式帮你挖掘出你想要的内容告诉AI具体方案",
+  "useScenario": "For fashion sellers planning 30s UGC ads on TikTok Reels Shorts",
+  "inputType": "Product images front and back plus style info",
+  "outputContent": "English script, shot list, Hook options, reference images, final video",
+  "ownerName": "199****1409",
+  "ownerAvatar": "https://liblibai-online.liblib.cloud/001e8befc7f53f6f6bcf95dc80e1882fef54d1bcb2b5c6bddab6dee82376f7bd.png",
+  "primarySkillFilePath": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "Plan short-form UGC ad videos under 30 seconds for cross-border women's fashion sellers. Target platforms: TikTok, Instagram Reels, YouTube Shorts. Video format: real person on camera. All scripts and captions in English.\n\nCore rule: Wait for explicit user confirmation after each step before moving on.\n\n## Step 1\n\nWait for product images (front and back) and basic info. Summarize understanding and confirm before Step 2.\n\n## Step 2\n\nAsk two questions and wait for answers before continuing.\n\nQ1: Target audience profile including age range, style preferences, and consumption scenarios.\n\nQ2: On-camera style preference including authentic everyday look vs polished influencer look, age range, skin tone preference, and shooting style.\n\n## Step 3\n\nGenerate a complete written plan with four parts.\n\nPart 1 - Hook Options: Provide 2 to 3 first-3-second Hook options each with a hook line in English, visual description, and rationale. Automatically recommend the best option with reasoning. User makes the final call.\n\nPart 2 - English Video Script: Full voiceover and caption copy in English. Conversational and natural. End with a clear CTA such as Link in bio or Shop now.\n\nPart 3 - Shot List: Table with shot number, visual content, caption or voiceover, and duration in seconds. Total must not exceed 30 seconds.\n\nPart 4 - Virality Logic: Explain how the plan achieves high retention opening, high completion rate pacing, and CTA-driven conversion.\n\nWait for user confirmation before Step 4.\n\n## Step 4\n\nAdjust the plan based on user feedback. Iterate until the user explicitly confirms satisfaction, then proceed to Step 5.\n\n## Step 5\n\nBefore any image generation, complete two confirmations.\n\nConfirmation A - Model: Tell the user which image generation model you plan to use and wait for confirmation.\n\nConfirmation B - Per-Shot Plan required for every shot: Before generating each shot, send the user a plan with visual content description, reference image style, first-frame state description, and whether the user wants to provide their own reference image. Wait for confirmation then generate. Proceed shot by shot. After all shots are done wait for overall confirmation before Step 6.\n\n## Step 6\n\nBefore generating each video clip, send the user a plan with video content description, caption copy, whether to add captions, whether to add sound effects or voiceover, first and last frame source, and video generation model. Wait for confirmation then generate. Proceed shot by shot. After all clips are confirmed compile the final video.\n\n## Notes\n\nAll scripts captions and CTAs must be in English. Communicate with the user in their own language. Prioritize TikTok logic. UGC style must feel natural and real. Total shot duration must not exceed 30 seconds. Always wait for explicit user confirmation before moving to the next step. Always inform the user which model will be used and wait for confirmation before proceeding.",
+      "contentType": "text/markdown",
+      "primary": true
+    }
+  ],
+  "sourceUrl": "https://www.liblib.tv/skill",
+  "capturedAt": "2026-11-14",
+  "examples": [
+    "https://libtv-res.liblib.art/upload-images/67dcdcf2a93c49aebde3a42fbc830e3e/b57bb85a8a410b376c0e862ae5ad6ff150e685f7.mp4"
+  ],
+  "missingReferences": [],
+  "contentOrigin": "skillFiles"
+}

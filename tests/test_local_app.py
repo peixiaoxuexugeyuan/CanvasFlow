@@ -8,6 +8,8 @@ import threading
 import unittest
 import base64
 import wave
+from email import policy
+from email.parser import BytesParser
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, build_opener, ProxyHandler
@@ -31,6 +33,119 @@ import server
 
 
 class LocalAppTest(unittest.TestCase):
+    def test_community_bridge_routes_and_cross_origin_protection(self):
+        with patch.object(server.COMMUNITY_SKILLS, 'catalog', return_value={'skills': [], 'count': 0}) as catalog:
+            status, result = self.api('/api/agent/community-skills?refresh=1')
+            self.assertEqual(status, 200)
+            self.assertEqual(result['count'], 0)
+            catalog.assert_called_once_with(force=True)
+            self.assertEqual(self.api('/api/agent/community-skills', headers={'Origin':'https://untrusted.invalid'})[0], 403)
+            self.assertEqual(catalog.call_count, 1)
+        with patch.object(server.COMMUNITY_SKILLS, 'detail', side_effect=server.CommunityError('已下架', 404)) as detail:
+            self.assertEqual(self.api('/api/agent/community-skills/community-test')[0], 404)
+            detail.assert_called_once_with('community-test')
+
+    def test_skill_editor_preserves_identity_and_prevents_overwrite(self):
+        self.assertEqual(server.agent.session_title_from('更新我的 Skill「Example」\n\nCurrent instructions'), '更新我的 Skill')
+        payload = {'name':'Editor original', 'description':'First description', 'prompt':'First instructions',
+                   'files':[{'path':'SKILL.md','content':'# First\r\n'}, {'path':'references/note.md','content':'Reference\n'}],
+                   'primarySkillFilePath':'SKILL.md', 'createOnly':True,
+                   'metadata':{'useScenario':'广告镜头', 'inputType':'提供产品参考', 'outputContent':'镜头表', 'kind':'视频', 'cover':'/media/media-test.png'}}
+        status, created = self.api('/api/agent/skills', 'POST', payload)
+        self.assertEqual(status, 200)
+        original = created['skill']
+        status, _ = self.api('/api/agent/skills', 'POST', {**payload, 'prompt':'Do not overwrite'})
+        self.assertEqual(status, 400)
+        status, updated = self.api('/api/agent/skills/'+original['id'], 'PUT',
+                                   {**payload, 'name':'Editor renamed', 'description':'Updated description'})
+        self.assertEqual(status, 200)
+        self.assertEqual(updated['skill']['id'], original['id'])
+        self.assertEqual(updated['skill']['createdAt'], original['createdAt'])
+        self.assertEqual(updated['skill']['files'][1]['content'], 'Reference\n')
+        self.assertEqual(updated['skill']['description'], 'Updated description')
+        self.assertEqual(updated['skill']['metadata'], payload['metadata'])
+        self.assertEqual(self.api('/api/agent/skills')[1]['skillEditorVersion'], 2)
+        for invalid in ({**payload['metadata'], 'inputType':''}, {**payload['metadata'], 'kind':'invalid'},
+                        {**payload['metadata'], 'cover':'javascript:alert(1)'}, {**payload['metadata'], 'cover':'/media/../private.png'}):
+            status, _ = self.api('/api/agent/skills/'+original['id'], 'PUT', {**payload, 'metadata':invalid})
+            self.assertEqual(status, 400)
+        status, other = self.api('/api/agent/skills', 'POST', {**payload, 'name':'Editor other'})
+        self.assertEqual(status, 200)
+        status, _ = self.api('/api/agent/skills/'+original['id'], 'PUT', {**payload, 'name':'Editor other'})
+        self.assertEqual(status, 409)
+        status, _ = self.api('/api/agent/skills/nonexistent', 'PUT', payload)
+        self.assertEqual(status, 404)
+        foreign, error = server.save_agent_skill('different-user', 'Editor renamed', prompt='Must not change', skill_id=original['id'])
+        self.assertIsNone(foreign)
+        self.assertIn('无权编辑', error)
+        saved = {s['id']:s for s in self.api('/api/agent/skills')[1]['skills']}
+        self.assertEqual(saved[original['id']]['name'], 'Editor renamed')
+        self.assertEqual(saved[original['id']]['prompt'], 'First instructions')
+        self.assertEqual(saved[other['skill']['id']]['name'], 'Editor other')
+        owner = next(s['userId'] for s in server.read_agent_skills() if s['id'] == original['id'])
+        legacy, error = server.save_agent_skill(owner, 'Editor renamed', prompt='Agent rewrite')
+        self.assertIsNone(legacy)
+        self.assertIn('update_skill', error)
+        self.assertEqual(next(s for s in server.read_agent_skills() if s['id'] == original['id'])['metadata'], payload['metadata'])
+
+    def test_skill_folder_documents_roundtrip_and_validation(self):
+        documents = [{'path': 'SKILL.md', 'content': '# Folder skill\n\n[Reference](references/camera.md)'},
+                     {'path': 'references/camera.md', 'content': 'Camera reference\r\n'}]
+        payload = {'name': 'Folder skill test', 'prompt': 'Execute both documents', 'files': documents,
+                   'primarySkillFilePath': 'SKILL.md', 'source': 'import'}
+        status, result = self.api('/api/agent/skills', 'POST', payload)
+        self.assertEqual(status, 200)
+        skill = result['skill']
+        saved = next(item for item in self.api('/api/agent/skills')[1]['skills'] if item['id'] == skill['id'])
+        self.assertEqual(saved['files'][1]['content'], 'Camera reference\r\n')
+        self.assertEqual(saved['primarySkillFilePath'], 'SKILL.md')
+        for bad_path in ('../escape.md', '/absolute.md', 'C:/escape.md', 'scripts/run.py'):
+            with self.subTest(path=bad_path):
+                status, _ = self.api('/api/agent/skills', 'POST', {**payload, 'files': [{'path':bad_path,'content':'bad'}]})
+                self.assertEqual(status, 400)
+        status, _ = self.api('/api/agent/skills', 'POST', {**payload, 'primarySkillFilePath':'missing.md'})
+        self.assertEqual(status, 400)
+        status, updated = self.api('/api/agent/skills', 'POST', {'name':payload['name'],'prompt':'New instructions'})
+        self.assertEqual(status, 400)
+        saved = next(s for s in self.api('/api/agent/skills')[1]['skills'] if s['id'] == skill['id'])
+        self.assertEqual(saved['files'][1]['content'], 'Camera reference\r\n')
+
+    def test_agent_skill_patch_preserves_files_identity_and_metadata(self):
+        payload = {'name':'Agent patch audit', 'description':'Original', 'prompt':'Combined instructions',
+                   'files':[{'path':'SKILL.md','content':'See [camera](references/camera.md)'},
+                            {'path':'references/camera.md','content':'Camera details'}], 'primarySkillFilePath':'SKILL.md',
+                   'metadata':{'useScenario':'广告', 'inputType':'参考图', 'outputContent':'分镜', 'kind':'视频'}}
+        status, result = self.api('/api/agent/skills', 'POST', payload)
+        self.assertEqual(status, 200)
+        original = result['skill']; skill_id = original['id']
+        owner = next(s['userId'] for s in server.read_agent_skills() if s['id'] == skill_id)
+        ctx = server.build_agent_ctx({'id':owner}, {'nodes':[], 'edges':[]}, {})
+        def run(args): return server.agent._tool_update_skill({'skillId':skill_id, **args}, ctx, [])
+        listed = server.agent._tool_list_skills({'skillId':skill_id}, ctx, [])['skills']
+        self.assertTrue(any(s['id'] == skill_id and len(s['files']) == 2 for s in listed))
+        count = len(server.read_agent_skills())
+        self.assertTrue(run({'name':'Agent patch renamed', 'description':'Changed'})['ok'])
+        saved = next(s for s in server.read_agent_skills() if s['id'] == skill_id)
+        self.assertEqual(len(server.read_agent_skills()), count)
+        self.assertEqual(saved['name'], 'Agent patch renamed')
+        self.assertEqual(saved['files'], original['files'])
+        self.assertEqual(saved['metadata'], original['metadata'])
+        self.assertEqual(saved['createdAt'], original['createdAt'])
+        self.assertTrue(run({'fileUpdates':[{'path':'SKILL.md','content':'Updated [camera](references/camera.md)'}]})['ok'])
+        saved = next(s for s in server.read_agent_skills() if s['id'] == skill_id)
+        self.assertEqual(saved['files'][1]['content'], 'Camera details')
+        self.assertIn('Camera details', saved['prompt'])
+        before = json.dumps(saved, sort_keys=True)
+        for bad in ([{'path':'../escape.md','content':'bad'}], [{'path':'SKILL.md','content':''}],
+                    [{'path':'A.md','content':'1'}, {'path':'a.md','content':'2'}]):
+            self.assertFalse(run({'fileUpdates':bad})['ok'])
+            self.assertEqual(json.dumps(next(s for s in server.read_agent_skills() if s['id'] == skill_id),sort_keys=True),before)
+        foreign, error = server.update_agent_skill('another-user', skill_id, {'name':'hijacked'})
+        self.assertIsNone(foreign); self.assertIn('无权',error)
+        duplicate = server.agent._tool_create_skill({'name':'Agent patch renamed','prompt':'replacement'},ctx,[])
+        self.assertFalse(duplicate['ok'])
+        self.assertEqual(json.dumps(next(s for s in server.read_agent_skills() if s['id'] == skill_id),sort_keys=True),before)
+
     @classmethod
     def setUpClass(cls):
         cls.http = server.ThreadingHTTPServer(('127.0.0.1',0),server.Handler)
@@ -309,6 +424,61 @@ class LocalAppTest(unittest.TestCase):
             self.assertIn(value, body)
         self.assertNotIn(b'must not replace prompt', body)
         text_only.assert_not_called()
+
+    def test_image_edit_sync_and_async_uploads_are_parsed_as_files(self):
+        entry = {'model': 'gpt-image-2.6', 'baseUrl': 'https://fixture.invalid', 'apiKey': 'fixture-only',
+                 'imageTransport': 'openai-images', 'referenceInputModes': ['data-url']}
+        samples = [('image/png', b'\x89PNG\x00\xff\r\nfixture', '.png'),
+                   ('image/jpeg', b'\xff\xd8\xffjpeg-fixture', '.jpg'),
+                   ('image/webp', b'RIFF\x00WEBP-fixture', '.webp'),
+                   ('image/gif', b'GIF89a\x00fixture', '.gif')]
+        for generate in (server.call_image_generation, server.submit_image_generation):
+            for selected in ([samples[0]], samples):
+                with self.subTest(function=generate.__name__, count=len(selected)):
+                    references = ['data:' + mime + ';base64,' + base64.b64encode(raw).decode()
+                                  for mime, raw, _ in selected]
+                    result = {'id': 'fixture-task', 'data': [{'b64_json': base64.b64encode(b'result').decode()}]}
+                    with patch.object(server, 'upstream_contract', return_value={}), \
+                         patch.object(server, 'request_body_candidates', return_value=(result, 'https://fixture.invalid/v1/images/edits', None)) as request, \
+                         patch.object(server, 'request_json_candidates') as json_request:
+                        _, error = generate(entry, '中文 reference prompt', size='1024x1536', reference_images=references, quality='high')
+                    self.assertIsNone(error)
+                    request.assert_called_once()
+                    json_request.assert_not_called()
+                    body = request.call_args.args[1]('https://fixture.invalid/v1/images/edits')
+                    content_type = request.call_args.kwargs['headers']['Content-Type']
+                    form = BytesParser(policy=policy.default).parsebytes(
+                        ('Content-Type: ' + content_type + '\r\n\r\n').encode() + body)
+                    self.assertEqual(form.defects, [])
+                    parts = list(form.iter_parts())
+                    files = [part for part in parts if part.get_filename() is not None]
+                    self.assertEqual(len(files), len(selected), 'Reference bytes must be file parts, not ordinary text fields')
+                    for index, (part, (mime, raw, extension)) in enumerate(zip(files, selected)):
+                        self.assertEqual(part.get_param('name', header='content-disposition'), 'image' if len(selected) == 1 else 'image[]')
+                        self.assertEqual(part.get_filename(), f'reference-{index + 1}{extension}')
+                        self.assertEqual(part.get_content_type(), mime)
+                        self.assertEqual(part.get_payload(decode=True), raw)
+                    fields = {part.get_param('name', header='content-disposition'): part.get_payload(decode=True).decode()
+                              for part in parts if part.get_filename() is None}
+                    self.assertEqual(fields, {'model': entry['model'], 'prompt': '中文 reference prompt', 'size': '1024x1536', 'quality': 'high'})
+
+    def test_image_reference_text_values_and_invalid_data_are_not_fake_files(self):
+        references = ['https://fixture.invalid/reference.png', 'file-fixture-id']
+        payload, body, content_type, error = server.build_image_reference_body(
+            'multipart-files', 'gpt-image-2.6', 'fixture', '1024x1024', references)
+        self.assertIsNone(error)
+        self.assertIsNone(payload)
+        form = BytesParser(policy=policy.default).parsebytes(
+            ('Content-Type: ' + content_type + '\r\n\r\n').encode() + body)
+        images = [part for part in form.iter_parts() if part.get_param('name', header='content-disposition') == 'image[]']
+        self.assertEqual([part.get_payload(decode=True).decode() for part in images], references)
+        self.assertTrue(all(part.get_filename() is None for part in images))
+        for reference in ('data:image/png;base64,', 'data:image/png;base64,a'):
+            with self.subTest(reference=reference):
+                payload, body, content_type, error = server.build_image_reference_body(
+                    'multipart-files', 'gpt-image-2.6', 'fixture', '1024x1024', [reference])
+                self.assertIsNone(body)
+                self.assertIn('参考图数据无效', error)
 
     def test_large_reference_uses_compact_request_and_expands_only_inside_server(self):
         name = 'media-' + 'c' * 32 + '.png'

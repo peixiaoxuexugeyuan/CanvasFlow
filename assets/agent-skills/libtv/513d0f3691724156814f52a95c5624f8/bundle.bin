@@ -1,0 +1,29 @@
+{
+  "templateUuid": "513d0f3691724156814f52a95c5624f8",
+  "name": "中式美学微电影",
+  "version": "1.0.1",
+  "description": "一句话帮你生成中式美学微电影",
+  "useScenario": "微电影，短片",
+  "inputType": "输入剧本，故事，图片",
+  "outputContent": "产出成片",
+  "ownerName": "韩周佳",
+  "ownerAvatar": "https://liblibai-online.liblib.cloud/web/avatar/avatar3.png",
+  "primarySkillFilePath": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "##做什么\n\n把剧本，故事，以及想法做成一条成片\n\n##需要输入\n\n输入你的想法，时长，主角设定\n\n##怎么做\n\n输入你的脚本，画风固定中式美学\n\n## ##产出什么\n\n成片\n\n##什么时候问你\n\n拿不准题材或者风格时问一次，其余自己定",
+      "contentType": "text/markdown",
+      "primary": true
+    }
+  ],
+  "sourceUrl": "https://www.liblib.tv/skill",
+  "capturedAt": "2026-11-14",
+  "examples": [
+    "https://libtv-res.liblib.art/upload-images/4d06129429a5484d8fee9d503f7225bc/30f4a33fa59cfd8d200f3988c314f9a361dccc38.mp4",
+    "https://libtv-res.liblib.art/upload-images/4d06129429a5484d8fee9d503f7225bc/67af2b46640a92e5fb49c9217fe10b2cb6c97b9d.mp4",
+    "https://libtv-res.liblib.art/upload-images/4d06129429a5484d8fee9d503f7225bc/c961f487a38699cfd4717eaa9d7d01c6d2068f83.mp4"
+  ],
+  "missingReferences": [],
+  "contentOrigin": "skillFiles"
+}

@@ -3968,6 +3968,16 @@
     });
     async function setReference(file,shouldApply=()=>true){const project=S.project,epoch=S.animationEpoch,data=await readDirectorImage(file);if(!S.open||S.project!==project||epoch!==S.animationEpoch||!shouldApply())return;reference=data;const box=dock.querySelector('.dt-dock-reference');box.hidden=false;box.innerHTML='<img alt="场景参考图"><span>'+esc(file.name||'参考图片')+'</span><button type="button" data-dock-remove aria-label="移除参考图片">×</button>';box.querySelector('img').src=reference;update();input.focus();}
     function pickReferenceFile(){const file=document.createElement('input');file.type='file';file.accept='image/png,image/jpeg,image/webp';file.onchange=async()=>{try{await setReference(file.files?.[0]);}catch(error){toast(error.message);}};file.click();}
+    S.launchBoxPrompt=async options=>{
+      const project=S.project,epoch=S.animationEpoch;
+      if(options.reference?.url){
+        const response=await fetch(options.reference.url);if(!response.ok)throw Error('参考图片读取失败');
+        const blob=await response.blob();
+        await setReference(new File([blob],options.reference.name||'参考图片',{type:blob.type}));
+      }
+      if(!S.open||S.project!==project||S.animationEpoch!==epoch)return false;
+      input.value=options.prompt;update();showHistory(true);form.requestSubmit();return true;
+    };
     form.addEventListener('submit',async e=>{
       e.preventDefault();if(busy||!(input.value.trim()||reference))return;
       if(S.recording)return;
@@ -4606,6 +4616,8 @@
   async function open(node,options={}) {
     if (S.open) return;
     S.open = true;S.readOnly=!!options.readOnly;S.viewportReady=false;
+    S.onClose=options.onClose||null;
+    S.previsModelId=options.modelId||'';
     // Recover missing or older helper scripts before restoring any scene objects.
     try {
       for (const [file, ready] of [
@@ -4625,7 +4637,7 @@
         if (ready()) continue;
         await new Promise((resolve, reject) => {
           const script = document.createElement('script');
-          script.src = file + (file==='director-previs.js'?'?v=20261019-blender2':(['community-editor.js','director-share.js','director-previs.js','director-annotation.js','director-scene-agent.js','director-rig.js'].includes(file)?'?v=20261014-agent-review1':'?v=20261010-path-walk1'));
+          script.src = file + (file==='director-previs.js'?'?v=20261114-box1':(['community-editor.js','director-share.js','director-previs.js','director-annotation.js','director-scene-agent.js','director-rig.js'].includes(file)?'?v=20261014-agent-review1':'?v=20261010-path-walk1'));
           script.onload = resolve; script.onerror = () => reject(new Error(file + ' 加载失败'));
           document.head.appendChild(script);
         });
@@ -4673,11 +4685,22 @@
         S.project.activeCameraId = S.project.objects.find(o => o.kind === 'camera')?.id || '';
         persist(true);
       }
+      if(options.workspace==='previs'){
+        if(options.aspect&&ASPECT_RATIOS.some(([name])=>name===options.aspect)){
+          S.project.scene.aspectRatio=options.aspect;
+          for(const camera of [...S.project.objects,...S.project.cameras])if(camera.kind==='camera'||S.project.cameras.includes(camera))camera.aspectRatio=options.aspect;
+        }
+        if(Number.isFinite(options.duration)&&options.duration>0){timeline.setDuration(Math.round(Math.min(60,Math.max(1,options.duration))*S.project.sequence.fps));timeline.setRange('in',0);timeline.setRange('out',S.project.sequence.durationFrames-1);}
+        S.previs.setWorkspace(true);S.previs.setMode('scene');persist(true);
+      }
     } catch (e) {
       if(!S.open||S.animationEpoch!==openEpoch)return;
       S.viewportReady=false;releaseViewportResources();
       console.error('[director] 初始化失败', e);
       showViewportInitializationError(e);
+    }
+    if(S.open&&S.viewportReady&&openEpoch===S.animationEpoch&&options.prompt){
+      try{await S.launchBoxPrompt(options);}catch(error){toast('场景请求未发送：'+error.message);}
     }
   }
   function close() {
@@ -4705,7 +4728,9 @@
     setTimeout(() => { shell.remove(); }, 200);
     releaseViewportResources();S.viewportReady=false;
     S.compareCamera=null;S.savedDirectorPose=null;
-    S.el = {};
+    S.el = {};S.launchBoxPrompt=null;
+    const onClose=S.onClose;S.onClose=null;
+    if(onClose)Promise.resolve(onClose()).catch(error=>toast('返回 3D-BOX 失败：'+error.message));
   }
 
   timeline=window.createDirectorTimeline({S,esc,ICONS,toast,persist,pushUndo,beginBatch,endBatch,selectObject,renderInspector,setPlayhead,setPlaying,sampleAtFrame,activeCameraObj,switchMode,uniformScaleBase,inspectorSample:cameraInspectorValue});

@@ -15,7 +15,20 @@
   <link rel="stylesheet" href="styles.css?v=20261111-prompt-caret" />
   <link rel="stylesheet" href="director-timeline.css?v=20261010-export-time4" />
   <link rel="stylesheet" href="local-app.css?v=20261019-materials" />
-  <link rel="stylesheet" href="workspace-materials.css?v=20261111-material-metadata" />
+  <link rel="stylesheet" href="workspace-materials.css?v=20261113-compact-controls" />
+  <link rel="stylesheet" href="agent-hub.css?v=20261117-community-sync" />
+  <link rel="stylesheet" href="agent-skill-editor.css?v=20261114-compact-modal" />
+  <script defer src="agent-skill-details.js?v=20261113-skill-details"></script>
+  <script defer src="agent-skill-catalog.js?v=20261114-public-skills"></script>
+  <script defer src="agent-community-skills.js?v=20261117-community-sync"></script>
+  <link rel="stylesheet" href="desktop-update-notice.css?v=20261117-startup-update" />
+  <script defer src="desktop-update-notice.js?v=20261117-startup-update"></script>
+  <script defer src="agent-public-skills.js?v=20261117-community-sync"></script>
+  <script defer src="agent-hub-controls.js?v=20261114-skill-editor"></script>
+  <script defer src="agent-skill-editor.js?v=20261114-skill-editor"></script>
+  <script defer src="agent-hub.js?v=20261117-community-sync"></script>
+  <link rel="stylesheet" href="box3d-hub.css?v=20261114-neutral" />
+  <script defer src="box3d-hub.js?v=20261114-box1"></script>
   <link rel="stylesheet" href="film-workbench.css?v=20261111-film-capabilities" />
   <script defer src="film-workbench.js?v=20261111-film-capabilities"></script>
 </head>
@@ -28,6 +41,8 @@
       <nav class="side-nav">
         <button class="nav-item active" data-view="canvas"><span class="nav-icon">⌗</span><span>创作画布</span></button>
         <button class="nav-item" data-view="projects"><span class="nav-icon">▣</span><span>我的项目</span><em>4</em></button>
+        <button class="nav-item" data-view="agent-hub"><span class="nav-icon" aria-hidden="true">✦</span><span>CanvasFlow Agent</span></button>
+        <button class="nav-item" data-view="box3d"><span class="nav-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="5" r="2"/><path d="M12 7v7m-4-4 4 2 4-2M8 20l4-6 4 6M4 16v4h16v-4"/></svg></span><span>CanvasFlow 3D-BOX</span></button>
         <button class="nav-item" data-view="image-studio"><span class="nav-icon" aria-hidden="true">▧</span><span>图片生成台</span></button>
         <button class="nav-item" data-view="video-studio"><span class="nav-icon" aria-hidden="true">▷</span><span>视频生成台</span></button>
         <button class="nav-item" data-view="materials"><span class="nav-icon">▦</span><span>素材管理</span></button>
@@ -580,8 +595,8 @@
   
   <script src="safe-html.js?v=20261014-remaining-audit1"></script>
   <script src="project-save-queue.js?v=20261014-remaining-audit1"></script>
-  <script src="workspace-materials.js?v=20261111-material-metadata"></script>
-  <script src="app.js?v=local-20261111-prompt-caret"></script>
+  <script src="workspace-materials.js?v=20261112-delete-dialog"></script>
+  <script src="app.js?v=local-20261117-community-sync"></script>
 
   <div class="library-manager-layer" id="libraryManager" hidden>
     <section class="library-manager" role="dialog" aria-modal="true" aria-label="素材管理">
@@ -642,8 +657,8 @@
       </section>
     </div>
   </div>
-  <link rel="stylesheet" href="settings.css?v=20261112-updater" />
-  <script src="settings.js?v=local-20261112-updater"></script>
+  <link rel="stylesheet" href="settings.css?v=20261112-repo-link" />
+  <script src="settings.js?v=local-20261117-startup-update"></script>
   <script src="scrub.js?v=20261014-wheel1"></script>
   <script src="connections.js?v=canvasflow-ftv-delpin-r293"></script>
   <script src="director-animation.js?v=20261013-forest-live3"></script>
@@ -657,7 +672,7 @@
   <script src="director-pose-editor.js?v=20261010-path-walk1"></script>
   <link rel="stylesheet" href="director-blender.css?v=20261019-blender1" />
   <script src="director-blender.js?v=20261019-blender1"></script>
-  <script src="director-scene-agent.js?v=20261105-unlimited-prompts"></script><script src="director.js?v=20261105-unlimited-prompts"></script>
+  <script src="director-scene-agent.js?v=20261105-unlimited-prompts"></script><script src="director.js?v=20261114-box1"></script>
   <script src="director-live-build.js?v=20261013-audit1"></script>
 </body>
 </html>

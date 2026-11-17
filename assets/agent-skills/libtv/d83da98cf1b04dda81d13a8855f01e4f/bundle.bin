@@ -1,0 +1,28 @@
+{
+  "templateUuid": "d83da98cf1b04dda81d13a8855f01e4f",
+  "name": "Prompt优化器",
+  "version": "1.0.0",
+  "description": "中文大白话转专业MJ/即梦英文Prompt",
+  "useScenario": "想用AI出图但不会写英文prompt、描述词写不精准导致出图效果差的AIGC新手；适配人物立绘、场景概念、产品摄影等多类型",
+  "inputType": "对话框输入：中文描述 + 风格偏好 + 用途，如\"维多利亚时代穿黑风衣的男人站在雨中 / 电影感 / 人物立绘\"",
+  "outputContent": "3组优化后的英文Prompt（含参数）+ 中文释义 + 风格关键词 + 末尾Prompt调参指南",
+  "ownerName": "Liana",
+  "ownerAvatar": "https://liblibai-online.liblib.cloud/web/avatar/avatar5.png",
+  "primarySkillFilePath": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "```\n```\n\n```\n---\nname: Prompt优化器\nnamespace: libtv-industry\ntitle: \"AI绘图Prompt优化器\"\ndescription: \"输入中文大白话，输出专业MJ/即梦英文Prompt\"\nversion: 1.0\n---\n# AI绘图Prompt优化器\n## Skill 定位\n- 只负责：把用户的大白话描述翻译成MJ/即梦能直接用的专业英文Prompt\n- 纯文本输出，不调用绘图模型，零额外积分成本\n## 输入\n- 中文描述（如\"一个穿黑风衣的男人站在雨里\"）\n- 风格偏好（如\"电影感/国潮/赛博\"）\n- 用途（如\"人物立绘/场景/产品\"）\n## 内部流程和 Knowhow\n- 解析用户描述的核心元素：主体+环境+光影+构图+色调\n- 补充专业参数：--ar --style --v 等\n- 提供3个变体（不同构图/色调/氛围）\n- 附中文释义，让用户知道每段英文的作用\n## 输出\n- 3组优化后的英文Prompt（含参数）+ 中文释义 + 风格关键词\n- 末尾附「Prompt调参指南」：常用参数说明及适用场景速查\n## 自检\n- 每组Prompt含主体+环境+光影+构图+参数、英文语法正确\n## Ask User\n- 描述或风格缺失时，先问再生成\n```",
+      "contentType": "text/markdown",
+      "primary": true
+    }
+  ],
+  "sourceUrl": "https://www.liblib.tv/skill",
+  "capturedAt": "2026-11-14",
+  "examples": [
+    "https://libtv-res.liblib.art/upload-images/d711f42ff4e248abb509c1ff3bc6f644/4aa601bc8976da0ec3c97fa04e50b83083e25580.md",
+    "https://libtv-res.liblib.art/upload-images/d711f42ff4e248abb509c1ff3bc6f644/12936c0885d4f4aaf047c45744990775f716048c.md"
+  ],
+  "missingReferences": [],
+  "contentOrigin": "skillFiles"
+}

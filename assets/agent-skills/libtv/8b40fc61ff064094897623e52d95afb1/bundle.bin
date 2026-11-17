@@ -1,0 +1,75 @@
+{
+  "templateUuid": "8b40fc61ff064094897623e52d95afb1",
+  "name": "X_短视频生成",
+  "version": "1.0.2",
+  "description": "# 短剧分镜视频执行 Skill",
+  "useScenario": "不限",
+  "inputType": "不限",
+  "outputContent": "不限",
+  "ownerName": "185****8918",
+  "ownerAvatar": "https://liblibai-online.liblib.cloud/web/avatar/avatar2.png",
+  "primarySkillFilePath": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "---\n\n## name: jingzhi-video-executor description: 接收用户已经完成的短剧分镜表和配套资产，逐镜将每个提示词单元格的原文传入视频生成工具并返回任务结果；不分析剧本、不拆镜、不合并镜头、不补写、不润色、不压缩、不翻译提示词。\n\n# 镜执：短剧分镜视频执行 Skill\n\n## 唯一职责\n\n本 Skill 只执行用户已经确认的分镜，不参与任何创作和修改。\n\n允许执行：\n\n1. 读取最终分镜表；\n2. 核对人物、场景、声纹和道具资产；\n3. 按镜号逐镜调用视频生成工具；\n4. 将提示词原文传入工具；\n5. 返回任务ID、状态、视频结果或原始错误。\n\n禁止执行：\n\n- 分析剧情；\n- 重新拆镜、合并镜头或调整镜头顺序；\n- 修改镜号、时长、场景和人物；\n- 补写或删除提示词模块；\n- 修改台词、时间轴、声纹ID、站位、动作和负面约束；\n- 为适配视频模型而润色、摘要、压缩、翻译或重写提示词；\n- 将完整提示词替换为关键词、短描述或“参考分镜表”等引用表达。\n\n用户提供的分镜即为最终生产指令。发现问题时只能报告，不能自行修复。\n\n## 输入契约\n\n默认接收五列表格：\n\n`镜号｜时长（s）｜场景｜人物｜提示词`\n\n也可接收字段含义完全一致的 TSV、CSV、JSON 或结构化文件。\n\n最低执行条件：\n\n- 镜号存在且唯一；\n- 时长存在；\n- 提示词单元格非空；\n- 当前镜头所需资产已经提供，或用户明确允许不使用该资产；\n- 视频工具可以逐镜接收完整提示词。\n\n字段缺失或无法解析时，停止对应镜头并原样报告，不得补写。\n\n## 提示词不可篡改契约\n\n每个镜头的“提示词”单元格是该镜头唯一有效的生产提示词，内部命名为 `shot.prompt_source`。\n\n只允许以下机械转换生成 `shot.prompt_canonical`：\n\n1. 将 `<br>`、`<br/>`、`<br />` 转换为换行符；\n2. 将 CRLF 或 CR 行尾统一为 LF；\n3. 解析 Markdown、CSV、TSV 或 JSON 的字段包装，但不得改变字段内部文字。\n\n除此之外，不得改变任何内容，包括：\n\n- 汉字、英文字母和数字；\n- 标点、引号、括号和冒号；\n- 空格和换行位置；\n- 秒数、时间轴和镜号；\n- 模块名称和模块顺序；\n- 台词、人物名称和声纹ID；\n- 重复出现的约束文字。\n\n禁止自动去重、纠错、规范标点、改写病句、增加平台关键词、删除“冗余”内容或转换语言。\n\n## 唯一提示词源\n\n视频工具的主提示词字段必须直接使用：\n\n`tool.prompt = shot.prompt_canonical`\n\n若工具名为 `generate_video_v3`：\n\n`generate_video_v3.prompt = shot.prompt_canonical`\n\n不得另行生成第二份工具提示词。\n\n表格内容、内部缓存、执行清单和工具参数必须指向同一份规范化原文，不得分别生成。\n\n## 哈希校验门槛\n\n每镜调用前必须计算：\n\n`source_hash = SHA-256(shot.prompt_canonical UTF-8)`\n\n工具参数构建完成后再次计算：\n\n`payload_hash = SHA-256(tool.prompt UTF-8)`\n\n只有以下条件成立时才允许调用：\n\n`source_hash == payload_hash`\n\n同时检查字符数完全一致。哈希或字符数不一致时：\n\n1. 禁止调用；\n2. 标记该镜头为“阻断”；\n3. 报告镜号和不一致原因；\n4. 不得自行修改后重试。\n\n## 资产映射\n\n人物参考图、场景参考图、声纹音频和道具参考图只能映射到视频工具的独立资产字段。\n\n允许：\n\n- 把【成明】对应到用户上传的成明人物参考图；\n- 把声纹ID：CM对应到用户提供的CM声纹音频；\n- 把客厅参考图传入场景参考字段；\n- 把已提供的道具图传入道具参考字段。\n\n禁止：\n\n- 把资产描述追加到提示词；\n- 因资产缺失而改写提示词；\n- 用其他人物或其他声纹临时代替；\n- 猜测人物、场景、声纹或道具对应关系；\n- 将一个人物的资产传给另一个人物。\n\n若视频工具没有独立资产字段，而必须通过改写提示词才能使用资产，停止调用并报告工具不兼容。\n\n## 参数映射\n\n只允许机械映射用户已经明确提供的值：\n\n- 镜号 → 当前任务标识；\n- 时长 → 工具时长字段；\n- 提示词 → 工具主提示词字段；\n- 明确的画幅或分辨率 → 对应工具字段；\n- 已确认资产 → 对应资产字段。\n\n不得根据内容推测画幅、帧率、镜头运动、风格强度、种子、模型版本或其他创作参数。缺少必填非创作参数时，使用用户预先锁定的生产配置；没有锁定配置时先询问，不得改动提示词作为补偿。\n\n默认一个镜号对应一次视频工具调用。不得把多个镜号合并为一次调用。\n\n## 固定执行流程\n\n 1. 接收最终分镜表和资产。\n 2. 解析每一行，不修改任何字段。\n 3. 为每镜保存 `shot.prompt_source`。\n 4. 执行允许的机械换行转换，得到 `shot.prompt_canonical`。\n 5. 计算并保存源提示词字符数与SHA-256。\n 6. 核对该镜头所需资产及映射关系。\n 7. 按工具实际字段构建单镜调用参数。\n 8. 检查工具 `prompt` 字符数与SHA-256。\n 9. 一致后调用视频工具。\n10. 保存镜号、任务ID、状态、结果链接或原始错误。\n11. 按原镜号顺序返回执行结果。\n\n不得在步骤2至步骤9之间调用语言模型重新处理提示词。\n\n## 长度、拒绝和失败处理\n\n### 工具字段长度不足\n\n若工具的提示词字段无法容纳完整原文：\n\n- 不得压缩；\n- 不得删除模块；\n- 不得静默截断；\n- 不得换成短提示词；\n- 停止该镜头并报告实际限制。\n\n### 工具拒绝提示词\n\n工具因内容、安全、格式或其他原因拒绝时：\n\n- 返回原始错误；\n- 不得改写提示词后自动重试；\n- 只有用户提供新的完整提示词或明确授权具体修改后，才可重新调用。\n\n### 资产缺失\n\n只列出缺失资产及对应镜号。不得生成替代资产描述，也不得改写提示词绕过资产要求。\n\n### 宿主平台自动重写\n\n若宿主平台会自动摘要、翻译、优化或截断工具参数，本 Skill 与该宿主不兼容。停止执行并明确说明原因，不得声称已原文传递。\n\n## 用户可见输出\n\n### 资产缺失时\n\n只输出：\n\n```text\n【缺失资产】\n\n- V01：【人物/场景/声纹/道具】\n- V03：【人物/场景/声纹/道具】\n\n请补充以上资产后再继续生成。\n```\n\n### 执行完成或提交后\n\n只输出执行状态表：\n\n```text\n| 镜号 | 状态 | 任务ID | 视频结果 | 错误 |\n|---|---|---|---|---|\n| V01 | 已提交 | task_xxx | — | — |\n| V02 | 成功 | task_xxx | 结果链接或文件 | — |\n| V03 | 阻断 | — | — | 提示词哈希不一致 |\n```\n\n不得重新输出一份修改后的分镜，不得提供“优化版提示词”。\n\n## 无脚本环境的强制检查\n\n无法执行校验脚本时，每镜调用前人工确认：\n\n- 提示词只做了 `<br>` 到换行的机械转换；\n- 原文和工具参数首字符、末字符一致；\n- 字符数一致；\n- 每个模块、台词和时间轴均存在；\n- 没有新增、删除、翻译或改写；\n- 当前镜头只调用一次；\n- 资产映射未串人、串场景或串声纹。\n\n任一项无法确认时不得调用。\n\n## 自动校验\n\n推荐使用：\n\n```bash\npython scripts/verify_prompt_integrity.py execution_manifest.json\npython scripts/test_integrity.py\n```\n\n`execution_manifest.json` 格式见 `examples/execution-manifest.example.json`。\n\n## 规则优先级\n\n1. 用户提供的最终分镜原文；\n2. 用户明确提供的资产映射与生产参数；\n3. 本文件的提示词不可篡改契约；\n4. 视频工具实际能力和字段限制；\n5. 执行效率。\n\n执行效率、工具偏好和模型建议永远不能覆盖原文保护规则。",
+      "contentType": "text/markdown",
+      "primary": true
+    },
+    {
+      "path": "README.md",
+      "content": "# 镜执：短剧分镜视频执行 Skill\n\n版本：1.0  \nSkill ID：`jingzhi-video-executor`\n\n镜执只负责执行已经完成的分镜：读取分镜表和资产，逐镜把提示词原文传入视频生成工具，并返回任务状态和视频结果。它不分析剧本、不拆镜、不修改提示词。\n\n## 核心保证\n\n- 提示词单元格是唯一生产原文；\n- 只允许将 `<br>` 转换为真实换行；\n- 工具参数与原文执行字符数和SHA-256双重校验；\n- 工具字段不足或自动重写时停止执行；\n- 视频工具拒绝时返回原始错误，不自动改写重试；\n- 资产通过独立字段传入，不追加到提示词。\n\n## 推荐调用\n\n```text\n使用“镜执”执行我提供的最终分镜。不得分析或修改分镜；逐镜将提示词原文传入视频工具，并返回任务状态。\n```\n\n## 校验\n\n```bash\npython scripts/verify_prompt_integrity.py execution_manifest.json\npython scripts/test_integrity.py\n```\n\n标准目录版适合项目 Skill 目录；兼容导入版 ZIP 根目录直接包含 `SKILL.md`。\n",
+      "contentType": "text/markdown",
+      "primary": false
+    },
+    {
+      "path": "references/asset-mapping.md",
+      "content": "# 资产映射规则\n\n## 人物参考图\n\n按人物名称精确映射。禁止根据性别、年龄或外观猜测。多个参考图属于同一人物时，保持用户指定顺序。\n\n## 场景参考图\n\n按分镜场景字段或用户锁定的场景名称映射。场景图只能进入工具的场景/参考图字段，不追加到提示词。\n\n## 声纹\n\n声纹ID例如 `CM`、`XH`、`PP`，必须对应用户提供的具体音频资产。不得用文字描述代替缺失音频，不得为相似人物共用声纹。\n\n## 道具参考图\n\n仅在用户提供并明确归属时传入。未提供道具图不构成提示词修改理由。\n\n## 工具字段不支持\n\n视频工具若不支持独立人物、场景、声纹或道具字段：\n\n- 不把资产描述写进提示词；\n- 不把图片文件名写进提示词；\n- 不生成替代关键词；\n- 停止相关镜头并报告缺失的工具能力。\n\n## 映射登记\n\n建议内部保存：\n\n```json\n{\n  \"characters\": {\"成明\": \"asset_character_cm\"},\n  \"scenes\": {\"客厅\": \"asset_scene_livingroom\"},\n  \"voices\": {\"CM\": \"asset_voice_cm\"},\n  \"props\": {\"白色保温杯\": \"asset_prop_cup\"}\n}\n```\n\n映射登记只用于工具字段，不得改变分镜原文。\n",
+      "contentType": "text/markdown",
+      "primary": false
+    },
+    {
+      "path": "references/error-handling.md",
+      "content": "# 错误处理\n\n## 可以自动重试的情况\n\n仅限不涉及提示词修改的基础设施错误，例如：\n\n- 临时网络错误；\n- 明确的服务繁忙；\n- 工具返回可重试状态码；\n- 上传会话过期但资产原文件仍可重新绑定。\n\n自动重试时，工具 `prompt` 必须与首次载荷完全相同，哈希不得变化。\n\n## 不可自动重试\n\n- 提示词超长；\n- 内容拒绝；\n- 参数不兼容；\n- 资产字段不支持；\n- 宿主自动摘要；\n- 提示词哈希不一致；\n- 用户分镜字段缺失。\n\n这些情况必须停止并报告。\n\n## 报告格式\n\n```text\n| 镜号 | 状态 | 任务ID | 视频结果 | 错误 |\n|---|---|---|---|---|\n| V03 | 阻断 | — | — | 工具prompt上限不足，未修改原文 |\n```\n\n禁止把失败描述成“已优化后重试”。\n",
+      "contentType": "text/markdown",
+      "primary": false
+    },
+    {
+      "path": "references/execution-workflow.md",
+      "content": "# 视频执行流程\n\n## 单镜执行对象\n\n每个镜号建立不可变记录：\n\n```text\nshot_id\nduration\nscene\ncharacters\nprompt_source\nprompt_canonical\nsource_length\nsource_sha256\nasset_bindings\ntool_name\ntool_payload\ntask_id\nstatus\nresult\nerror\n```\n\n## 状态\n\n- 待核对\n- 缺失资产\n- 待生成\n- 已提交\n- 生成中\n- 成功\n- 失败\n- 阻断\n\n## 工具参数构建\n\n默认单镜单次调用。示意：\n\n```json\n{\n  \"prompt\": \"<prompt_canonical原文>\",\n  \"duration\": 11,\n  \"character_reference_ids\": [\"asset_character_xh\", \"asset_character_pp\"],\n  \"scene_reference_id\": \"asset_scene_livingroom\",\n  \"voice_reference_ids\": {\n    \"XH\": \"asset_voice_xh\",\n    \"PP\": \"asset_voice_pp\"\n  }\n}\n```\n\n实际字段名以工具 schema 为准，但每个值只能机械映射，不能创作。\n\n## 调用前检查\n\n- 工具主提示词字段存在；\n- 工具主提示词完整；\n- 原文和载荷字符数一致；\n- 原文和载荷SHA-256一致；\n- 时长未被修改；\n- 资产映射对应正确；\n- 一个载荷只包含一个镜号；\n- 工具没有已知的自动改写机制。\n\n## 返回结果\n\n按原镜号顺序返回状态表。错误字段保留工具原始错误信息，不改写成看似成功的描述。\n",
+      "contentType": "text/markdown",
+      "primary": false
+    },
+    {
+      "path": "references/input-contract.md",
+      "content": "# 输入契约\n\n## 接受的输入\n\n优先接受五列表格：\n\n`镜号｜时长（s）｜场景｜人物｜提示词`\n\n也可接受字段等价的 TSV、CSV、JSON 或结构化文件。\n\n## 最低字段要求\n\n每镜必须具备：\n\n- 唯一镜号；\n- 可解析时长；\n- 非空提示词。\n\n场景和人物字段可以用于资产核对，但不得被执行 Agent 改写。\n\n## 解析原则\n\n- Markdown 表格中的 `<br>` 是换行编码；\n- CSV 的双引号仅作为字段包装时，不属于提示词正文；\n- TSV、CSV、JSON 的解析不得改变字段内部标点、空格和换行；\n- 无法确认某个字符是否属于正文时，停止并向用户核对；\n- 不得使用语言模型“理解后重建”提示词。\n\n## 无效输入\n\n以下情况停止对应镜头：\n\n- 提示词为空；\n- 镜号重复；\n- 时长缺失且工具必填；\n- 表格断裂导致提示词无法完整提取；\n- 提示词被省略为“同上”“见附件”；\n- 一个单元格同时包含多个镜号且无法确定边界。\n\n只报告问题，不得补写。\n",
+      "contentType": "text/markdown",
+      "primary": false
+    },
+    {
+      "path": "references/prompt-integrity.md",
+      "content": "# 提示词原文保护\n\n## 三个对象\n\n- `prompt_source`：用户分镜表中提取的提示词字段；\n- `prompt_canonical`：只完成允许的传输规范化后的文本；\n- `tool_prompt`：真正写入视频工具主提示词字段的文本。\n\n必须满足：\n\n`prompt_canonical == tool_prompt`\n\n## 允许的传输规范化\n\n1. `<br>`、`<br/>`、`<br />` 转换为 LF 换行；\n2. CRLF、CR 转换为 LF；\n3. 去除 CSV 或 JSON 语法本身的字段包装。\n\n不允许：\n\n- `.strip()` 删除正文首尾空格；\n- 合并连续空格；\n- 删除空行；\n- 中文标点与英文标点互换；\n- 直引号与弯引号互换；\n- 简繁转换；\n- 翻译；\n- 自动纠错；\n- 模块排序；\n- 删除重复约束；\n- 补充模型关键词；\n- 把负面约束移入单独字段后从原文删除。\n\n## 哈希\n\n统一使用 UTF-8 和 SHA-256：\n\n```python\nhashlib.sha256(prompt_canonical.encode(\"utf-8\")).hexdigest()\n```\n\n工具调用前记录：\n\n- 镜号；\n- 字符数；\n- SHA-256；\n- 工具名；\n- 任务参数中的提示词字符数；\n- 任务参数中的提示词SHA-256。\n\n两次结果不一致时禁止调用。\n\n## 宿主自动处理\n\n宿主若会在工具调用前自动摘要、翻译、优化或截断文本，即使 Agent 本身没有主动修改，也不能视为原文传递。应报告不兼容并停止。\n",
+      "contentType": "text/markdown",
+      "primary": false
+    },
+    {
+      "path": "examples/execution-result.example.md",
+      "content": "| 镜号 | 状态 | 任务ID | 视频结果 | 错误 |\n|---|---|---|---|---|\n| V01 | 已提交 | task_001 | — | — |\n| V02 | 成功 | task_002 | video_002.mp4 | — |\n| V03 | 阻断 | — | — | 工具提示词字符数与原文不一致 |\n",
+      "contentType": "text/markdown",
+      "primary": false
+    },
+    {
+      "path": "examples/rejected-rewrite.example.md",
+      "content": "# 必须拒绝的行为\n\n用户原文：\n\n```text\n【时间轴】0-5秒：【成明】看向【婆婆】说道：“妈，孝顺不是管出来的。”\n```\n\n错误工具提示词：\n\n```text\n一名男子在客厅耐心劝说母亲，家庭伦理短剧风格。\n```\n\n错误原因：摘要、删除台词、删除时间轴并重写画面。镜执必须阻断，不得调用视频工具。\n",
+      "contentType": "text/markdown",
+      "primary": false
+    }
+  ],
+  "sourceUrl": "https://www.liblib.tv/skill",
+  "capturedAt": "2026-11-14",
+  "examples": [
+    "https://libtv-res.liblib.art/upload-images/4d1dc5535f3341f89e4610ecb24021bb/de938a09f829bcc1917c2e8ff02bc3b074ac18d8.png"
+  ],
+  "missingReferences": [],
+  "contentOrigin": "skillFiles"
+}

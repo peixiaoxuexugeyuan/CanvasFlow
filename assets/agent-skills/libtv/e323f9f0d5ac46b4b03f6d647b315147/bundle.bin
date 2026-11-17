@@ -1,0 +1,27 @@
+{
+  "templateUuid": "e323f9f0d5ac46b4b03f6d647b315147",
+  "name": "电影级写实武侠CG风格锚点",
+  "version": "1.0.3",
+  "description": "为角色图/关键帧/分镜统一套用电影级写实武侠CG画风",
+  "useScenario": "在生成角色图、关键帧或分镜画面时，需要统一「电影级写实武侠CG」画风、保证多张图风格一致时使用；只叠加画风/光影/质感/色调，不改变用户给定的角色、服装、构图与台词。",
+  "inputType": "用户本次要生成的画面描述（角色、服装、构图、台词等），以及要接入的生成任务类型（角色图 / 关键帧 / 分镜）",
+  "outputContent": "一段已融入该画风的生成用 prompt（含英文风格锚点串与负面词约束），可直接用于出图并保证多张图风格统一",
+  "ownerName": "雲笈",
+  "ownerAvatar": "https://libtv-res.liblib.art/upload-images/4435d206c9504873932309acbe6addb5/a642583d3439fd76304fa1af0db21ef624cde254.png",
+  "primarySkillFilePath": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "### 技能用途\n\n本 Skill 提供一套可复用的风格锚定技法，将「电影级写实武侠 CG」的画风、光影、写实质感与色调滤镜叠加至任意生成任务中，确保多张图片视觉风格的高度一致性。\n\n### 适用输入\n\n- **角色设定**：定妆图、三视图、角色特写描述。\n- **画面内容**：剧情关键帧描述、逐格分镜脚本。\n- **构图要求**：横/竖构图、特写/全景等视角的文本描述。\n\n### 操作步骤\n\n1. **保留原意**：完整保留用户输入的内容（角色、服装、构图、台词），不进行改写。\n2. **注入锚点**：在提示词末尾追加本 Skill 提供的英文风格锚点串或极简短语。\n3. **配置负面词**：将本 Skill 提供的负面提示词填入 Negative Prompt 区域。\n4. **风格自检**：在多图连续生成时，重复使用相同的锚点串以维持风格连续性。\n\n### 输出要求\n\n- **英文锚点串（推荐）**：包含 PBR 材质、UE5 质量、低调冷硬光影、皮肤毛孔细节、冷青蓝灰调色等专业描述词。\n- **极简短语（备选）**：用于快速风格统一的中文短语总结。\n- **负面约束**：明确排除塑料感、过度磨皮、过曝等影响质感的因素。\n\n### 注意事项\n\n- **仅限风格层**：本 Skill 只负责视觉风格，不涉及构图与叙事逻辑。\n- **避免冗余**：英文锚点串与中文短语二选一即可，防止 Prompt 过长导致权重稀释。\n- **构图解耦**：本 Skill 不带任何构图约束，构图应由用户输入决定。",
+      "contentType": "text/markdown",
+      "primary": true
+    }
+  ],
+  "sourceUrl": "https://www.liblib.tv/skill",
+  "capturedAt": "2026-11-14",
+  "examples": [
+    "https://libtv-res.liblib.art/upload-images/4435d206c9504873932309acbe6addb5/d2f9488762f07420dbe3546067ecc262e4ac2756.png"
+  ],
+  "missingReferences": [],
+  "contentOrigin": "skillFiles"
+}

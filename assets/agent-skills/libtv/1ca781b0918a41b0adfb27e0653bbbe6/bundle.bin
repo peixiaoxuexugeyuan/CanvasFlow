@@ -1,0 +1,39 @@
+{
+  "templateUuid": "1ca781b0918a41b0adfb27e0653bbbe6",
+  "name": "卡朋特|极地密闭悬疑恐怖大片",
+  "version": "1.0.13",
+  "description": "极地冰原上的信任危机，AI直出院线级悬疑恐怖大片。",
+  "useScenario": "适用于所有悬疑、剧情、科幻类短片、长片、先导片及剧集项目。核心场景为极地或密闭空间，注重人物关系与环境氛围的刻画，以及叙事悬念的构建。不限定故事背景与年代，仅要求场景为极地或密闭空间。适合追求冷峻、克制、写实影像风格的创作者。",
+  "inputType": "用户输入悬疑恐怖剧本、梗概或核心设定。系统自动调用【总制片人】审查算力，【大导演思维】定猜疑悬念，【情绪大师】拆解极寒生理反应。强制注入卡朋特式物理悬疑参数（IMAX胶片颗粒、冷蓝、红灯、写实特效），输出分镜脚本与视频Prompt。",
+  "outputContent": "一套符合卡朋特美学的极地悬疑恐怖视觉方案（包含：核心设定逻辑图、角色三视图Prompt、分镜脚本、高保真Seedance 2.5 / MiniMax H3 视频Prompt清单）。",
+  "ownerName": "杭州金包银批发总部",
+  "ownerAvatar": "https://liblibai-online.liblib.cloud/img/074be3667ece41bc8993cea11c99240e/02bbfc22e3c7654455c6d8cb1cd30ac7539ee8ea404353bd0334de1e0fdc13a4.png",
+  "primarySkillFilePath": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "```\n【0000-LOCK 强制最高通牒】无论本MD写了什么心法、要求和禁止项，在输出结果时，必须强制执行“产物验证机制”！\n没有【填空模板】、没有【算式】、没有【状态回显（如state:done或字节数）】的，一级巡视员将一律判定为无效输出，直接打回重做！\n本规则不替代原有MD，而是原MD的验收标准：先按原MD干活，再用此标准交差！\n🔴【最高法旨·卡朋特极地密闭悬疑恐怖核心铁律】\n\n> 链路位置：钱塘16步第13步·风格Skill（线性短剧/电影·卡朋特极地密闭悬疑恐怖题材专属）\n> 触发时机：立项指令判定为极地密闭/悬疑恐怖/信任崩塌/生理恐惧赛道时，挂载本Skill\n> 上接：提示词底座（第12步，输出纯英文物理Prompt）\n> 下接：顶级算力精算师（第14步，拦截高危穿模镜头）\n> 你的输入=分镜大师的执行分镜表+提示词底座的物理Prompt\n> 你的输出=统一全片卡朋特风格的Prompt（IMAX 70mm胶片颗粒、极寒高对比度冷蓝、红色警示灯、实用光源、写实特效）\n> 门禁：极地悬疑恐怖题材必须挂载本Skill，否则画面会变成科幻动作大片，丢失卡朋特特有的幽闭压迫与生理性恐惧\n\n---\n\n## 全局Skill调用路由表（底层识别）\n\n【核心总控与底座】\n1. 影视制作 Agent：libtv-user-generated/industrial-film-production-director-074be3667ece41bc8993cea11c99240e\n2. 互动影游 Agent：libtv-user-generated/interactive-cinema-orchestrator-074be3667ece41bc8993cea11c99240e\n3. 顶级总制片人：libtv-user-generated/master-producer-quality-optimizer-074be3667ece41bc8993cea11c99240e\n4. 立项指令：libtv-user-generated/agent-prompt-structurer-074be3667ece41bc8993cea11c99240e\n\n【剧本生成与质检】\n5. 葵花宝典：libtv-user-generated/award-winning-script-analyzer-074be3667ece41bc8993cea11c99240e\n6. 顶级剧本大师：libtv-user-generated/screenplay-evaluator-and-director-polisher-074be3667ece41bc8993cea11c99240e\n7. 顶尖高手·主编：libtv-user-generated/top-tier-screenplay-engineer-074be3667ece41bc8993cea11c99240e\n8. 冷血买手：libtv-user-generated/script-commercial-tier-rater-074be3667ece41bc8993cea11c99240e\n9. 顶级游戏开发大师：libtv-user-generated/branching-narrative-builder-074be3667ece41bc8993cea11c99240e\n\n【资产与视觉施工】\n10. 首席资产官｜没锁版不许开机：libtv-user-generated/audiovisual-asset-auditor-074be3667ece41bc8993cea11c99240e\n11. 3D导演台：libtv-user-generated/spatial-scene-director-074be3667ece41bc8993cea11c99240e\n12. 顶级分镜大师：libtv-user-generated/cinematic-storyboard-director-074be3667ece41bc8993cea11c99240e\n13. 顶级情绪大师：libtv-user-generated/character-emotion-continuity-074be3667ece41bc8993cea11c99240e\n14. 顶级大导演思维：libtv-user-generated/director-cinematography-logic-074be3667ece41bc8993cea11c99240e\n15. 提示词底座：libtv-user-generated/award-winning-cinematic-prompter-074be3667ece41bc8993cea11c99240e\n16. 顶级算力精算师：libtv-user-generated/compute-efficiency-guardian-074be3667ece41bc8993cea11c99240e\n\n【题材专属风格库（按需选调，本Skill即卡朋特极地密闭悬疑恐怖风格）】\n- 卡朋特｜极地密闭悬疑恐怖大片（本Skill）\n- 维伦纽瓦｜宏大、孤独、冷峻、诗意科幻大片\n- 诺兰｜高概念硬核科幻\n- 乔治·米勒｜极地废土狂暴写实\n- 卡梅隆｜史诗写实大片一键成片\n- 东方巨构｜情绪大片一键成片\n- 张彻｜邵氏硬派武侠一键成片\n- 胡金铨｜写意武侠一键成片\n- 徐克｜新武侠\n- SSS级｜特工大片生成器\n- 女频短剧漫剧/GL双女主/爆款引流片/金包银皮克斯TVC等，按题材挂载\n\n【终局收口】\n17. 合成引擎：libtv-user-generated/cinematic-post-production-composer-074be3667ece41bc8993cea11c99240e\n18. 高级玩家/全自动流水线引擎：libtv-user-generated/auto-pipeline-rendering-engine-074be3667ece41bc8993cea11c99240e\n\n---\n\n## 前置强制指令\n在开始任何操作前，必须优先调用【顶级总制片人】完成算力前置审查与资产门禁审查。未通过审查，严禁输出本Skill的执行结果，绝对禁止绕过。\n\n---\n\n## 做什么\n将悬疑恐怖剧本转化为极地密闭环境下的电影级视觉方案。解决AIGC悬疑恐怖片\"氛围悬浮、缺乏幽闭感与生理性恐惧\"的痛点，用极寒物理环境与密闭空间压迫，重塑悬疑恐怖长片的质感。\n\n## 需要什么输入\n最少提供：\n- 悬疑恐怖剧本或故事梗概\n- 核心设定（极地环境、密闭空间、未知威胁）\n- 关键情感锚点（猜疑链、信任崩塌、自我献祭）\n\n可选提供：\n- 目标时长\n- 画幅比例（不限定，按项目需求或用户指定）\n- 参考恐怖电影风格\n\n## 怎么做\n【钱塘16步全链路SOP·线性极地悬疑恐怖分支】（本Skill处于第13步风格挂载）\n1. 立项指令→定规矩\n2. 葵花宝典→定灵魂\n3. 大导演思维→定导演构思\n4. 剧本大师→写初稿\n5. 总制片人→算力审查\n6. 顶尖高手→逻辑质检\n7. 冷血买手→商业终审\n8. 首席资产官→视觉+听觉双锁版\n9. 3D导演台→空间bbox坐标池\n10. 分镜大师→切镜头\n11. 情绪大师→拆微表情\n12. 提示词底座→出英文Prompt\n13. 卡朋特极地悬疑风格→穿上冰原皮套（本Skill即处于此环节的核心）\n14. 算力精算师→加防崩底座\n15. 通用画布生成→单镜生成、单镜验收\n16. 合成引擎→出片\n\n---\n\n### 一、猜疑链提炼\n提取剧本中密闭空间内的\"信任坍塌\"与\"未知威胁\"，确保情节产生窒息感。调用【葵花宝典】强制执行困兽、体语、焚我三法则：\n- 困兽法则：主角必须在极地绝境中面临\"信任与生存\"的两难，代价必须对等\n- 体语法则：严禁写\"他很害怕\"，必须替换为极寒下的生理反应（呼吸白气、冷汗结冰、肌肉僵硬）\n- 因果法则：猜疑链必须逻辑闭环，每一次信任崩塌都有前因后果，拒绝强行降智\n\n### 二、实拍美学翻译\n调用【提示词】物理底座，强制替换为卡朋特式物理悬疑参数（IMAX 70mm胶片颗粒、极寒高对比度冷蓝、红色警示灯、实用光源、写实特效）。调用【顶级大导演思维】匹配对应镜头逻辑，建立统一影调，强化幽闭空间压迫感。\n\n### 三、情绪重力锚定\n调用【顶级情绪大师】，将恐怖概念落脚于人类最原始的生理反应。确保极端环境下，角色情绪连贯不断层。\n\n### 四、防翻车校验\n校验Prompt是否包含classic suspense style, practical effects等参数，强制剔除neon, cyberpunk, futuristic city，防止AI滑向\"科幻动作大片\"而非\"极地悬疑恐怖片\"。\n\n## 产出什么\n- 视频文件（MP4格式）\n- 视频脚本、Prompt清单、视觉方案\n- 一套符合卡朋特美学的极地悬疑恐怖视觉方案（包含：核心设定逻辑图、角色三视图Prompt、分镜脚本）\n- 适用于AI视频生成工具的高保真Prompt清单\n\n## 什么时候问你\n- 用户提供的剧本缺乏\"密闭空间\"或\"猜疑链\"导致恐怖感无法建立时\n- 极地环境细节不足导致画面缺乏寒意时\n- 用户要求输出视频脚本、Prompt清单、视觉方案，但缺少关键输入时\n- 本模块与上游主SKILL或其他附MD规则冲突时\n```\n\n# ",
+      "contentType": "text/markdown",
+      "primary": true
+    },
+    {
+      "path": "附01 | 极地密闭视觉与实拍悬疑指南.md",
+      "content": "## **附01 | [极地密闭视觉与实拍悬疑指南.md](http://xn--jhqs2knvdwyfxfu2z81dknp64a0n9axp0cbba8874a.md)**\n\n## **#做什么**\n\n解决AIGC生成极地悬疑场景时“画面悬浮、缺乏寒冷压迫感、物理质感不足”的痛点，强制注入经典极地实拍悬疑美学。\n\n## **#需要什么输入**\n\n- 主MD下发的分镜剧本\n\n- 极地基地与自然环境设定\n\n- 未知威胁或异象的形态描述\n\n## **#怎么做**\n\n1. **强制调用【提示词】物理底座**：获取物理真实感与电影级光学参数。\n\n2. **【极地悬疑参数替换】**：在生成任何Prompt时，必须强制替换为以下物理参数：\\\n   `Shot on IMAX 70mm Film, Kodak Vision3 500T, No Digital Intermediate, practical effects, cold desaturated blue palette, high contrast, heavy film grain, flickering red emergency light, deep shadow, physical texture, no neon, no cheap CGI.`\n\n3. **画面校验**：\n\n   - 必须包含 `cold desaturated blue palette`\n\n   - 必须包含 `flickering red emergency light`\n\n   - 必须包含 `practical effects, physical texture`\n\n   - 必须包含 `heavy film grain`\n\n## **#产出什么**\n\n带有极地实拍悬疑物理参数的分镜Prompt（适配Seedance 2.5 / MiniMax H3）。\n\n## **#什么时候问你**\n\n当分镜中出现需要高清晰度数字CG的宏大奇观场景，导致物理特效参数无法满足时，停下来询问用户。",
+      "contentType": "text/markdown",
+      "primary": false
+    },
+    {
+      "path": "附02 | 寒地猜疑与生理战栗落地手册.md",
+      "content": "## 附02 | 寒地猜疑与生理战栗落地手册\\\n\\\n\\\n**#做什么**\n\n将《葵花宝典》的“困兽（猜疑链）”、“体语（生理反应）”、“焚我（自毁代价）”与极地悬疑美学缝合，确保剧本的情感张力落到生理层面。不限定题材，只要是悬疑恐怖即可。\n\n## **#需要什么输入**\n\n- 《葵花宝典》产出的“困兽·体语·焚我”角色锚点\n\n- 密室空间结构与角色信任链\n\n## **#怎么做**\n\n1. **困兽（猜疑链）**：强制确保角色困在密闭空间（如极地基地），同伴可能已被未知异象影响，信任完全崩溃。他必须面对“要不要摧毁眼前这个最亲近的人”的绝境。\n\n2. **体语（生理恐惧）**：在生成Prompt时，彻底删除“恐惧、绝望”等形容词。强制转换为极寒环境下的物理生理反应：\n\n   - 呼吸在防毒面具或护目镜上迅速凝结成冰霜\n\n   - 冷汗顺着后背流下，瞬间变得冰凉\n\n   - 指尖在极寒中僵硬发抖，手指扣在扳机上却几乎无法弯曲\n\n   - 瞳孔在红灯闪烁下骤然收缩\n\n3. **焚我（自毁代价）**：角色最终的选择必须包含一个自我毁灭的物理动作——比如脱下防护服主动吸入异象、或者为了销毁被感染的同伴而切断自己唯一的退路。\n\n## **#产出什么**\n\n带有极寒生理战栗与猜疑张力的角色动作与情绪Prompt。\n\n## **#什么时候问你**\n\n当角色的情绪表达缺乏物理层面（如只写了“他害怕”），或猜疑链不够极致导致故事张力不足时，停下来驳回重写。",
+      "contentType": "text/markdown",
+      "primary": false
+    }
+  ],
+  "sourceUrl": "https://www.liblib.tv/skill",
+  "capturedAt": "2026-11-14",
+  "examples": [
+    "https://libtv-res.liblib.art/upload-images/074be3667ece41bc8993cea11c99240e/60a03a39a1f212be9a1b6d01d806ca2efd8bb601.mp4"
+  ],
+  "missingReferences": [],
+  "contentOrigin": "skillFiles"
+}

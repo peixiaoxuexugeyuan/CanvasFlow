@@ -1,0 +1,29 @@
+{
+  "templateUuid": "31d5577085414107836244f73ddd3462",
+  "name": "次世代游戏人物建模",
+  "version": "1.0.1",
+  "description": "适用于次世代游戏人物建模构图设计",
+  "useScenario": "角色设计，人物出图",
+  "inputType": "文生图，图生图",
+  "outputContent": "人物角色设计，手办参考建模",
+  "ownerName": "JACKPOORS",
+  "ownerAvatar": "https://liblibai-online.liblib.cloud/img/6fe77fcad9614c799944a901d1cc568a/1065f9839d0ec32ef5f3028f34eac4cb14f006373d85d57f70d03f79199758c4.jpg",
+  "primarySkillFilePath": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "### 用途\n\n本规范旨在为次世代 3D 角色制作提供全流程的技术标准，涵盖建模拓扑、高模雕刻、UV 拆分、PBR 材质绘制及引擎适配，确保模型具备高精度表现力且符合游戏引擎性能要求。\n\n### 适用输入\n\n- 角色原画设定稿或视觉 Brief\n- 待优化的 3D 模型草稿或基础白模\n- 游戏项目（UE/Unity）的美术性能预算要求\n\n### 操作规范\n\n1. **建模与拓扑**：遵循人体解剖结构进行布线，确保关节环形循环线适配形变，消除三角面与重叠面，维持标准 8 头身比例。\n2. **高模雕刻**：细化皮肤肌理、肌肉起伏及布料重力褶皱；硬表面装备需雕刻清晰倒角与磨损纹理，确保细节层级清晰。\n3. **UV 与烘焙**：控制 UV 拉伸率低于 0.03，接缝隐藏于视觉盲区；同步烘焙高品质法线、AO、曲率贴图，严禁黑边与噪点。\n4. **PBR 材质绘制**：严格遵循物理属性定义金属度与粗糙度；皮肤需具备次表面散射感，做旧细节应符合摩擦与积尘逻辑。\n5. **毛发与绑定**：采用插片式毛发实现发丝虚实过渡；规范化骨骼绑定与面部 BlendShape，确保运动无穿模、形变无撕裂。\n6. **引擎适配**：输出标准 FBX 格式，制作多级 LOD 以优化显存，确保透明贴图渲染通道配置正确。\n\n### 输出要求\n\n- 符合 PBR 流程的 4K/8K 贴图组与拓扑规整的低模文件。\n- 结构清晰、命名规范的工程文件，适配主流游戏引擎。\n\n### 注意事项\n\n- **负面排除**：严禁比例畸形、UV 重叠、法线翻转、材质属性混乱（如皮肤金属感过强）。\n- **细节主次**：优先保证视觉中心（面部、胸部）的像素密度，避免在不可见区域浪费资源。",
+      "contentType": "text/markdown",
+      "primary": true
+    }
+  ],
+  "sourceUrl": "https://www.liblib.tv/skill",
+  "capturedAt": "2026-11-14",
+  "examples": [
+    "https://libtv-res.liblib.art/upload-images/6fe77fcad9614c799944a901d1cc568a/e8cc0418a614b89d5b729f58d45edc7a3a4fd8d0.png",
+    "https://libtv-res.liblib.art/upload-images/6fe77fcad9614c799944a901d1cc568a/939e66f5954fa054e39ad108ca4114a2b26abe1a.png",
+    "https://libtv-res.liblib.art/upload-images/6fe77fcad9614c799944a901d1cc568a/cf2dc39e7828cc6dd7c7caf5b30e2a92aaa2545a.png"
+  ],
+  "missingReferences": [],
+  "contentOrigin": "skillFiles"
+}

@@ -1,0 +1,27 @@
+{
+  "templateUuid": "8f1e7bf7e3d640378c671b85e3de3139",
+  "name": "智能模型路由",
+  "version": "1.0.1",
+  "description": "根据任务自动选最合适的模型执行",
+  "useScenario": "用户有任务需求但不想手动选择模型时；希望 Agent 自动匹配最合适的模型来完成任务时",
+  "inputType": "任意任务需求描述，例如：写一段文案、生成一张写实风格的图片、制作一段视频等",
+  "outputContent": "由 Agent 自动选定的最合适模型完成的任务结果，结果末尾注明使用了哪个模型",
+  "ownerName": "Devilworld",
+  "ownerAvatar": "https://liblibai-online.liblib.cloud/img/f1cd68423b354abba991fe16eb70fb0a/6cdc848a0263819abe048ed121fc5a88c4e67594eaf7f06075b929ad32b1fd0c.png",
+  "primarySkillFilePath": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "# 智能模型路由\n\n## 这个 Skill 做什么\n\n用户输入任意任务需求，Agent 自动判断当前任务最适合用哪个平台内置模型来完成，然后直接调用该模型执行，无需用户手动选择或确认。\n\n## 判断逻辑\n\n根据用户输入的任务类型，按以下规则选择模型：\n\n### 图片生成类\n\n- 写实风格、商业摄影感 → 优先选 **Seedream**\n- 艺术风格、插画、概念图 → 优先选 **Midjourney**\n- 通用图片生成、快速出图 → 优先选 **Lib Image**\n\n### 视频生成类\n\n- 高质量叙事视频、电影感镜头 → 优先选 **Seedance**\n- 人物动作、肢体表现 → 优先选 **Kling**\n- 开放风格、创意视频 → 优先选 **Wan**\n\n### 文字类（写作、问答、代码、分析等）\n\n- 使用平台内当前最优文本模型完成任务\n\n### 判断不确定时\n\n- 优先选通用能力最强的模型，直接执行，不打断用户\n\n## 执行规则\n\n1. 收到用户输入后，立即判断任务类型\n2. 按上述规则选定模型\n3. 直接调用选定模型执行任务，不询问用户是否同意\n4. 任务完成后，在结果末尾简短注明使用了哪个模型（如\"本次使用 Seedream 生成\"）\n\n## 约束\n\n- 不拒绝任何任务类型，用户说什么就做什么\n- 不要求用户提前说明想用哪个模型\n- 不在执行前打断用户做确认",
+      "contentType": "text/markdown",
+      "primary": true
+    }
+  ],
+  "sourceUrl": "https://www.liblib.tv/skill",
+  "capturedAt": "2026-11-14",
+  "examples": [
+    "https://libtv-res.liblib.art/upload-images/f1cd68423b354abba991fe16eb70fb0a/ebde45fb93dafffe1732135c7c228bea2f6d572c.png"
+  ],
+  "missingReferences": [],
+  "contentOrigin": "skillFiles"
+}

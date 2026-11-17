@@ -19,6 +19,13 @@ function FullPath([string]$Value) {
 function Inside([string]$Root, [string]$Target) {
   $Target.Equals($Root,[StringComparison]::OrdinalIgnoreCase) -or $Target.StartsWith($Root + '\',[StringComparison]::OrdinalIgnoreCase)
 }
+function IOPath([string]$Value) {
+  # Windows PowerShell 5.1 providers still impose MAX_PATH on Copy-Item.
+  # Keep logical paths for boundary checks; use extended paths only for I/O.
+  $full = FullPath $Value
+  if ($full.StartsWith('\\')) { return '\\?\UNC\' + $full.Substring(2) }
+  return '\\?\' + $full
+}
 function SafeRelative([string]$Value) {
   if (-not $Value -or $Value -match '[\x00-\x1f:*?"<>|]' -or [IO.Path]::IsPathRooted($Value)) { return $false }
   foreach ($part in ($Value -split '[/\\]')) { if (-not $part -or $part -eq '.' -or $part -eq '..') { return $false } }
@@ -30,16 +37,17 @@ function CheckedFile([string]$Root,[string]$Relative) {
   if (-not (Inside $Root $target)) { throw 'Installation state escapes its root' }
   $current = $target
   while (Inside $Root $current) {
-    if (Test-Path -LiteralPath $current) {
-      if ((Get-Item -LiteralPath $current -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Filesystem links are not supported during upgrade: $current" }
-    }
+    try { $attributes = [IO.File]::GetAttributes((IOPath $current)) }
+    catch [IO.FileNotFoundException] { $attributes = 0 }
+    catch [IO.DirectoryNotFoundException] { $attributes = 0 }
+    if ($attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Filesystem links are not supported during upgrade: $current" }
     if ($current.Equals($Root,[StringComparison]::OrdinalIgnoreCase)) { break }
     $current = Split-Path -Parent $current
   }
   return $target
 }
 function ReadManifest([string]$File) {
-  $value = Get-Content -Raw -Encoding UTF8 -LiteralPath $File | ConvertFrom-Json
+  $value = [IO.File]::ReadAllText((IOPath $File)) | ConvertFrom-Json
   if ($value.version -ne 1 -or $null -eq $value.files) { throw 'Invalid installation file manifest' }
   $set = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   foreach ($name in $value.files) {
@@ -49,13 +57,13 @@ function ReadManifest([string]$File) {
   return ,$set
 }
 function FileHash([string]$File) {
-  $stream = [IO.File]::OpenRead($File)
+  $stream = [IO.File]::OpenRead((IOPath $File))
   $sha = [Security.Cryptography.SHA256]::Create()
   try { return [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-','') }
   finally { $stream.Dispose(); $sha.Dispose() }
 }
 function WriteJson([string]$File,$Value) {
-  [IO.File]::WriteAllText($File,($Value | ConvertTo-Json -Depth 12),[Text.UTF8Encoding]::new($false))
+  [IO.File]::WriteAllText((IOPath $File),($Value | ConvertTo-Json -Depth 12),[Text.UTF8Encoding]::new($false))
 }
 function InstalledRoots {
   $roots = @($PreviousDirectories)
@@ -86,7 +94,7 @@ function ProtectedPaths([string]$Root) {
   $protected = @($configPath)
   if (Test-Path -LiteralPath $configPath) {
     [void](CheckedFile $Root 'desktop-config.json')
-    $config = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json
+    $config = [IO.File]::ReadAllText((IOPath $configPath)) | ConvertFrom-Json
     foreach ($field in @('dataDirectory','backendDirectory')) {
       if (-not $config.$field) { continue }
       if ($config.$field -isnot [string]) { throw "Invalid configured path: $field" }
@@ -110,7 +118,7 @@ if ($Mode -eq 'PrepareRemoval') {
     $lines += 'path' + $index + '=' + $relative
   }
   # The Unicode NSIS ReadINIStr API expects a UTF-16 INI file.
-  [IO.File]::WriteAllLines($StateFile,$lines,[Text.Encoding]::Unicode)
+  [IO.File]::WriteAllLines((IOPath $StateFile),$lines,[Text.Encoding]::Unicode)
   exit 0
 }
 
@@ -127,9 +135,12 @@ if ($Mode -eq 'Prepare') {
     $files = @()
     $pending = [Collections.Generic.Stack[string]]::new(); $pending.Push($root)
     while ($pending.Count) {
-      foreach ($item in Get-ChildItem -LiteralPath ($pending.Pop()) -Force) {
-        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Remove the filesystem link before upgrading: $($item.FullName)" }
-        if ($item.PSIsContainer) { $pending.Push($item.FullName) } else { $files += $item }
+      $directory = $pending.Pop()
+      foreach ($entry in [IO.Directory]::EnumerateFileSystemEntries((IOPath $directory))) {
+        $name = Join-Path $directory ([IO.Path]::GetFileName($entry))
+        $attributes = [IO.File]::GetAttributes($entry)
+        if ($attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Remove the filesystem link before upgrading: $name" }
+        if ($attributes -band [IO.FileAttributes]::Directory) { $pending.Push($name) } else { $files += [pscustomobject]@{FullName=$name} }
       }
     }
     $owned = $packageFiles
@@ -155,9 +166,9 @@ if ($Mode -eq 'Prepare') {
       $relative = $file.FullName.Substring($root.Length+1)
       $source = CheckedFile $root $relative
       $destination = CheckedFile $backupFiles $relative
-      New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
+      [IO.Directory]::CreateDirectory((IOPath (Split-Path -Parent $destination))) | Out-Null
       $before = FileHash $source
-      Copy-Item -LiteralPath $source -Destination $destination -ErrorAction Stop
+      [IO.File]::Copy((IOPath $source),(IOPath $destination),$false)
       if ((FileHash $destination) -ne $before -or (FileHash $source) -ne $before) { throw 'Data changed or copy verification failed; upgrade stopped' }
       $saved += @{path=$relative;sha256=$before}
     }
@@ -170,7 +181,7 @@ if ($Mode -eq 'Prepare') {
   exit 0
 }
 
-$state = Get-Content -Raw -Encoding UTF8 -LiteralPath $StateFile | ConvertFrom-Json
+$state = [IO.File]::ReadAllText((IOPath $StateFile)) | ConvertFrom-Json
 if ($state.version -ne 1) { throw 'Invalid upgrade state' }
 $destinationRoot = FullPath $InstallDirectory
 if (-not (Test-Path -LiteralPath (Join-Path $destinationRoot 'CanvasFlow.exe'))) { throw 'The new application has not been installed' }
@@ -181,18 +192,18 @@ foreach ($record in $state.installations) {
     $source = CheckedFile (Join-Path $backup 'files') $file.path
     $destination = CheckedFile $destinationRoot $file.path
     if ((FileHash $source) -ne $file.sha256) { throw 'Upgrade recovery data failed verification' }
-    if (Test-Path -LiteralPath $destination) {
+    if ([IO.File]::Exists((IOPath $destination))) {
       if ((FileHash $destination) -eq $file.sha256) { continue }
       throw "Refusing to overwrite a different file; recovery copy retained in $backup"
     }
-    New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
-    Copy-Item -LiteralPath $source -Destination $destination -ErrorAction Stop
+    [IO.Directory]::CreateDirectory((IOPath (Split-Path -Parent $destination))) | Out-Null
+    [IO.File]::Copy((IOPath $source),(IOPath $destination),$false)
     if ((FileHash $destination) -ne $file.sha256) { throw 'Restored installation data failed verification' }
   }
   # Preserve relative settings. Absolute internal paths must follow a changed install location.
   $configFile = Join-Path $destinationRoot 'desktop-config.json'
   if (-not $sourceRoot.Equals($destinationRoot,[StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $configFile)) {
-    $config = Get-Content -Raw -Encoding UTF8 -LiteralPath $configFile | ConvertFrom-Json
+    $config = [IO.File]::ReadAllText((IOPath $configFile)) | ConvertFrom-Json
     foreach ($field in @('dataDirectory','backendDirectory')) {
       if ($config.$field -and [IO.Path]::IsPathRooted($config.$field)) {
         $original = FullPath $config.$field

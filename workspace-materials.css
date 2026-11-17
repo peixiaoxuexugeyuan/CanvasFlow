@@ -29,10 +29,6 @@ html.light .wm-tag-panel{background:#fff;color:#34323e;border-color:#d8d6e2}html
 .wm-delete-panel{width:min(480px,94vw)}
 .wm-delete-content{padding:22px 24px;overflow:auto}
 .wm-delete-content>p{font-size:13px;line-height:1.7;margin:0 0 14px}
-.wm-delete-items{list-style:none;padding:0;margin:0 0 18px;border:1px solid #3b3946;border-radius:9px;max-height:200px;overflow:auto}
-.wm-delete-items li{padding:10px 12px;font-size:12px;overflow-wrap:anywhere}
-.wm-delete-items li+li{border-top:1px solid #34313e}
-.wm-delete-items .wm-delete-more{color:#9690a4}
 .wm-delete-content .wm-delete-note{font-size:12px;color:#aaa1b5;margin-bottom:0}
 .wm-delete-content .wm-upload-error{margin-top:16px}
 .wm-delete-panel footer{justify-content:flex-end;flex-shrink:0}
@@ -40,7 +36,7 @@ html.light .wm-tag-panel{background:#fff;color:#34323e;border-color:#d8d6e2}html
 .wm-danger:hover{background:#985b6d}
 .wm-delete-panel button:disabled,.wm-undo-row button:disabled{opacity:.5;cursor:wait}
 html.light .wm-delete-panel{background:#fff;border-color:#d9d4e0;color:#38323f}
-html.light .wm-delete-panel header,html.light .wm-delete-panel footer,html.light .wm-delete-items,html.light .wm-delete-items li+li{border-color:#e4dfe9}
+html.light .wm-delete-panel header,html.light .wm-delete-panel footer{border-color:#e4dfe9}
 html.light .wm-delete-content .wm-delete-note{color:#86758c}
 html.light .wm-card-footer>.wm-delete{color:#ab6576}
 html.light .wm-card-footer>.wm-delete:hover{background:#fff0f3;border-color:#d6a0ad}
@@ -50,3 +46,9 @@ html.light .wm-undo-row button{color:#785395}
 @media(max-width:650px){.wm-selection{flex-wrap:wrap;gap:10px}.wm-delete-panel footer{flex-direction:row;align-items:center}.wm-delete-content{padding:18px}.wm-undo-row{align-items:flex-start;font-size:11px}}
 
 .wm-card-metadata{display:flex;gap:8px;margin:12px 0}.wm-card-metadata button,.wm-card-metadata select{border:1px solid var(--border,#30333a);border-radius:7px;background:var(--panel,#1b1d23);color:var(--muted,#a6abb6);padding:5px 8px;font-size:11px;min-width:0}.wm-card-metadata select{flex:1}.wm-card-metadata button[aria-pressed=true]{color:#e4c580}
+/* Compact only the material page's heading actions and type filters. */
+.workspace-materials .wm-heading-actions>.wm-primary,.workspace-materials .wm-heading-actions>.wm-secondary{font-size:12px;font-weight:550;line-height:1.5;padding:7px 12px;border-radius:8px;min-height:34px}
+.workspace-materials .wm-type-tabs{gap:6px;padding-bottom:16px}
+.workspace-materials .wm-type-tabs button{font-size:12px;line-height:1.5;padding:8px 12px;gap:7px;border-radius:8px;min-height:38px}
+.workspace-materials .wm-type-tabs button>span{font-size:15px;line-height:18px}
+.workspace-materials .wm-type-tabs em{font-size:10px;padding:1px 3px}

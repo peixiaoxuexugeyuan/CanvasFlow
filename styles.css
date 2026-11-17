@@ -149,6 +149,12 @@ html.light .workspace-pick small{color:#78716c}
 
 
 .agent-intake{padding:12px;border:1px solid rgba(255,255,255,.08);border-radius:14px;background:#242424}
+.agent-intake.is-skill-start{flex:none;margin:8px 10px 12px;padding:18px;border-radius:20px;background:#292929}
+.agent-intake.is-skill-start .agent-intake-item{background:transparent}
+.agent-intake.is-skill-start .agent-intake-item.is-active{background:#3a3a3a;border-color:#565656}
+.agent-intake.is-skill-start .agent-intake-item strong{font-size:14px;font-weight:400}
+.agent-drawer:has(>.agent-intake.is-skill-start)>.agent-composer{display:none}
+html.light .agent-intake.is-skill-start .agent-intake-item.is-active{background:#eee;border-color:#aaa}
 html.light .agent-intake{background:#fff;border-color:rgba(12,10,9,.1)}
 .agent-intake-question{margin-bottom:8px;color:#e8e6e6;font-size:13px}
 .agent-intake-list{display:flex;flex-direction:column;gap:6px}

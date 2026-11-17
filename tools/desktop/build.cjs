@@ -62,9 +62,10 @@ function copyRuntime(source, target) {
   if (isDevelopment) {
     fs.writeFileSync(path.join(target,'desktop-config.json'),JSON.stringify({backendDirectory:root,dataDirectory:path.join(root,'server-data'),port:5173,startupPath:'/'},null,2));
   }
-  const report = {version:require('./app/package.json').version,electron:require('electron/package.json').version,shortcutName:product.shortcutName,
+  const report = {version:require('./app/package.json').version,buildNumber:require('./app/package.json').buildNumber,electron:require('electron/package.json').version,shortcutName:product.shortcutName,
     executable:path.join(target,'CanvasFlow.exe'),selfContainedRuntime:true,developmentConfiguration:isDevelopment,
     dataBundled:false,protectedBuild,backendProtection:protectedBuild?'Nuitka native standalone':'source',builtAt:new Date().toISOString()};
   fs.writeFileSync(path.join(out,'desktop-build.json'),JSON.stringify(report,null,2));
+  fs.writeFileSync(path.join(target,'canvasflow-build.json'),JSON.stringify({version:report.version,buildNumber:report.buildNumber},null,2));
   console.log(JSON.stringify(report));
 })().catch(error => {console.error(error);process.exitCode=1;});

@@ -1,0 +1,29 @@
+{
+  "templateUuid": "d559026bec674bd5803a8bebd803ee11",
+  "name": "商业产品精修",
+  "version": "1.0.2",
+  "description": "适用于各类电商产品精修",
+  "useScenario": "针对于商业产品图片专业精修，面向电商静物、3C数码、美妆、首饰、家居等品类，完成透视校正、瑕疵清理、光影重构、材质质感还原、色彩校准、背景优化，输出符合电商商用标准产品图。",
+  "inputType": "上传产品图片，skill触发关键词：（产品精修、商品修图、白底图精修、静物精修、电商图片修图、高低频修图、产品图片调色）",
+  "outputContent": "产品精修图，电商产品修图",
+  "ownerName": "JACKPOORS",
+  "ownerAvatar": "https://liblibai-online.liblib.cloud/img/6fe77fcad9614c799944a901d1cc568a/1065f9839d0ec32ef5f3028f34eac4cb14f006373d85d57f70d03f79199758c4.jpg",
+  "primarySkillFilePath": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "### 技能用途\n\n本 Skill 致力于商业产品图片的专业级精修，涵盖电商静物、3C 数码、美妆、首饰、家居等品类。通过透视校正、瑕疵清理、光影重构、材质还原和色彩校准，输出符合电商商用标准的高质量写实产品图。\n\n### 适用输入\n\n- **产品原图**：高清原图、RAW 文件或拍摄初稿。\n- **需求说明**：应用平台（国内电商/跨境/印刷）、底图要求（白底/透明/场景）、产品材质信息及风格偏好（如通透清新、高级暗调）。\n\n### 操作步骤\n\n1. **需求分析与校正**：评估原图质量，修正镜头畸变，调整对称性，清理灰尘、指纹及拍摄划痕。\n2. **光影体积重塑**：运用高低频分层技术，低频层塑造光影体积感，高频层完整保留材质真实纹理；统一主光源逻辑，精细处理高光、中间调与环境反光。\n3. **材质专项优化**：\n   - **玻璃/液体**：提升通透度，强化轮廓高光，处理折射杂影。\n   - **金属/电镀**：确保高光锐利干净，暗部层次分明。\n   - **皮革/织物**：保留自然纹路与明暗褶皱，禁止修成平面。\n4. **色彩校准**：消除拍摄色偏，还原产品固有色，确保白底图边缘干净且达到纯白标准。\n5. **后期输出**：完成边缘优化与适度锐化，按照指定尺寸、分辨率及格式（JPG/PNG/TIFF）交付。\n\n### 输出要求\n\n- **高质感还原**：光影必须遵循物理逻辑，材质质感真实，避免虚假的塑料感。\n- **合规交付**：严禁篡改产品外形、LOGO 或文字比例；提供预览小样，确认后交付高清终稿。\n\n### 注意事项\n\n- 不接受截图或多次压缩的模糊图片作为原图。\n- 除非用户明确要求，否则不主动添加装饰特效或光斑。\n- 涉及更换背景或重构整体光影需单独确认需求。",
+      "contentType": "text/markdown",
+      "primary": true
+    }
+  ],
+  "sourceUrl": "https://www.liblib.tv/skill",
+  "capturedAt": "2026-11-14",
+  "examples": [
+    "https://libtv-res.liblib.art/upload-images/6fe77fcad9614c799944a901d1cc568a/33031e3936097b90c75cddab983a2922ad10cce8.png",
+    "https://libtv-res.liblib.art/upload-images/6fe77fcad9614c799944a901d1cc568a/afe716b14442b9f7ccf24dfde1a3f593a4f8be15.png",
+    "https://libtv-res.liblib.art/upload-images/6fe77fcad9614c799944a901d1cc568a/5051b7380244e92a31bda5985ff9c923e7e8047d.png"
+  ],
+  "missingReferences": [],
+  "contentOrigin": "skillFiles"
+}

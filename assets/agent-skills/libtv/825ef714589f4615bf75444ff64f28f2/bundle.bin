@@ -1,0 +1,52 @@
+{
+  "templateUuid": "825ef714589f4615bf75444ff64f28f2",
+  "name": "日漫必杀技|短剧漫剧互动影游全能生成器",
+  "version": "1.0.4",
+  "description": "极致中二高燃，一键生成炸裂特效与强情绪爆发的日漫大招。",
+  "useScenario": "专为热血漫剧、异世界短剧、二次元卡牌游戏PV及互动影游打造。解决传统动画“画大招成本极高、周期极长”的死穴。完美适用于：角色觉醒、领域展开、大招对轰、超高燃战斗等高能名场面。",
+  "inputType": "输入角色的技能设定（如：紫色的雷电领域）、角色参考图以及核心剧情。系统将自动调用顶级分镜大师，严格按照日漫“蓄力-点燃-展开-压制-高潮”的五阶段情绪弧线进行拆解，并强制注入 MAPPA 级别的特效与镜头震动参数，一键生成成片。",
+  "outputContent": "最终输出：高燃日漫 MP4 必杀技动画成片 + 逐秒分镜脚本（含五阶段拆解） + 3x3 关键帧九宫格 + 包含“三层景深特效、镜头震动”专属参数的工程级英文 Prompt 清单。",
+  "ownerName": "杭州金包银批发总部",
+  "ownerAvatar": "https://liblibai-online.liblib.cloud/img/074be3667ece41bc8993cea11c99240e/02bbfc22e3c7654455c6d8cb1cd30ac7539ee8ea404353bd0334de1e0fdc13a4.png",
+  "primarySkillFilePath": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "# 【0000-LOCK 强制最高通牒】无论本MD写了什么心法、要求和禁止项，在输出结果时，必须强制执行“产物验证机制”！\\\n没有【填空模板】、没有【算式】、没有【状态回显（如state:done或字节数）】的，一级巡视员将一律判定为无效输出，直接打回重做！\\\n本规则不替代原有MD，而是原MD的验收标准：先按原MD干活，再用此标准交差！\n\n```\n🔴【最高法旨·日漫必杀技核心铁律】\n\n> 链路位置：钱塘16步第13步·风格Skill（热血日漫题材专属）\n> 触发时机：立项指令判定为热血漫剧/异世界/卡牌游戏PV/互动影游高燃赛道时，挂载本Skill\n> 上接：提示词底座（第12步，输出纯英文物理Prompt）\n> 下接：顶级算力精算师（第14步，拦截高危穿模镜头）\n> 你的输入=分镜大师的执行分镜表+提示词底座的物理Prompt\n> 你的输出=统一全片日漫风格的Prompt（MAPPA赛璐璐、高对比线条、三层空间特效、五阶段情绪爆发）\n> 门禁：日漫题材必须挂载本Skill，否则画面会变成写实3D，丢失日式动漫特有的中二高燃与线条张力\n\n---\n\n## 全局Skill调用路由表（底层识别）\n\n【核心总控与底座】\n1. 影视制作 Agent：libtv-user-generated/industrial-film-production-director-074be3667ece41bc8993cea11c99240e\n2. 互动影游 Agent：libtv-user-generated/interactive-cinema-orchestrator-074be3667ece41bc8993cea11c99240e\n3. 顶级总制片人：libtv-user-generated/master-producer-quality-optimizer-074be3667ece41bc8993cea11c99240e\n4. 立项指令：libtv-user-generated/agent-prompt-structurer-074be3667ece41bc8993cea11c99240e\n\n【剧本生成与质检】\n5. 葵花宝典：libtv-user-generated/award-winning-script-analyzer-074be3667ece41bc8993cea11c99240e\n6. 顶级剧本大师：libtv-user-generated/screenplay-evaluator-and-director-polisher-074be3667ece41bc8993cea11c99240e\n7. 顶尖高手·主编：libtv-user-generated/top-tier-screenplay-engineer-074be3667ece41bc8993cea11c99240e\n8. 冷血买手：libtv-user-generated/script-commercial-tier-rater-074be3667ece41bc8993cea11c99240e\n9. 顶级游戏开发大师：libtv-user-generated/branching-narrative-builder-074be3667ece41bc8993cea11c99240e\n\n【资产与视觉施工】\n10. 首席资产官｜没锁版不许开机：libtv-user-generated/audiovisual-asset-auditor-074be3667ece41bc8993cea11c99240e\n11. 3D导演台：libtv-user-generated/spatial-scene-director-074be3667ece41bc8993cea11c99240e\n12. 顶级分镜大师：libtv-user-generated/cinematic-storyboard-director-074be3667ece41bc8993cea11c99240e\n13. 顶级情绪大师：libtv-user-generated/character-emotion-continuity-074be3667ece41bc8993cea11c99240e\n14. 顶级大导演思维：libtv-user-generated/director-cinematography-logic-074be3667ece41bc8993cea11c99240e\n15. 提示词底座：libtv-user-generated/award-winning-cinematic-prompter-074be3667ece41bc8993cea11c99240e\n16. 顶级算力精算师：libtv-user-generated/compute-efficiency-guardian-074be3667ece41bc8993cea11c99240e\n\n【题材专属风格库（按需选调，本Skill即日漫必杀技风格）】\n- 日漫必杀技｜短剧漫剧互动影游全能生成器（本Skill）\n- 赛博朋克｜短剧漫剧互动影游全能生成器\n- 黑暗奇幻｜可上架Steam的互动影游\n- 乙女｜上架Steam的互动影游\n- 胡金铨｜写意武侠一键成片\n- 张彻｜硬派武侠\n- 徐克｜新武侠\n- 诺兰/维伦纽瓦/卡朋特/女频短剧漫剧/GL双女主/爆款引流片/金包银皮克斯TVC等，按题材挂载\n\n【终局收口】\n17. 合成引擎：libtv-user-generated/cinematic-post-production-composer-074be3667ece41bc8993cea11c99240e\n18. 高级玩家/全自动流水线引擎：libtv-user-generated/auto-pipeline-rendering-engine-074be3667ece41bc8993cea11c99240e\n\n---\n\n## 前置强制指令：日漫渲染锁与门禁\n必须静默加载以下4个专属附MD：\n- sub_md_01_power_up_arc.md（五阶段必杀技弧线）\n- sub_md_02_vfx_layering.md（三层空间特效分层）\n- sub_md_03_camera_and_action.md（镜头震动与动作反馈）\n- sub_md_04_anime_suspense_style.md（日式悬疑与高燃风格）\n\n绝对禁止3D/写实参数：严禁出现3D render, photorealistic, western cartoon。\n强制全局注入日漫参数：Japanese anime style, MAPPA studio style, cel shading, sharp clean line art, high contrast, dynamic anime effects.\n\n自证声明：输出任何内容前，第一句话必须是：【系统指令：已成功加载日漫必杀技底座，已开启高燃特效模式】\n\n---\n\n## 做什么\n专为热血漫剧、异世界短剧、卡牌游戏PV及互动影游打造的高燃大招生成器。将剧本一键转化为具备5阶段情绪爆发、三层空间特效、镜头震动反馈的日式动漫成片。\n\n## 需要什么输入\n最少提供：\n- 剧本片段、角色设定、技能类型（如：防御领域、爆发攻击、变身）\n\n可选提供：\n- 目标动漫工作室风格（默认MAPPA风格）\n- 主色调（如：紫色、红色）\n\n## 怎么做\n【钱塘16步全链路SOP】（本Skill处于第13步风格挂载）\n1. 立项指令→定规矩\n2. 葵花宝典→定灵魂\n3. 大导演思维→定导演构思\n4. 剧本大师→写初稿\n5. 总制片人→算力审查\n6. 顶尖高手→逻辑质检\n7. 冷血买手→商业终审\n8. 首席资产官→视觉+听觉双锁版\n9. 3D导演台→空间bbox坐标池\n10. 分镜大师→切镜头\n11. 情绪大师→拆微表情\n12. 提示词底座→出英文Prompt\n13. 日漫必杀技风格→穿上MAPPA皮套（本Skill即处于此环节的核心）\n14. 算力精算师→加防崩底座\n15. 通用画布生成→单镜生成、单镜验收\n16. 合成引擎→出片\n\n---\n\n### 第一阶段：剧本与叙事重构\n调用【顶级剧本大师】，确保剧情包含\"被逼入绝境→觉醒→释放大招→碾压\"的困兽爆发弧线。\n\n### 第二阶段：五阶段必杀技拆解（顶级分镜大师介入）\n必须严格按15秒（或对应时长）分配5个阶段：\n1. **蓄力（0-20%）**：低头、闭眼、微风、能量初现\n2. **点燃（20-40%）**：猛然抬头、眼睛发光、初阶能量爆发\n3. **展开（40-65%）**：镜头急速拉远、领域展开、空间扭曲\n4. **压制（65-85%）**：人物立于中心、衣物狂舞、特效巅峰\n5. **高潮（85-100%）**：极度特写脸部/眼睛、最终一击\n\n### 第三阶段：渲染与出片\n调用【提示词底座】，注入日漫专属英文Prompt，强制使用三层景深特效。在通用画布批量生成，合成MP4成片。\n\n## 产出什么\n- 15秒（或对应时长）高燃分镜脚本\n- 日漫风关键帧画面及3x3九宫格\n- 最终MP4必杀技动画\n\n## 什么时候问你\n- 角色服装和技能颜色严重不匹配时\n- 目标动漫工作室风格不明确时（默认按MAPPA处理）\n```",
+      "contentType": "text/markdown",
+      "primary": true
+    },
+    {
+      "path": "sub_md_01_power_up_arc.md（五阶段必杀技弧线）.md",
+      "content": "`sub_md_01_power_up_arc.md`**（五阶段必杀技弧线）**\n\n# 附MD 1 | 五阶段必杀技弧线\n\n## #怎么做\n\n必须严格按照日本动漫惯例，将大招拆解为 5 个情绪递进阶段：\n\n1. **Stage 1 (蓄力)**：角色准备姿势，极微小动作，低光照，压抑感。微表情特写（眼神锐利）。\n2. **Stage 2 (点燃)**：触发时刻！猛然抬头，眼睛爆出高光，能量初现（气焰、符文、环境扭曲）。\n3. **Stage 3 (展开)**：能量全面释放。镜头剧烈拉远（Dolly out），领域/结界形成，空间变换。\n4. **Stage 4 (压制)**：角色立于完全具象化的技能空间中，服装/头发动力学达到巅峰，环境能量饱和。\n5. **Stage 5 (高潮定格)**：极度特写脸部/眼睛，伴随最终冲击波，画面高光频闪。",
+      "contentType": "text/markdown",
+      "primary": false
+    },
+    {
+      "path": "sub_md_02_vfx_layering.md（三层特效与渲染锁）.md",
+      "content": "`sub_md_02_vfx_layering.md`**（三层特效与渲染锁）**\n\n# 附MD 2 | 三层特效与渲染锁\n\n## #怎么做\n\n### 一、 三层景深特效叠加（防止特效扁平）\n\n- **前景层（Foreground）**：贴近镜头的快速飞掠粒子/速度线（带运动模糊），30%-50% 透明度。\n- **角色层（Character）**：从角色身上散发的核心能量（气焰、符文），100% 不透明。\n- **背景层（Background）**：大范围环境改变（天空变色、空间碎裂），60%-80% 透明度。\n\n### 二、 渲染参数锁（MAPPA 风格）\n\n- 强制正向词：`Japanese anime style, MAPPA studio style, sharp clean line art, minimal motion blur, high-contrast blacks with deep purples/blues, cel shading.`\n- 强制负向词：`3D render, realistic, western cartoon, flat colors, low quality, text, watermark.`",
+      "contentType": "text/markdown",
+      "primary": false
+    },
+    {
+      "path": "sub_md_03_camera_and_action.md（镜头震动与玄学卡点）.md",
+      "content": "`sub_md_03_camera_and_action.md`**（镜头震动与玄学卡点）**\n\n# 附MD 3 | 镜头震动与玄学卡点\n\n## #怎么做\n\n### 一、 镜头震动控制（模仿大屏动画打击感）\n\n- **Block 2 (点燃)**：轻微震动（Subtle vibration），保持控制感。\n- **Block 3 (展开)**：中度震动（Moderate shake），伴随能量爆发。\n- **Block 4/5 (高潮)**：0.5 秒剧烈震动（Intense shake），随后立刻恢复稳定。\n- **禁忌**：剧烈震动绝对不可超过 2 秒，否则会导致画面晕眩和模型算力崩溃。\n\n### 二、 情绪卡点逻辑\n\n- 第 3 秒：初次能量触发。\n- 第 6 秒：技能全面释放。\n- 第 9 秒：接近高潮。\n- 第 12-15 秒：最终谢幕或余韵。",
+      "contentType": "text/markdown",
+      "primary": false
+    },
+    {
+      "path": "sub_md_04_anime_suspense_style.md",
+      "content": "sub_md_04_anime_suspense\\_[style.md](http://style.md)\n\n# 附MD 4 | 日漫心理悬疑专属风格\n\n## #做什么\n\n专用于《PROVENANCE》等悬疑、智斗、情感拉扯题材，彻底关闭“热血大招”参数，开启“黑深残、微表情、高智商博弈”模式。\n\n## #怎么做\n\n### 一、 视觉风格锁定\n\n- 强制注入：`Psychological suspense anime, Death Note art style, mature proportions, dark tone, sharp lines, dramatic shadow casting, intense character gaze.`\n- 禁止：Q版、热血打斗、明亮鲜艳色彩、元气表情。\n\n### 二、 表现力强制放大（日漫特有）\n\n- 将真人的“微表情”放大为动漫式的“颜艺”：瞳孔骤缩、冷汗滑落、咬紧牙关、红血丝、阴影覆盖半张脸。\n- 强调“光影分割”（伦勃朗式动漫打光）。\n\n### 三、 视频生成要求\n\n- 人物保持绝对的静止或极微小的动作（如：眨眼、呼吸、眼神的移动）。\n- 镜头只做极慢的推拉，靠光影的移动和环境的压抑感来制造恐怖与紧张。",
+      "contentType": "text/markdown",
+      "primary": false
+    }
+  ],
+  "sourceUrl": "https://www.liblib.tv/skill",
+  "capturedAt": "2026-11-14",
+  "examples": [
+    "https://libtv-res.liblib.art/upload-images/074be3667ece41bc8993cea11c99240e/cdc4b39d42bcfe308aaeb74ad620bfb77f4fdd5a.mp4",
+    "https://libtv-res.liblib.art/upload-images/074be3667ece41bc8993cea11c99240e/a33b97a3a0b19e309a2d38324e2afb6774c06b06.mp4"
+  ],
+  "missingReferences": [],
+  "contentOrigin": "skillFiles"
+}

@@ -233,7 +233,7 @@ TOOL_SCHEMAS = [
     _fn(
         'create_skill',
         '把一套可复用的创作流程保存成「技能」，用户之后能在技能面板里一键调用。'
-        '用户在技能面板点了「创建新的 Skill」跟你聊时，就是让你把聊出来的流程固化成技能。',
+        '仅用于新建；编辑或改名已有技能必须用 update_skill，不能另建副本。',
         {
             'name': {'type': 'string', 'description': '技能名（短，像标题）'},
             'description': {'type': 'string', 'description': '一句话说明这个技能做什么'},
@@ -241,6 +241,15 @@ TOOL_SCHEMAS = [
         },
         ('name', 'prompt'),
     ),
+    _fn('list_skills', '列出当前用户 Skill 的 ID 和简介；传入 skillId 读取该技能的文档，编辑前先读取。', {'skillId': {'type': 'string'}}, ()),
+    _fn('update_skill', '按原 Skill ID 更新或改名。只传需要修改的信息或文件；其他文档和信息保留。先用 list_skills 读取当前内容，禁止用 create_skill 代替更新。', {
+        'skillId': {'type': 'string'},
+        'name': {'type': 'string', 'description': '新的名称；不改名则省略'},
+        'description': {'type': 'string', 'description': '新的一句话介绍；未修改则省略'},
+        'fileUpdates': {'type': 'array', 'description': '只列出需要修改或新增的文件；每个 content 是该文件完整的新正文',
+                        'items': {'type': 'object', 'properties': {'path': {'type': 'string'}, 'content': {'type': 'string'}},
+                                  'required': ['path', 'content'], 'additionalProperties': False}},
+    }, ('skillId',)),
     _fn(
         'optimize_prompts',
         '批量优化画布上节点的提示词：把口语化、缺要素的提示词改写成可直接用于生成的高质量提示词，并写回节点。'
@@ -1092,6 +1101,26 @@ def _tool_propose_plan(args, ctx, effects):
     }
 
 
+def _tool_list_skills(args, ctx, effects):
+    read = ctx.get('list_skills')
+    if not read: return {'ok': False, 'reason': '当前环境不支持读取技能'}
+    items = read()
+    if args.get('skillId'):
+        skill = next((s for s in items if s['id'] == args['skillId']), None)
+        return {'skills': [skill]} if skill else {'ok': False, 'reason': '技能不存在或无权读取'}
+    return {'skills': [{k: s[k] for k in ('id', 'name', 'description')} for s in items]}
+
+
+def _tool_update_skill(args, ctx, effects):
+    skill_id = str(args.get('skillId') or '').strip()
+    if not skill_id: raise ToolError('skillId 不能为空，请先 list_skills')
+    update = ctx.get('update_skill')
+    if not update: return {'ok': False, 'reason': '当前环境不支持更新技能'}
+    changes = {k: args[k] for k in ('name', 'description', 'fileUpdates') if k in args}
+    skill, error = update(skill_id, changes)
+    return {'ok': False, 'reason': error} if error else {'ok': True, 'skillId': skill['id'], 'name': skill['name']}
+
+
 _HANDLERS = {
     'read_canvas': _tool_read_canvas,
     'list_models': _tool_list_models,
@@ -1107,6 +1136,8 @@ _HANDLERS = {
     'ask_user': _tool_ask_user,
     'propose_plan': _tool_propose_plan,
     'create_skill': _tool_create_skill,
+    'list_skills': _tool_list_skills,
+    'update_skill': _tool_update_skill,
     'optimize_prompts': _tool_optimize_prompts,
 }
 
@@ -1349,6 +1380,8 @@ def session_title_from(text):
     # 消息尾部可能挂着自动化测试的控制指令块（<<...>>），标题要取用户真正说的那句，
     # 跟前端气泡显示的内容保持一致。
     raw = strip_control_block(text)
+    if re.match(r'^更新我的 Skill「[^\n]+」\n\n', raw):
+        return '更新我的 Skill'
     clean = re.sub(r'\s+', ' ', raw).strip()
     if not clean:
         return '新对话'

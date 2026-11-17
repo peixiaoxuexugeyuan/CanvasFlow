@@ -1,30 +1,13 @@
-# 回归测试
+# 本地版回归测试
 
-在仓库根目录执行：
+`preview/full-audit-20261019/run_baseline.py` 按文件在独立进程、临时数据目录运行 Python 测试，再运行 Node 测试。`tests/test_local_release.py <发布目录>` 验证便携运行时和真实 Blender 导出。
 
-```powershell
-pnpm --dir tools/release install --frozen-lockfile
-pnpm --dir tools/desktop install --frozen-lockfile
-pnpm --dir tools/openfilm install --frozen-lockfile
-node --test 'tests/*.test.cjs' 'tests/*.test.mjs'
-Get-ChildItem tests -Filter 'test_*.py' |
-  Where-Object Name -ne 'test_local_release.py' |
-  ForEach-Object {
-    python -m unittest discover -s tests -p $_.Name
-    if ($LASTEXITCODE -ne 0) { throw "测试失败：$($_.Name)" }
-  }
-```
+测试不提交真实收费模型请求。AI 协议和工具调用使用模拟响应或回环测试服务；Blender 使用本机程序执行。
 
-测试使用独立的临时数据目录和模拟供应商接口。3D 回归样本放在 `tests/fixtures/`。需要本机 Blender、OpenFilm 运行组件或原生安装器的测试会在缺少相应条件时跳过。
+本地版不再提供账号、角色权限、社区分享、配额和积分结算。旧平台专用断言保留并明确标记跳过；并未为满足旧断言恢复这些功能。对应替代覆盖在 `test_local_app.py`、`test_local_security_audit.py`：无账号可使用、无余额拦截、旧平台路由返回 404、工作区隔离、本地文件和项目保护、跨站请求防护。
 
-`python tests/test_local_release.py <发行后端目录>` 需要已构建的发行后端及 Blender 运行组件。
+2026-10-20 已清理根目录历史 `_test_*` / `_probe_*` 脚本及一次性工具，当前测试入口为本目录和上面的回归脚本。构建文件清单位于 `tools/release/files.txt`。
 
-准备好 [成片工作台](../FILM_WORKBENCH.md) 的运行组件后，可执行真实本地剪辑引擎测试：
+真实供应商联调留到项目完整开发后进行，不使用旧 API 密钥。
 
-```powershell
-$env:CANVASFLOW_TEST_FILM_RUNTIME = '1'
-python -m unittest discover -s tests -p 'test_film_runtime_integration.py'
-python -m unittest discover -s tests -p 'test_film_advanced_integration.py'
-```
-
-这些测试使用合成媒体，并在本机执行剪辑、保存和导出。
+2026-10-20 发行前回归入口为 `preview/release-qa-20261020/run_regression.py`，会单独保存本轮日志，不覆盖前次审计证据。独立发行目录及真实 Blender 验收入口为同目录的 `test_standalone_backend.py`，只写隔离测试数据。

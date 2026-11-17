@@ -10,10 +10,15 @@ function versionParts(value) {
   if (typeof value !== 'string' || !/^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/.test(value)) throw Error('更新版本号无效');
   return value.split('.').map(Number);
 }
-function isNewer(next, current) {
+function validBuild(value = 0) {
+  if (!Number.isSafeInteger(value) || value < 0) throw Error('更新构建号无效');
+  return value;
+}
+function isNewer(next, current, nextBuild = 0, currentBuild = 0) {
+  validBuild(nextBuild); validBuild(currentBuild);
   const a = versionParts(next), b = versionParts(current);
   for (let i = 0; i < 3; i++) { if (a[i] !== b[i]) return a[i] > b[i]; }
-  return false;
+  return nextBuild > currentBuild;
 }
 function validateManifest(value) {
   if (!value || value.schemaVersion !== 1 || value.platform !== 'win32' || value.arch !== 'x64') throw Error('官网更新清单格式不匹配');
@@ -22,12 +27,13 @@ function validateManifest(value) {
   let url; try { url = new URL(value.url); } catch { throw Error('安装包地址无效'); }
   if (url.origin !== UPDATE_ORIGIN || url.username || url.password || url.pathname !== expected || url.hash) throw Error('安装包必须来自 CanvasFlow 官方下载地址');
   if (!/^[a-f0-9]{64}$/i.test(value.sha256 || '') || !Number.isSafeInteger(value.size) || value.size < 2 || value.size > MAX_INSTALLER_SIZE) throw Error('安装包校验信息无效');
-  return {version:value.version, url:url.href, sha256:value.sha256.toLowerCase(), size:value.size};
+  return {version:value.version, buildNumber:validBuild(value.buildNumber), url:url.href, sha256:value.sha256.toLowerCase(), size:value.size};
 }
 
-function createUpdater({version, directory, fetchImpl = fetch, onChange = () => {}}) {
+function createUpdater({version, buildNumber = 0, directory, fetchImpl = fetch, onChange = () => {}}) {
   versionParts(version);
-  let state = {status:'idle', currentVersion:version, version:'', progress:0, message:''};
+  validBuild(buildNumber);
+  let state = {status:'idle', currentVersion:version, currentBuildNumber:buildNumber, version:'', buildNumber:0, progress:0, message:''};
   let release = null, downloaded = null, operation = null, controller = null;
   const getState = () => ({...state});
   function setStatus(status, patch = {}) {
@@ -87,8 +93,8 @@ function createUpdater({version, directory, fetchImpl = fetch, onChange = () => 
       let value; try { value = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw Error('官网更新清单无法解析'); }
       const next = validateManifest(value);
       await discardDownload();
-      release = isNewer(next.version, version) ? next : null;
-      setStatus(release ? 'available' : 'up-to-date', {version:next.version, message:release ? `发现新版本 v${next.version}` : '当前已是最新版本'});
+      release = isNewer(next.version, version, next.buildNumber, buildNumber) ? next : null;
+      setStatus(release ? 'available' : 'up-to-date', {version:next.version, buildNumber:next.buildNumber, message:release ? `发现更新 v${next.version}${next.buildNumber ? ` · 构建 ${next.buildNumber}` : ''}` : '当前已是最新版本'});
       return getState();
     });
   }

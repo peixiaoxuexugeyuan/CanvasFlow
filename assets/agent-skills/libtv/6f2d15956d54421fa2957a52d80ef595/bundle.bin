@@ -1,0 +1,27 @@
+{
+  "templateUuid": "6f2d15956d54421fa2957a52d80ef595",
+  "name": "灰烬之城-年代黑帮剧创作",
+  "version": "1.0.6",
+  "description": "基于《灰烬之城》原创年代黑帮连续剧的完整创作工作流。",
+  "useScenario": "创作具有东方根源、年代感、家族权力主题的原创黑帮连续剧。用户提供剧情文本，AI负责世界观建立、锚点生成、分镜拆解、视频批量生成和成片合成。",
+  "inputType": "剧情文本、人物设定、对白、场景描述、风格参考图",
+  "outputContent": "锚点图片节点、分镜视频节点、BGM音频、旁白配音、合成成片",
+  "ownerName": "辣条",
+  "ownerAvatar": "https://liblibai-online.liblib.cloud/img/fc2287d298214899b2ac4046fc9ebc81/37df9aa9d433597acea608b62529c7005f09c61245b2b6e4b687b6516e6cc498.png",
+  "primarySkillFilePath": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "1",
+      "contentType": "text/markdown",
+      "primary": true
+    }
+  ],
+  "sourceUrl": "https://www.liblib.tv/skill",
+  "capturedAt": "2026-11-14",
+  "examples": [
+    "https://libtv-res.liblib.art/upload-images/fc2287d298214899b2ac4046fc9ebc81/116ce0267e2ac70c48328a2ccdd5a01114f4423e.MOV"
+  ],
+  "missingReferences": [],
+  "contentOrigin": "skillFiles"
+}

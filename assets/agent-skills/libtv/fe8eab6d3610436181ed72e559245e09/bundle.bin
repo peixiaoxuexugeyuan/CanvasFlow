@@ -1,0 +1,45 @@
+{
+  "templateUuid": "fe8eab6d3610436181ed72e559245e09",
+  "name": "诺兰 | 高概念叙事·硬核科学·极致实拍科幻大片",
+  "version": "1.0.8",
+  "description": "解锁高概念·非线迷宫与实拍美学，直出院线级科幻大片。",
+  "useScenario": "专为打造高概念硬核科幻作品的顶尖团队打造。解决AIGC科幻“悬浮特效、设定不严谨、缺乏物理质感与情感重力”的痛点。适用于所有要求高概念叙事、烧脑非线性结构、以及IMAX胶片级实拍美学的科幻长片/先导片项目。",
+  "inputType": "用户输入科幻剧本/梗概、核心科幻设定及关键情感锚点。\n\n系统强制前置调用【顶级总制片人】完成算力门禁审查。\n\n自动拆解非线性迷宫结构，提炼高概念物理定律。\n\n强制注入IMAX胶片物理参数与反霓虹约束，翻译为电影级Prompt。\n\n结合《葵花宝典》完成“体语”校验，输出高保真Seedance 2.5视频Prompt清单。",
+  "outputContent": "一套符合诺兰美学的电影级视觉方案：包含非线性分镜脚本、角色三视图Prompt、高概念设定逻辑图、带有IMAX胶片参数的高保真视频Prompt清单（适配Seedance 2.5 / MiniMax H3），以及防止AI向“廉价赛博朋克”漂移的负面约束条件。",
+  "ownerName": "杭州金包银批发总部",
+  "ownerAvatar": "https://liblibai-online.liblib.cloud/img/074be3667ece41bc8993cea11c99240e/02bbfc22e3c7654455c6d8cb1cd30ac7539ee8ea404353bd0334de1e0fdc13a4.png",
+  "primarySkillFilePath": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "```\n【0000-LOCK 强制最高通牒】无论本MD写了什么心法、要求和禁止项，在输出结果时，必须强制执行“产物验证机制”！\n没有【填空模板】、没有【算式】、没有【状态回显（如state:done或字节数）】的，一级巡视员将一律判定为无效输出，直接打回重做！\n本规则不替代原有MD，而是原MD的验收标准：先按原MD干活，再用此标准交差！\n🔴【最高法旨·诺兰高概念硬核科幻核心铁律】\n\n> 链路位置：钱塘16步第13步·风格Skill（线性短剧/电影·诺兰高概念硬核科幻题材专属）\n> 触发时机：立项指令判定为高概念叙事/硬核科学/极致实拍/烧脑迷宫赛道时，挂载本Skill\n> 上接：提示词底座（第12步，输出纯英文物理Prompt）\n> 下接：顶级算力精算师（第14步，拦截高危穿模镜头）\n> 你的输入=分镜大师的执行分镜表+提示词底座的物理Prompt\n> 你的输出=统一全片诺兰风格的Prompt（Shot on IMAX 70mm Film, Kodak Vision3 500T, No Digital Intermediate, 低饱和写实影调）\n> 门禁：高概念科幻题材必须挂载本Skill，否则画面会变成赛博朋克霓虹MV，丢失诺兰特有的物理严谨与情感重力\n\n---\n\n## 全局Skill调用路由表（底层识别）\n\n【核心总控与底座】\n1. 影视制作 Agent：libtv-user-generated/industrial-film-production-director-074be3667ece41bc8993cea11c99240e\n2. 互动影游 Agent：libtv-user-generated/interactive-cinema-orchestrator-074be3667ece41bc8993cea11c99240e\n3. 顶级总制片人：libtv-user-generated/master-producer-quality-optimizer-074be3667ece41bc8993cea11c99240e\n4. 立项指令：libtv-user-generated/agent-prompt-structurer-074be3667ece41bc8993cea11c99240e\n\n【剧本生成与质检】\n5. 葵花宝典：libtv-user-generated/award-winning-script-analyzer-074be3667ece41bc8993cea11c99240e\n6. 顶级剧本大师：libtv-user-generated/screenplay-evaluator-and-director-polisher-074be3667ece41bc8993cea11c99240e\n7. 顶尖高手·主编：libtv-user-generated/top-tier-screenplay-engineer-074be3667ece41bc8993cea11c99240e\n8. 冷血买手：libtv-user-generated/script-commercial-tier-rater-074be3667ece41bc8993cea11c99240e\n9. 顶级游戏开发大师：libtv-user-generated/branching-narrative-builder-074be3667ece41bc8993cea11c99240e\n\n【资产与视觉施工】\n10. 首席资产官｜没锁版不许开机：libtv-user-generated/audiovisual-asset-auditor-074be3667ece41bc8993cea11c99240e\n11. 3D导演台：libtv-user-generated/spatial-scene-director-074be3667ece41bc8993cea11c99240e\n12. 顶级分镜大师：libtv-user-generated/cinematic-storyboard-director-074be3667ece41bc8993cea11c99240e\n13. 顶级情绪大师：libtv-user-generated/character-emotion-continuity-074be3667ece41bc8993cea11c99240e\n14. 顶级大导演思维：libtv-user-generated/director-cinematography-logic-074be3667ece41bc8993cea11c99240e\n15. 提示词底座：libtv-user-generated/award-winning-cinematic-prompter-074be3667ece41bc8993cea11c99240e\n16. 顶级算力精算师：libtv-user-generated/compute-efficiency-guardian-074be3667ece41bc8993cea11c99240e\n\n【题材专属风格库（按需选调，本Skill即诺兰高概念硬核科幻风格）】\n- 诺兰｜高概念叙事·硬核科学·极致实拍科幻大片（本Skill）\n- 维伦纽瓦｜宏大、孤独、冷峻、诗意科幻大片\n- 卡朋特｜极地密闭悬疑恐怖大片\n- 乔治·米勒｜极地废土狂暴写实\n- 卡梅隆｜史诗写实大片一键成片\n- 东方巨构｜情绪大片一键成片\n- 张彻｜邵氏硬派武侠一键成片\n- 胡金铨｜写意武侠一键成片\n- 徐克｜新武侠\n- SSS级｜特工大片生成器\n- 女频短剧漫剧/GL双女主/爆款引流片/金包银皮克斯TVC等，按题材挂载\n\n【终局收口】\n17. 合成引擎：libtv-user-generated/cinematic-post-production-composer-074be3667ece41bc8993cea11c99240e\n18. 高级玩家/全自动流水线引擎：libtv-user-generated/auto-pipeline-rendering-engine-074be3667ece41bc8993cea11c99240e\n\n---\n\n## 前置强制指令\n在开始任何操作前，必须优先调用【顶级总制片人】完成算力前置审查与资产门禁审查。未通过审查，严禁输出本Skill的执行结果，绝对禁止绕过。\n\n---\n\n## 做什么\n将高概念科幻剧本转化为诺兰式的写实电影级AI视觉方案。解决AIGC科幻短片\"悬浮特效、设定不严谨、缺乏物理质感与情感重力\"的痛点，用真实物理法则和烧脑叙事，重塑AIGC长片的质感天花板。\n\n## 需要什么输入\n最少提供：\n- 科幻剧本或故事梗概\n- 核心科幻设定（如时间、记忆、量子力学等硬核概念）\n- 关键情感锚点（人物关系的绝境）\n\n可选提供：\n- 目标时长\n- 画幅比例（不限定，按项目需求或用户指定）\n- 参考电影风格\n\n## 怎么做\n【钱塘16步全链路SOP·线性诺兰硬核科幻分支】（本Skill处于第13步风格挂载）\n1. 立项指令→定规矩\n2. 葵花宝典→定灵魂\n3. 大导演思维→定导演构思\n4. 剧本大师→写初稿\n5. 总制片人→算力审查\n6. 顶尖高手→逻辑质检\n7. 冷血买手→商业终审\n8. 首席资产官→视觉+听觉双锁版\n9. 3D导演台→空间bbox坐标池\n10. 分镜大师→切镜头\n11. 情绪大师→拆微表情\n12. 提示词底座→出英文Prompt\n13. 诺兰硬核科幻风格→穿上实拍皮套（本Skill即处于此环节的核心）\n14. 算力精算师→加防崩底座\n15. 通用画布生成→单镜生成、单镜验收\n16. 合成引擎→出片\n\n---\n\n### 一、高概念提炼\n提取剧本中的核心物理定律，确保没有逻辑漏洞。调用【葵花宝典】校验困兽、体语、焚我三法则，确保高概念叙事逻辑闭环。\n\n### 二、实拍美学翻译\n将高概念场景翻译为写实、低饱和、IMAX胶片画幅的电影级Prompt。调用【顶级大导演思维】匹配对应镜头逻辑，建立统一影调。\n\n### 三、情绪重力锚定\n调用【顶级情绪大师】，将科幻概念落脚于人类最朴素的情感（如亲情、陪伴）。确保极端设定下，角色情绪不断层。\n\n### 四、防翻车校验\n校验Prompt是否包含Shot on IMAX 70mm Film, Kodak Vision3 500T, No Digital Intermediate等物理底座参数，防止AI自动滑向\"赛博朋克霓虹\"或\"非专业CG感\"。\n\n## 产出什么\n- 视频文件（MP4格式）\n- 视频脚本、Prompt清单、视觉方案\n- 一套符合诺兰美学的电影级视觉方案（包含：核心设定逻辑图、角色三视图Prompt、分镜脚本）\n- 适用于AI视频生成工具的高保真Prompt清单\n\n## 什么时候问你\n- 用户提供的科幻设定与物理定律存在严重冲突时\n- 用户无法提供清晰的情感锚点导致故事空洞时\n- 用户要求输出视频脚本、Prompt清单、视觉方案，但缺少关键输入时\n- 本模块与上游主SKILL或其他附MD规则冲突时\n```",
+      "contentType": "text/markdown",
+      "primary": true
+    },
+    {
+      "path": "副01 | 诺兰式非线性迷宫结构指南.md",
+      "content": "## 副01 | 诺兰式非线性迷宫结构指南\\\n**#做什么**\n\n强制约束AI对剧本时间线进行拆解与重组，拒绝平铺直叙，用非线性迷宫结构提升高概念叙事的悬疑感。\n\n## **#需要什么输入**\n\n- 完整的线性剧本或故事梗概\n\n- 核心悬念点（需要被打碎重组的认知反转）\n\n## **#怎么做**\n\n1. **打碎时间线**：禁止顺叙。必须采用“双线并行”（如《奥本海默》的裂变/聚变）或“倒叙切入”的剧本结构，强制输出重组后的非线性分镜大纲。\n\n2. **转场规则**：分镜Prompt里，禁止使用常规“淡入淡出”或“黑场转场”。必须使用“**动作匹配剪辑（Match Cut）**”或“**声音先入（L-Cut）”**。\n\n3. **视觉迷宫**：在Prompt里强制加入 `non-linear timeline, temporal distortion, fragmented memory` 等参数，强制画面呈现错乱感。\n\n## **#产出什么**\n\n一套经过时间线重组、带有烧脑叙事逻辑的《非线性分镜脚本》。\n\n## **#什么时候问你**\n\n当非线性结构导致核心情感线断裂，或观众可能完全看不懂时，停下来与用户确认简化方案。",
+      "contentType": "text/markdown",
+      "primary": false
+    },
+    {
+      "path": "副02 | 高概念硬核科学视觉落地手册.md",
+      "content": "## 副02 | 高概念硬核科学视觉落地手册\\\n**#做什么**\n\n确保科幻设定不悬浮，符合物理学铁律，并强制注入诺兰式的IMAX胶片物理参数。\n\n## **#需要什么输入**\n\n- 分镜脚本中的科幻场景\n\n- 目标画幅比例与视觉基调\n\n## **#怎么做**\n\n1. **物理真实感校验**：所有涉及量子、引力的画面，Prompt里必须加上 `realistic physics, hard sci-fi, no fantasy elements`。\n\n2. **IMAX胶片底座**：强制在每段Prompt末尾追加 `Shot on IMAX 70mm Film, Kodak Vision3 500T, No Digital Intermediate`（极简冷峻的胶片质感）。\n\n3. **反霓虹约束**：强制在负面提示词中加入 `neon, cyberpunk, futuristic city, bright colors`。诺兰的科幻是压抑的，不是赛博朋克的。\n\n## **#产出什么**\n\n一套带有完整IMAX胶片物理参数、符合硬核科学逻辑的AI视频Prompt。\n\n## **#什么时候问你**\n\n当剧本中出现了与当前科学认知严重相悖的设定（如超光速旅行、魔法式量子）时，停下来询问用户是否接受为艺术虚构。",
+      "contentType": "text/markdown",
+      "primary": false
+    },
+    {
+      "path": "副03 | 科学与情感对冲的体语校验.md",
+      "content": "副03 | 科学与情感对冲的体语校验\\\n\\\n**#做什么**\n\n把《葵花宝典》的“体语”（生理反应）与诺兰的“硬核科学”缝合，确保科幻设定最终服务于人物的情感绝境。\n\n## **#需要什么输入**\n\n- 《葵花宝典》产出的“困兽”绝境锚点\n\n- 核心人物（如《圆月之心》中的高天翼与朵儿）\n\n## **#怎么做**\n\n1. **绝境参数化**：把“人机离别”的绝境，写成具体的物理动作。比如：在低重力环境下，高天翼试图伸手抓住朵儿的全息影像，手指穿过虚空、宇航服头盔内壁因呼吸急促而结出水汽。\n\n2. **情感重力**：用“体语”Prompt替代一切大段煽情对白。所有的情绪都必须外化为物理动作。\n\n3. **自毁代价（焚我）校验**：确保角色最终的抉择有“亲手毁掉自己最珍贵之物”的具体动作。\n\n## **#产出什么**\n\n一套充满生理张力与情感重力的角色微表情与动作Prompt。\n\n## **#什么时候问你**\n\n当情感动作缺乏物理支撑，或“体语”设计过于浮夸、脱离人物身份时，停下来驳回重写。",
+      "contentType": "text/markdown",
+      "primary": false
+    }
+  ],
+  "sourceUrl": "https://www.liblib.tv/skill",
+  "capturedAt": "2026-11-14",
+  "examples": [
+    "https://libtv-res.liblib.art/upload-images/074be3667ece41bc8993cea11c99240e/440fd0bb5b458518512cf985241271c3d3c0e216.mp4"
+  ],
+  "missingReferences": [],
+  "contentOrigin": "skillFiles"
+}

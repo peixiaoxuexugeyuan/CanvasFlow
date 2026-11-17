@@ -1,0 +1,51 @@
+{
+  "templateUuid": "a7951c38b62745c38a8efbbd64a54c86",
+  "name": "黑暗奇幻 | 可上架Steam的互动影游",
+  "version": "1.0.2",
+  "description": "对标《血源诅咒》与《猎魔人》一键量产硬核暗黑风多结局互动影游",
+  "useScenario": "专为 Steam/主机端硬核欧美市场打造。解决传统互动影游“分支树庞大导致拍摄成本极高、迭代极慢”的死穴。适用于中世纪吸血鬼、克苏鲁异教徒、末日废土变异等题材，一键批量生成高密度的“困兽抉择”与硬核魔法战斗分支。",
+  "inputType": "专为 Steam/主机端硬核欧美市场打造。解决传统互动影游“分支树庞大导致拍摄成本极高、迭代极慢”的死穴。适用于中世纪吸血鬼、克苏鲁异教徒、末日废土变异等题材，一键批量生成高密度的“困兽抉择”与硬核魔法战斗分支。",
+  "outputContent": "最终输出：带困兽抉择的互动分支树（Markdown格式） + 全自动生成的互动影游视频素材包（MP4格式） + 物理特效提示词清单。产出可直接用于 Steam 游戏内的过场动画、选项按钮画面，或直接转化为投流素材。",
+  "ownerName": "杭州金包银批发总部",
+  "ownerAvatar": "https://liblibai-online.liblib.cloud/img/074be3667ece41bc8993cea11c99240e/02bbfc22e3c7654455c6d8cb1cd30ac7539ee8ea404353bd0334de1e0fdc13a4.png",
+  "primarySkillFilePath": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "```\n【0000-LOCK 强制最高通牒】无论本MD写了什么心法、要求和禁止项，在输出结果时，必须强制执行“产物验证机制”！\n没有【填空模板】、没有【算式】、没有【状态回显（如state:done或字节数）】的，一级巡视员将一律判定为无效输出，直接打回重做！\n本规则不替代原有MD，而是原MD的验收标准：先按原MD干活，再用此标准交差！\n\n🔴【最高法旨·黑暗奇幻互动影游核心铁律】\n\n> 链路位置：钱塘16步第13步·风格Skill（互动影游·黑暗奇幻题材专属）\n> 触发时机：立项指令判定为欧美硬核暗黑/克苏鲁/吸血鬼/末日废土互动影游赛道时，挂载本Skill\n> 上接：提示词底座（第12步，输出纯英文物理Prompt）\n> 下接：顶级算力精算师（第14步，拦截高危穿模镜头）\n> 你的输入=游戏开发大师的分支剧本+提示词底座的物理Prompt\n> 你的输出=统一全片暗黑风格的Prompt（低饱和高反差脏污深渊感、魔法物理化、困兽抉择分支树）\n> 门禁：黑暗奇幻题材必须挂载本Skill，否则画面会变成高饱和仙侠风，丢失暗黑特有的压抑宿命感与硬核道德抉择\n\n---\n\n## 全局Skill调用路由表（底层识别）\n\n【核心总控与底座】\n1. 影视制作 Agent：libtv-user-generated/industrial-film-production-director-074be3667ece41bc8993cea11c99240e\n2. 互动影游 Agent：libtv-user-generated/interactive-cinema-orchestrator-074be3667ece41bc8993cea11c99240e\n3. 顶级总制片人：libtv-user-generated/master-producer-quality-optimizer-074be3667ece41bc8993cea11c99240e\n4. 立项指令：libtv-user-generated/agent-prompt-structurer-074be3667ece41bc8993cea11c99240e\n\n【剧本生成与质检】\n5. 葵花宝典：libtv-user-generated/award-winning-script-analyzer-074be3667ece41bc8993cea11c99240e\n6. 顶级剧本大师：libtv-user-generated/screenplay-evaluator-and-director-polisher-074be3667ece41bc8993cea11c99240e\n7. 顶尖高手·主编：libtv-user-generated/top-tier-screenplay-engineer-074be3667ece41bc8993cea11c99240e\n8. 冷血买手：libtv-user-generated/script-commercial-tier-rater-074be3667ece41bc8993cea11c99240e\n9. 顶级游戏开发大师：libtv-user-generated/branching-narrative-builder-074be3667ece41bc8993cea11c99240e\n\n【资产与视觉施工】\n10. 首席资产官｜没锁版不许开机：libtv-user-generated/audiovisual-asset-auditor-074be3667ece41bc8993cea11c99240e\n11. 3D导演台：libtv-user-generated/spatial-scene-director-074be3667ece41bc8993cea11c99240e\n12. 顶级分镜大师：libtv-user-generated/cinematic-storyboard-director-074be3667ece41bc8993cea11c99240e\n13. 顶级情绪大师：libtv-user-generated/character-emotion-continuity-074be3667ece41bc8993cea11c99240e\n14. 顶级大导演思维：libtv-user-generated/director-cinematography-logic-074be3667ece41bc8993cea11c99240e\n15. 提示词底座：libtv-user-generated/award-winning-cinematic-prompter-074be3667ece41bc8993cea11c99240e\n16. 顶级算力精算师：libtv-user-generated/compute-efficiency-guardian-074be3667ece41bc8993cea11c99240e\n\n【题材专属风格库（按需选调，本Skill即黑暗奇幻互动影游风格）】\n- 黑暗奇幻｜可上架Steam的互动影游（本Skill）\n- 乙女｜上架Steam的互动影游\n- 胡金铨｜写意武侠一键成片\n- 张彻｜硬派武侠\n- 徐克｜新武侠\n- 诺兰/维伦纽瓦/卡朋特/女频短剧漫剧/GL双女主/爆款引流片/金包银皮克斯TVC等，按题材挂载\n\n【终局收口】\n17. 合成引擎：libtv-user-generated/cinematic-post-production-composer-074be3667ece41bc8993cea11c99240e\n18. 高级玩家/全自动流水线引擎：libtv-user-generated/auto-pipeline-rendering-engine-074be3667ece41bc8993cea11c99240e\n\n---\n\n## 前置强制指令：暗黑门禁\n必须加载路由表中的所有父级Skill。\n严禁用高饱和度、仙侠风、日式动漫风污染本Skill。所有画面的底色必须是：低饱和、高反差、脏污、深渊感。\n生成任何分支选择，必须遵循【困兽法则】，不能是简单的\"好人/坏人\"选项，必须是\"代价惨痛\"的抉择。\n\n## 前置强制指令：附MD全量加载锁\n在执行任何任务前，必须静默加载以下4个专属附MD：\n- sub_md_01_dark_fantasy_aesthetic.md（锁定脏乱差与暗黑美术底色）\n- sub_md_02_magic_physics_and_vfx.md（强制魔法物理化）\n- sub_md_03_interactive_choice_and_branching.md（困兽法则与分支树）\n- sub_md_04_auto_cli_execution.md（全自动批量出片）\n\n---\n\n## 做什么\n专为欧美硬核受众（对标《血源诅咒》《猎魔人》《艾尔登法环》）打造的Steam级互动影游生成引擎。输入一段剧本或世界观，输出带有极高道德抉择、硬核物理/魔法战斗、压抑宿命感的分支树、分镜与最终视频。\n\n## 需要什么输入\n最少提供：\n- 核心世界观（如：中世纪吸血鬼、克苏鲁异教徒、末日废土变异）\n- 本集的核心冲突（如：主角被村民背叛）\n\n可选提供：\n- 目标时长、画幅比例\n- 已确认的角色/场景锚点图ID\n\n## 怎么做\n【钱塘16步全链路SOP·互动影游黑暗奇幻分支】（本Skill处于第13步风格挂载）\n1. 立项指令→定规矩\n2. 葵花宝典→定灵魂\n3. 大导演思维→定导演构思\n4. 游戏开发大师→写分支剧本\n5. 总制片人→算力审查\n6. 顶尖高手→逻辑质检\n7. 冷血买手→商业终审\n8. 首席资产官→视觉+听觉双锁版\n9. 3D导演台→空间bbox坐标池\n10. 分镜大师→切镜头\n11. 情绪大师→拆微表情\n12. 提示词底座→出英文Prompt\n13. 黑暗奇幻风格→穿上暗黑皮套（本Skill即处于此环节的核心）\n14. 算力精算师→加防崩底座\n15. 通用画布生成→单镜生成、单镜验收\n16. 合成引擎→出片\n\n---\n\n### 一、视觉与定调强制锁（画面工程）\n- **光影基调**：冷蓝单侧光、暗部死黑、空气中必须有漂浮的尘埃或雾气\n- **场景材质**：破败的教堂、生锈的铁链、长满青苔的石壁、干涸的血迹\n- **魔法/特效物理化**：严禁写\"光芒四射\"。必须写成物理现象：\n  - 雷电：分叉电弧+焦痕+臭氧蓝雾\n  - 暗影：粘稠黑雾+吸光现象+表面腐蚀\n  - 冰霜：六角枝晶+应力裂纹+呼出的白气\n\n### 二、互动分支强制校验（游戏逻辑）\n调用【互动影游Agent】，每个抉择点（Choice）必须满足\"困兽法则\"：\n- 选A将失去什么（如：失去理智，获得力量）\n- 选B将失去什么（如：保持人性，但同伴死亡）\n\n必须设计\"死亡结局（Bad Ending）\"，并给出快速重跑分支画面的指令。\n\n### 三、最终输出与生成（直接出片）\n按\"暗黑视觉预设\"生成分镜，调用【提示词底座】将分镜转为全英文工程Prompt。\n强制调用【高级玩家CLI引擎】，将Prompt批量转化为通用画布节点。\n在画布上自动挂载@角色图与@场景图，自动批量生成分支视频，最终合成MP4素材包。\n\n## 产出什么\n- 包含困兽抉择的互动分支树（Markdown格式）\n- 硬核暗黑风的分镜表与英文Prompt清单\n- 全自动生成的MP4视频素材包（直接可用作Steam游戏内的过场动画与选项按钮画面）\n\n## 什么时候问你\n- 用户提供的剧本缺乏\"困兽抉择\"的绝望感时\n- 魔法特效的物理定义不明确时\n- 视频节点生成报错或算力不足时\n```",
+      "contentType": "text/markdown",
+      "primary": true
+    },
+    {
+      "path": "sub_md_01_dark_fantasy_aesthetic.md（黑暗奇幻专属美术与定调）.md",
+      "content": "# 附MD 1 | 黑暗奇幻专属美术与定调\n\n## #做什么\n\n锁定对标《血源诅咒》《艾尔登法环》《猎魔人》的视觉基调。杜绝一切仙侠、日漫、高饱和塑料感。\n\n## #需要什么输入\n\n- 剧本中的场景、角色描述。\n\n## #怎么做\n\n### 一、 环境与材质铁律\n\n- **底色**：绝对低饱和、高反差、深渊感。\n- **材质必须写“脏”**：生锈的铁链、长满青苔的湿冷石壁、干涸发黑的血迹、发霉的木质地板、空气中漂浮的灰烬。\n\n### 二、 光影法则\n\n- **主光源**：只能来自狭窄的光源（如：幽暗的提灯、月光从教堂破漏的穹顶漏下、燃烧的火把）。\n- **暗部**：必须大面积死黑，不要保留现代HDR的暗部细节，制造未知的恐惧感。\n\n### 三、 角色造型\n\n- **服装**：破旧的斗篷、生锈的板甲、缠满血渍的绷带。\n- **面部**：必须有战损，如：划痕、深陷的眼窝、惨白的肤色、黑眼圈。",
+      "contentType": "text/markdown",
+      "primary": false
+    },
+    {
+      "path": "sub_md_02_magic_physics_and_vfx.md（魔法特效物理化引擎）.md",
+      "content": "# 附MD 2 | 魔法特效物理化引擎\n\n## #做什么\n\n专治 AI 生成魔法时的“塑料发光感”，强制把特效写成物理与光学现象。\n\n## #需要什么输入\n\n- 剧本中的魔法/战斗动作。\n\n## #怎么做\n\n### 强制拆解为“聚能 -&gt; 释放 -&gt; 消散”三阶段，并写出可见后果：\n\n- **雷电系**：分叉电弧（≥3个分叉点）+ 空气焦味辉光 + 蓝白色电火花 + 击中后地面放射状焦黑裂痕 + 脸部被瞬间照成惨白蓝。\n- **暗影/诅咒系**：黏稠黑雾（流速比正常烟雾慢40%）+ 中心纯黑边缘半透明暗紫涡流 + 吸光现象（光线靠近变暗）+ 被触碰表面呈现黑渍腐蚀。\n- **冰霜系**：不均匀蔓延（0.3秒冻结）+ 六角形枝晶 + 霜雾沉降 + 表面应力裂纹 + 角色呼出的浓重白气。\n- **烈焰系**：三色分层（底层暗红-&gt;中层橙红-&gt;顶部黑烟）+ 热气流托举 + 环境热浪扭曲。\n\n### 严禁词汇\n\n严禁写“光芒四射”、“魔法爆炸”、“绚丽的特效”，必须写具体的物理表现。",
+      "contentType": "text/markdown",
+      "primary": false
+    },
+    {
+      "path": "sub_md_03_interactive_choice_and_branching.md（互动分支校验与困兽法则）.md",
+      "content": "# 附MD 3 | 互动分支校验与困兽法则\n\n## #做什么\n\n解决互动影游最大的雷点——“选择无意义”或“剧情崩坏”。强制落实多结局调度。\n\n## #需要什么输入\n\n- 核心冲突点、玩家面临的抉择。\n\n## #怎么做\n\n### 一、 抉择点（Choice）强制校验\n\n每一个选项必须满足【困兽法则】（怎么选都要失去最重要的东西）：\n\n- **选项 A**：获得力量/存活，但必须献祭同伴/失去人性。\n- **选项 B**：保持人性/拯救同伴，但会导致任务失败/遭受重创。\n- **绝对禁止**：出现“全赢”的完美选项。\n\n### 二、 分支树输出格式\n\n必须输出标准的节点树格式：\n\n- `Node_01 (遭遇Boss)`\n  - `-> Choice A (献祭)：进入 Node_02_A (获得暗黑力量)`\n  - `-> Choice B (战斗)：进入 Node_02_B (触发死亡Bad Ending)`\n\n### 三、 死亡重跑逻辑\n\n如果玩家选错导致死亡结局，必须生成一句提示：“画面被鲜血染红，系统提示【宿命未绝，重头再来】”，并自动引用死局画面的提示词，准备重跑。",
+      "contentType": "text/markdown",
+      "primary": false
+    },
+    {
+      "path": "sub_md_04_auto_cli_execution.md（CLI全自动出片执行）.md",
+      "content": "# 附MD 4 | CLI全自动出片执行\n\n## #做什么\n\n将最终生成的分镜与英文 Prompt，自动转化为 LibTV 的底层代码指令，批量渲染分支视频。\n\n## #需要什么输入\n\n- 已经确认的英文 Prompt、资产节点ID、互动分支树。\n\n## #怎么做\n\n### 一、 自动组装 CLI 命令\n\n根据互动分支数量，生成并执行 LibTV CLI 命令：\n\n- 自动建立多个分支分组：`libtv group create --name \"Branch_A\"`\n- 自动批量创建视频节点：`libtv node create --type video --prompt \"[英文Prompt]\" --group \"Branch_A\"`\n- 自动挂载角色资产：`--ref \"{{i-角色图ID}}\"`\n\n### 二、 批量下发与监控\n\n- 下发渲染指令：`libtv generate --group \"Branch_A\" --concurrency 2 --retry 3`\n- 监控状态并输出报告：“【系统指令】：分支 A 已渲染完成，生成了 X 个视频节点，请前往画布审核成片。”",
+      "contentType": "text/markdown",
+      "primary": false
+    }
+  ],
+  "sourceUrl": "https://www.liblib.tv/skill",
+  "capturedAt": "2026-11-14",
+  "examples": [
+    "https://libtv-res.liblib.art/upload-images/074be3667ece41bc8993cea11c99240e/505ddf948c74c940d8aee4de6f750739fb4b2b68.mp4"
+  ],
+  "missingReferences": [],
+  "contentOrigin": "skillFiles"
+}

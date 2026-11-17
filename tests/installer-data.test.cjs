@@ -28,6 +28,14 @@ function prepare(f) { return runHelper(f,'Prepare',['-PackageManifest',path.join
 function oldFiles(f) { write(f.old,'CanvasFlow.exe'); write(f.old,'resources/app.asar'); }
 function ok(result) { assert.equal(result.status,0,result.stdout+'\n'+result.stderr); }
 
+test('installer inventory includes the helper added later by electron-builder', t => {
+  const f = fixture(t);
+  const manifest = JSON.parse(fs.readFileSync(path.join(f.stage, MANIFEST_NAME), 'utf8'));
+  assert(manifest.files.includes('resources/elevate.exe'));
+  const include = removalInclude(manifest.files);
+  assert(include.includes('Push "resources\\elevate.exe"'));
+});
+
 test('installer removes only immutable package entries, with non-recursive directory cleanup', () => {
   const include=removalInclude(['CanvasFlow.exe','resources/app.asar']);
   assert.doesNotMatch(include,/RMDir\s+\/r|Delete\s+[^\n]*\*/i);
@@ -41,6 +49,7 @@ test('installer removes only immutable package entries, with non-recursive direc
 test('production NSIS cannot enter legacy uninstall through the UAC branch that skips preservation', () => {
   const installerConfig=require('../tools/desktop/windows-installer-config.cjs');
   assert.equal(installerConfig.nsis.allowElevation,false);
+  assert.deepEqual(installerConfig.nsis.preCompressedFileExtensions,[], 'OpenFilm media must remain in the main archive');
   const builderRequire=require('node:module').createRequire(require.resolve('electron-builder',{paths:[path.resolve(__dirname,'../tools/desktop')]}));
   const templates=path.join(path.dirname(builderRequire.resolve('app-builder-lib/package.json')),'templates/nsis');
   const installer=fs.readFileSync(path.join(templates,'installer.nsi'),'utf8');
@@ -82,6 +91,36 @@ test('changed install location follows internal absolute data paths but preserve
   assert.equal(config.dataDirectory,path.join(next,'custom/data'));
   assert.equal(config.backendDirectory,path.join(f.root,'external'));
   assert.equal(fs.readFileSync(path.join(f.old,'custom/data/database.db'),'utf8'),'user data');
+});
+
+test('Windows PowerShell preserves and restores cache paths exceeding MAX_PATH', {skip:process.platform!=='win32'}, t => {
+  const f=fixture(t); oldFiles(f);
+  const cache='userdata/session/Code Cache/electron-preload/'+ 'A'.repeat(64)+'-'+ 'B'.repeat(64)+'.cache';
+  write(f.old,cache,'preserved long cache path');
+  ok(prepare(f));
+  const state=JSON.parse(fs.readFileSync(f.state));
+  const saved=path.join(state.installations[0].backup,'files',cache);
+  assert(saved.length>260);
+  assert.equal(fs.readFileSync(saved,'utf8'),'preserved long cache path');
+  const next=path.join(f.root,'new-'+'x'.repeat(70)); fs.cpSync(f.stage,next,{recursive:true});
+  const restored=path.join(next,cache); assert(restored.length>260);
+  ok(runHelper(f,'Restore',['-InstallDirectory',next]));
+  assert.equal(fs.readFileSync(restored,'utf8'),'preserved long cache path');
+  // Existing identical long paths are accepted, but differing content is kept.
+  ok(runHelper(f,'Restore',['-InstallDirectory',next]));
+  fs.writeFileSync(restored,'newer local data');
+  assert.notEqual(runHelper(f,'Restore',['-InstallDirectory',next]).status,0);
+  assert.equal(fs.readFileSync(restored,'utf8'),'newer local data');
+});
+
+test('long directory paths do not bypass upgrade junction protection', {skip:process.platform!=='win32'}, t => {
+  const f=fixture(t); oldFiles(f);
+  const outside=path.join(f.root,'external'); write(outside,'data.json','keep');
+  const nested=path.join(f.old,'x'.repeat(100),'y'.repeat(100)); fs.mkdirSync(nested,{recursive:true});
+  const link=path.join(nested,'linked'); assert(link.length>260);
+  fs.symlinkSync(outside,link,'junction');
+  assert.notEqual(prepare(f).status,0); assert(!fs.existsSync(f.state));
+  assert.equal(fs.readFileSync(path.join(outside,'data.json'),'utf8'),'keep');
 });
 
 test('preservation fails closed for junctions and unsafe inventory paths', {skip:process.platform!=='win32'}, t => {

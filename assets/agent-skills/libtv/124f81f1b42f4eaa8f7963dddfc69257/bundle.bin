@@ -1,0 +1,28 @@
+{
+  "templateUuid": "124f81f1b42f4eaa8f7963dddfc69257",
+  "name": "鬼武者战斗场景生成",
+  "version": "1.0.2",
+  "description": "角色图转鬼武者风格战斗场景",
+  "useScenario": "用户有一张角色图，想将其转化为《鬼武者》风格的武士鬼战士，生成电影化动作战斗场景",
+  "inputType": "一张角色参考图片，以及可选的战斗动作/敌人/招式描述",
+  "outputContent": "一段《鬼武者》游戏风格的电影化战斗场景视频或图像",
+  "ownerName": "bkz不可知",
+  "ownerAvatar": "https://liblibai-online.liblib.cloud/img/10f43772ef194fbda818c96f85af92b8/6e3d9e23d2e0a62ce2fc9fa34d6558a8fda1509ddfc9377b9de0c4c382601874.png",
+  "primarySkillFilePath": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "# 鬼武者战斗场景生成\n\n## 这个 Skill 做什么\n\n用户提供一张角色参考图，Agent 将图中角色转换为《鬼武者》(Onimusha) 游戏风格的武士鬼战士，生成一段电影化动作战斗场景。\n\n整体视觉风格固定为 Onimusha 风格锚点（见下方），战斗动作/敌人/招式内容由用户每次调用时自定义。\n\n---\n\n## 输入\n\n- **必填**：一张角色参考图（人物、角色设计图、肖像均可）\n- **可选**：战斗动作描述槽位 `{{action_description}}`\n  - 示例：\"与敌方鬼怪进行动态刀剑格斗，劈砍击倒敌人\"\n  - 若用户未提供，使用默认值：\"the warrior engages in dynamic sword combat against enemy demons, slashing and striking down the foes\"\n\n---\n\n## 固定风格锚点（每次调用均保持不变）\n\n以下参数写死，不随用户输入变化：\n\n- 武器：glowing katana（发光武士刀）\n- 光影：dramatic low-key lighting（戏剧性低调光影）\n- 时代氛围：dark Sengoku-era atmosphere（战国时代阴暗氛围）\n- 画面质感：stylized game cinematic rendering（风格化游戏影像质感）\n- 运镜：fast-paced motion, dynamic camera movement（快节奏动作、动态镜头运动）\n- 整体风格参照：Onimusha game series（鬼武者游戏系列）\n\n---\n\n## 执行步骤\n\n### Step 1：接收输入\n\n1. 获取用户上传的角色参考图。\n2. 读取用户提供的 `{{action_description}}`；若未提供，使用默认值。\n\n### Step 2：构建生成 Prompt\n\n将以下模板中的槽位替换后，作为图生图/图生视频的生成指令：\n\n```\nTransform the character from the input image into a samurai demon warrior in the style of the Onimusha game series: cinematic action scene, the warrior wields a glowing katana and {{action_description}}, dramatic low-key lighting, dark Sengoku-era atmosphere, stylized game cinematic rendering, fast-paced motion, dynamic camera movement\n```\n\n**默认 Prompt（用户未填写动作描述时）：**\n\n```\nTransform the character from the input image into a samurai demon warrior in the style of the Onimusha game series: cinematic action scene, the warrior wields a glowing katana and engages in dynamic sword combat against enemy demons, slashing and striking down the foes, dramatic low-key lighting, dark Sengoku-era atmosphere, stylized game cinematic rendering, fast-paced motion, dynamic camera movement\n```\n\n### Step 3：生成场景\n\n使用图生图或图生视频模型，以 Step 1 的角色参考图为输入，以 Step 2 构建的 Prompt 为指令，生成战斗场景。\n\n- 优先生成视频；若当前环境不支持视频生成，退回生成图像。\n- 保持角色与参考图的外貌一致性（面部特征、体型、服装基础轮廓）。\n\n### Step 4：输出结果\n\n直接输出生成的战斗场景视频或图像，无需额外说明。\n\n---\n\n## 约束与禁止项\n\n- **不得**修改固定风格锚点中的任何参数（光影、氛围、质感、运镜）。\n- **不得**在用户未要求的情况下更换武器类型（始终为发光武士刀）。\n- **不得**在角色转换过程中丢失参考图中角色的核心外貌特征。\n- 若用户上传的图片不包含可识别的人物/角色，告知用户\"请上传包含角色的图片\"，不继续生成。",
+      "contentType": "text/markdown",
+      "primary": true
+    }
+  ],
+  "sourceUrl": "https://www.liblib.tv/skill",
+  "capturedAt": "2026-11-14",
+  "examples": [
+    "https://libtv-res.liblib.art/upload-images/10f43772ef194fbda818c96f85af92b8/2de351b58fcf858b9c2986474ae796f7dfad9b35.mp4",
+    "https://libtv-res.liblib.art/upload-images/10f43772ef194fbda818c96f85af92b8/61da74e476463a345e85320554b38065bdce6d4a.mp4"
+  ],
+  "missingReferences": [],
+  "contentOrigin": "skillFiles"
+}

@@ -1,0 +1,27 @@
+{
+  "templateUuid": "b4231c38cbbd460985250715c5887ae9",
+  "name": "国风毛绒风格",
+  "version": "1.0.0",
+  "description": "毛绒IP的skill",
+  "useScenario": "用于多米你可麟龙瑞兽国风 IP 素材生产，产出抖音 10s 美学短片、小红书 3:4 竖版封面图，打造云端仙宫东方仙侠视觉内容，服务国风 TVC 剪辑、短视频发布、文创宣传物料制作。",
+  "inputType": "输入场景描述；可选补充画面比例、时长、氛围、是否为小红书封面；智能体将按照统一麟龙毛绒瑞兽国风仙侠画风生成素材。",
+  "outputContent": "高清国风图像 / 10 秒氛围感运镜短视频，附带标准化正向、反向 AI 绘图提示词，画面保持麟龙毛绒 IP 统一美术规范。",
+  "ownerName": "Dominik",
+  "ownerAvatar": "https://thirdwx.qlogo.cn/mmopen/vi_32/PiajxSqBRaEI5LzDxkBd6qjZnyItHS65wDDTtgAzOpX3c3V7JAtqcykCdfib2u15JL2eU2TzmCibmP45OIiaNXBibyeIAq3ck7vibGvIuTgu6Ja5pUdyWhnibnq8Q/132",
+  "primarySkillFilePath": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "content": "\\## 做什么\\\n根据用户描述生成国风麟龙毛绒IP东方仙侠短片/静态海报，统一视觉风格：云端仙宫、云海古建、新中式宏大场景，融合毛绒瑞兽玩偶与古风人物，适配抖音短视频、小红书封面素材。\\\n\\\n## 需要什么输入\\\n必填：场景简短描述；\\\n可选：画面构图偏好、视频时长（默认10s）、竖版/横版、是否作为小红书封面（顶部预留标题空白）、氛围（清晨柔光/黄昏）。\\\n\\\n## 怎么做\\\n1. 主体固定：蓝色国风麟龙毛绒瑞兽玩偶，质感真实毛绒刺绣肌理，造型统一；\\\n2. 场景优先选用云海、悬空仙阙、山间长廊、云端古建等超现实东方仙侠环境；\\\n3. 可搭配白衣古风长发古人，营造仙侠叙事感；\\\n4. 光影使用清晨暖调自然光，通透大气电影质感；\\\n5. 构图宏大纵深，远景云雾层次丰富；\\\n6. 若标记【小红书封面】：比例强制3:4，画面上方预留干净空白，不自带文字；\\\n7. 禁止高饱和刺眼色彩、畸形物体、水印、杂乱现代杂物。\\\n\\\n## 产出什么\\\n如果生成图片：高清国风竖版图像；\\\n如果生成视频：流畅运镜短片，默认10秒，缓慢推拉镜头，氛围感国风运镜；同时附带可用的AI正向/反向提示词。\\\n\\\n## 什么时候问你\\\n场景方向、画面比例、封面留白要求不确定时主动询问；其余参数自行按照国风毛绒IP规范执行。",
+      "contentType": "text/markdown",
+      "primary": true
+    }
+  ],
+  "sourceUrl": "https://www.liblib.tv/skill",
+  "capturedAt": "2026-11-14",
+  "examples": [
+    "https://libtv-res.liblib.art/upload-images/966b1cc694f549aab5799c85c60598ca/40f589084a27f1232cbbddb0a2011dd406a01885.mp4"
+  ],
+  "missingReferences": [],
+  "contentOrigin": "skillFiles"
+}
