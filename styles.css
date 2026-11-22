@@ -1433,21 +1433,29 @@ html.light .generation-studio[data-medium="video"] { --studio-accent: #325e92; }
   .app-shell:not(.sidebar-hidden):has(#contentView:not([hidden]) > .generation-studio) > .sidebar {
     width: 52px; flex-basis: 52px; padding: 15px 5px; gap: 13px; align-items: center;
     --rail-button: 38px;
-    .brand-mark { padding: 0; justify-content: center; }
-    .brand-mark span:last-child, .nav-item span:nth-child(2), .nav-item em,
-    .workspace-card > div:nth-child(2), .workspace-card > .chevron, .side-label {
-      position: absolute; width: 1px; height: 1px; clip-path: inset(50%); overflow: hidden;
-    }
-    .sidebar-toggle { position: static; opacity: 1; order: 1; margin-top: 0; }
-    .sidebar-bottom { width: 100%; padding: 0; }
-    .side-help-actions { flex-direction: column; align-items: center; gap: 7px; }
-    .new-project, .nav-item, .workspace-card, .side-footer { width: var(--rail-button); min-width: 0; min-height: 38px; padding: 0; gap: 0; justify-content: center; }
-    .nav-item .nav-icon { margin: 0; }
-    .side-nav { width: auto; }
-    .new-project, .side-footer { font-size: 0; }
-    .side-footer span { font-size: 12px; }
-    .workspace-popover { position: fixed; left: 54px; max-width: calc(100vw - 65px); }
   }
+  .app-shell:not(.sidebar-hidden):has(#contentView:not([hidden]) > .generation-studio) > .sidebar .brand-mark { padding: 0; justify-content: center; }
+  .app-shell:not(.sidebar-hidden):has(#contentView:not([hidden]) > .generation-studio) > .sidebar .brand-mark span:last-child,
+  .app-shell:not(.sidebar-hidden):has(#contentView:not([hidden]) > .generation-studio) > .sidebar .nav-item span:nth-child(2),
+  .app-shell:not(.sidebar-hidden):has(#contentView:not([hidden]) > .generation-studio) > .sidebar .nav-item em,
+  .app-shell:not(.sidebar-hidden):has(#contentView:not([hidden]) > .generation-studio) > .sidebar .workspace-card > div:nth-child(2),
+  .app-shell:not(.sidebar-hidden):has(#contentView:not([hidden]) > .generation-studio) > .sidebar .workspace-card > .chevron,
+  .app-shell:not(.sidebar-hidden):has(#contentView:not([hidden]) > .generation-studio) > .sidebar .side-label {
+    position: absolute; width: 1px; height: 1px; clip-path: inset(50%); overflow: hidden;
+  }
+  .app-shell:not(.sidebar-hidden):has(#contentView:not([hidden]) > .generation-studio) > .sidebar .sidebar-toggle { position: static; opacity: 1; order: 1; margin-top: 0; }
+  .app-shell:not(.sidebar-hidden):has(#contentView:not([hidden]) > .generation-studio) > .sidebar .sidebar-bottom { width: 100%; padding: 0; }
+  .app-shell:not(.sidebar-hidden):has(#contentView:not([hidden]) > .generation-studio) > .sidebar .side-help-actions { flex-direction: column; align-items: center; gap: 7px; }
+  .app-shell:not(.sidebar-hidden):has(#contentView:not([hidden]) > .generation-studio) > .sidebar .new-project,
+  .app-shell:not(.sidebar-hidden):has(#contentView:not([hidden]) > .generation-studio) > .sidebar .nav-item,
+  .app-shell:not(.sidebar-hidden):has(#contentView:not([hidden]) > .generation-studio) > .sidebar .workspace-card,
+  .app-shell:not(.sidebar-hidden):has(#contentView:not([hidden]) > .generation-studio) > .sidebar .side-footer { width: var(--rail-button); min-width: 0; min-height: 38px; padding: 0; gap: 0; justify-content: center; }
+  .app-shell:not(.sidebar-hidden):has(#contentView:not([hidden]) > .generation-studio) > .sidebar .nav-item .nav-icon { margin: 0; }
+  .app-shell:not(.sidebar-hidden):has(#contentView:not([hidden]) > .generation-studio) > .sidebar .side-nav { width: auto; }
+  .app-shell:not(.sidebar-hidden):has(#contentView:not([hidden]) > .generation-studio) > .sidebar .new-project,
+  .app-shell:not(.sidebar-hidden):has(#contentView:not([hidden]) > .generation-studio) > .sidebar .side-footer { font-size: 0; }
+  .app-shell:not(.sidebar-hidden):has(#contentView:not([hidden]) > .generation-studio) > .sidebar .side-footer span { font-size: 12px; }
+  .app-shell:not(.sidebar-hidden):has(#contentView:not([hidden]) > .generation-studio) > .sidebar .workspace-popover { position: fixed; left: 54px; max-width: calc(100vw - 65px); }
   .generation-studio { padding-inline: 12px; }
 }
 @media (pointer: coarse) {
