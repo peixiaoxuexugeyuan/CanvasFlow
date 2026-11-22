@@ -142,6 +142,48 @@ class BackendAuditRegressions(unittest.TestCase):
             self.assertEqual(app.refresh_video_job(job)['status'], 'failed')
             request.assert_not_called()
 
+    def test_late_provider_jobs_query_before_deciding_and_do_not_resubmit(self):
+        late = {'id':'late', 'modelId':self.entry['id'], 'providerJobId':'original',
+                'status':'running', 'createdAt':'2000-01-01T00:00:00+00:00', 'submittedAt':'2000-01-01T00:00:00+00:00'}
+        with (patch.object(app, 'read_ai_models', return_value=[self.entry]),
+              patch.object(app, 'persist_job_video'), patch.object(app, 'call_video_submit') as submit,
+              patch.object(app, 'provider_status_request', return_value=({'status':'completed','videoUrl':'https://example.org/result.mp4'}, None, '')) as poll):
+            self.assertEqual(app.refresh_video_job(late)['status'], 'completed')
+            poll.assert_called_once()
+            submit.assert_not_called()
+        with (patch.object(app, 'read_ai_models', return_value=[self.entry]),
+              patch.object(app, 'query_image_task_once', return_value=({}, 'offline', 503)) as poll):
+            waiting = app.refresh_image_job({**late,'kind':'image'})
+            self.assertEqual(waiting['status'], 'running')
+            self.assertEqual(app.refresh_image_job(waiting)['status'], 'running')
+            poll.assert_called_once()
+
+    def test_old_tracking_timeout_is_recoverable_but_business_failure_stays_terminal(self):
+        old = {'id':'old','providerJobId':'original','kind':'video','status':'failed',
+               'error':'等待超过 20 分钟仍未完成，已停止跟踪'}
+        self.job_file.write_text(json.dumps(old) + '\n' + json.dumps({**old,'id':'failed','error':'invalid input'}), encoding='utf-8')
+        jobs = {job['id']:job for job in app.latest_jobs()}
+        self.assertEqual(jobs['old']['status'], 'running')
+        self.assertEqual(jobs['failed']['status'], 'failed')
+        app.append_job({**jobs['old'],'progress':50})
+        self.assertEqual(len(self.job_file.read_text(encoding='utf-8').splitlines()), 2)
+
+    def test_video_history_keeps_one_media_copy_across_polls_and_compaction(self):
+        uri = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+r0ZkAAAAASUVORK5CYII='
+        job = {'id':'video-ref','kind':'video','userId':app.LOCAL_ID,'status':'running','referenceImages':[uri]}
+        app.append_job(job)
+        self.assertTrue(job['referenceImages'][0].startswith('/media/'))
+        original_file = app.resolve_media_file(job['referenceImages'][0].split('/')[-1])
+        self.assertIsNotNone(original_file)
+        for n in range(80):
+            app.append_job({**job, 'progress':n})
+        payload = self.job_file.read_text(encoding='utf-8')
+        self.assertNotIn('base64,', payload)
+        self.assertLess(len(payload.splitlines()), 34)
+        app._JOB_SIGNATURE = None
+        self.assertEqual(app.latest_jobs()[0]['referenceImages'], job['referenceImages'])
+        self.assertEqual(app.latest_jobs()[0]['progress'], 79)
+
     def test_completed_job_allows_media_save_without_metadata_overwrite(self):
         for kind, suffix in (('image','png'),('audio','mp3'),('video','mp4')):
             with self.subTest(kind=kind):

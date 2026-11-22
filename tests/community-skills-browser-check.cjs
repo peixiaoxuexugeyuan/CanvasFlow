@@ -5,7 +5,7 @@ const {spawn}=require('node:child_process');
 const {chromium}=require('../tools/openfilm/node_modules/.pnpm/playwright-core@1.61.1/node_modules/playwright-core');
 const root=path.resolve(__dirname,'..'),data=fs.mkdtempSync(path.join(os.tmpdir(),'canvasflow-community-check-'));
 const port=5198,origin=`http://127.0.0.1:${port}`,endpoint='/api/agent/community-skills';
-const server=spawn(path.join(root,'.runtime/python/python.exe'),['server.py',String(port)],{cwd:root,env:{...process.env,CANVASFLOW_DATA_DIR:data},windowsHide:true,stdio:'ignore'});
+const server=spawn(path.join(root,'.runtime/python/python.exe'),['server.py',String(port)],{cwd:root,env:{...process.env,CANVASFLOW_DATA_DIR:data,LOCALAPPDATA:data},windowsHide:true,stdio:'ignore'});
 const output=path.join(root,'build-private/community-sync-check');fs.mkdirSync(output,{recursive:true});
 const wait=ms=>new Promise(r=>setTimeout(r,ms));let browser;
 (async()=>{
@@ -29,7 +29,8 @@ const wait=ms=>new Promise(r=>setTimeout(r,ms));let browser;
     if(url.pathname==='/api/agent/chat'){messages.push(req.postDataJSON());return route.fulfill({contentType:'text/event-stream',body:'data: '+JSON.stringify({type:'text',delta:'已收到完整文档'})+'\n\ndata: '+JSON.stringify({type:'done'})+'\n\n'});}
     return route.continue();
   });
-  await page.goto(origin,{waitUntil:'domcontentloaded'});
+  await page.goto(require('./local-browser-access.cjs')(root,data,origin).link);
+  await page.waitForURL(origin+'/');
   await page.locator('[data-view="agent-hub"]').click();
   await page.locator('.cah-community-status').filter({hasText:'已同步 2'}).waitFor();
   await page.locator('.cah-categories').getByRole('button',{name:'社区',exact:true}).click();

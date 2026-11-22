@@ -1,6 +1,7 @@
 import socket,tempfile,unittest,io,json
 from contextlib import redirect_stdout
 from unittest.mock import patch,Mock
+from local_access import LocalAccess
 import launch_local
 from pathlib import Path
 from launch_local import available_port
@@ -26,10 +27,11 @@ class LocalLauncherTests(unittest.TestCase):
         for foreign in ({'mode':'local','installationId':'other-copy'},[]):
             with tempfile.TemporaryDirectory() as folder:
                 expected=installation_id(launch_local.ROOT,folder)
-                client=Mock();client.open.side_effect=[io.BytesIO(json.dumps(foreign).encode()),
-                    io.BytesIO(json.dumps({'mode':'local','installationId':expected}).encode())]
+                verified=LocalAccess(b'fixture',expected,5187)
                 with patch('sys.argv',['launch_local.py','--port','5173','--no-open']),patch.dict('os.environ',{'CANVASFLOW_DATA_DIR':folder}),\
-                     patch.object(launch_local,'build_opener',return_value=client),patch.object(launch_local,'available_port',return_value=5187),\
+                     patch.object(launch_local,'discover_existing',return_value=('http://127.0.0.1:5173',None)),\
+                     patch.object(launch_local,'identify',return_value=verified),patch.object(launch_local,'user_secret',return_value=b'fixture'),\
+                     patch.object(launch_local,'available_port',return_value=5187),\
                      patch.object(launch_local.subprocess,'Popen') as spawn,redirect_stdout(io.StringIO()) as output:
                     launch_local.main()
                 self.assertEqual(spawn.call_args.args[0][-1],'5187')
@@ -37,10 +39,9 @@ class LocalLauncherTests(unittest.TestCase):
 
     def test_same_installation_and_data_reuse_the_running_service(self):
         with tempfile.TemporaryDirectory() as folder:
-            client=Mock();client.open.return_value=io.BytesIO(json.dumps({'mode':'local',
-                'installationId':installation_id(launch_local.ROOT,folder)}).encode())
+            verified=LocalAccess(b'fixture',installation_id(launch_local.ROOT,folder),5173)
             with patch('sys.argv',['launch_local.py','--no-open']),patch.dict('os.environ',{'CANVASFLOW_DATA_DIR':folder}),\
-                 patch.object(launch_local,'build_opener',return_value=client),\
+                 patch.object(launch_local,'discover_existing',return_value=('http://127.0.0.1:5173',verified)),patch.object(launch_local,'user_secret',return_value=b'fixture'),\
                  patch.object(launch_local.subprocess,'Popen') as spawn,redirect_stdout(io.StringIO()):
                 launch_local.main()
             spawn.assert_not_called()

@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs');
 const A=require('../director-animation.js'),Agent=require('../director-scene-agent.js');
-const scene=JSON.parse(fs.readFileSync('preview/forest-scene-20261013/scene.json','utf8'));
+const scene=JSON.parse(fs.readFileSync('tests/fixtures/director-forest-scene.json','utf8'));
 const hero=scene.objects.find(o=>o.id==='forest-hero'),camera=scene.objects.find(o=>o.id==='forest-camera');
 const ht=scene.objectAnimationTracks.find(t=>t.objectId===hero.id),ct=scene.objectAnimationTracks.find(t=>t.objectId===camera.id);
 test('forest shot holds frontal camera until the glance and then matches actor velocity and direction',()=>{

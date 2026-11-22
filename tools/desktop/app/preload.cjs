@@ -18,7 +18,10 @@ contextBridge.exposeInMainWorld('CanvasFlowDesktop', Object.freeze({
     if (typeof handler !== 'function') return;
     ipcRenderer.removeAllListeners('desktop:prepare-close');
     ipcRenderer.on('desktop:prepare-close', async () => {
-      try { ipcRenderer.send('desktop:close-result', {ok: await handler() !== false}); }
+      try {
+        const result = await handler();
+        ipcRenderer.send('desktop:close-result', {ok: result !== false && result !== 'skill-editor', pendingSkill: result === 'skill-editor'});
+      }
       catch { ipcRenderer.send('desktop:close-result', {ok:false}); }
     });
     ipcRenderer.send('desktop:ready');

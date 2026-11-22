@@ -6,16 +6,40 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from blender_bridge import BlenderBridge
+from blender_bridge import BlenderBridge, BlenderUnavailable
 from blender_protocol import validate_plan
 from blender_examples import table_plan,refine_table_plan
 from file_formats import validate_model_file
 
 
 class BlenderProtocolTest(unittest.TestCase):
+    def test_status_file_sharing_violations_retry_without_losing_terminal_state(self):
+        with tempfile.TemporaryDirectory() as directory, patch('blender_bridge.time.sleep'):
+            bridge = BlenderBridge(ROOT, directory, None)
+            self.addCleanup(bridge.executor.shutdown)
+            job_id = 'blend-' + '1' * 32
+            path = bridge.directory / job_id / 'job.json'
+            path.parent.mkdir()
+            row = {'id':job_id, 'workspaceId':'w', 'status':'running'}
+            bridge._write(path, row)
+            with patch.object(Path, 'read_text', side_effect=[PermissionError(),json.dumps(row)]):
+                self.assertEqual(bridge.job(job_id, 'w'), row)
+            with patch.object(Path, 'read_text', side_effect=PermissionError()):
+                with self.assertRaises(BlenderUnavailable):
+                    bridge.job(job_id, 'w')
+            terminal = dict(row, status='succeeded')
+            bridge.pending_job_states[path] = terminal
+            with patch.object(Path, 'replace', side_effect=PermissionError()):
+                self.assertEqual(bridge.job(job_id, 'w'), terminal)
+            self.assertEqual(json.loads(path.read_text()), row)
+            self.assertEqual(bridge.jobs('w'), [terminal])
+            self.assertEqual(json.loads(path.read_text()), terminal)
+            self.assertFalse(bridge.pending_job_states)
+
     def test_rejects_code_unknown_fields_nonfinite_values_and_invalid_geometry(self):
         cases=[{'name':'bad','operations':[{'op':'python','code':'print(1)'}]},
           {'name':'bad','operations':[{'op':'create','id':'a','shape':'box','script':'anything'}]},

@@ -27,3 +27,9 @@ test('combined document size is bounded before replacing any content',async()=>{
  const {scope,errors}=setup([{path:'SKILL.md',content:'x'.repeat(1999998)}]);await scope.importFiles([file('a.md','abc'),file('b.md','def')],false);
  assert.equal(scope.files.length,1);assert.match(errors[0],/2 MB/);
 });
+test('a folder with unsupported dependencies lists them and keeps the previous skill intact',async()=>{
+ const {scope,errors}=setup([{path:'SKILL.md',content:'original'}]);
+ await scope.importFiles([file('SKILL.md','see templates/config.json',{webkitRelativePath:'pack/SKILL.md'}),
+  file('config.json','{}',{webkitRelativePath:'pack/templates/config.json'})],true);
+ assert.equal(scope.files[0].content,'original');assert.match(errors[0],/pack\/templates\/config\.json/);
+});

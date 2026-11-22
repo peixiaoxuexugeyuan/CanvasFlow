@@ -10,7 +10,7 @@ import socket
 import subprocess
 import sys
 import threading
-from urllib.request import build_opener, ProxyHandler
+from local_access import discover_existing, identify, local_client, user_secret
 
 
 class WindowsJob:
@@ -60,15 +60,6 @@ def installation_id(root, data):
     return hashlib.sha256('\0'.join(os.path.normcase(str(Path(p).resolve())) for p in (root, data)).encode()).hexdigest()[:24]
 
 
-def bootstrap(client, url, expected):
-    try:
-        with client.open(url + '/api/local/bootstrap', timeout=.8) as response:
-            payload = json.load(response)
-            return isinstance(payload, dict) and payload.get('mode') == 'local' and payload.get('installationId') == expected
-    except (OSError, ValueError):
-        return False
-
-
 def free_port(preferred):
     for port in range(preferred, min(preferred + 100, 65536)):
         with socket.socket() as probe:
@@ -94,12 +85,13 @@ def run(root, data, preferred):
             stopped.set()
     threading.Thread(target=watch_parent, daemon=True).start()
     expected = installation_id(root, data)
-    client = build_opener(ProxyHandler({}))
-    url = f'http://127.0.0.1:{preferred}'
+    client = local_client()
     process = None
     job = None
     try:
-        reused = bootstrap(client, url, expected)
+        key = user_secret()
+        url, access = discover_existing(client, preferred, data, expected, key)
+        reused = access is not None
         if not reused:
             port = free_port(preferred)
             url = f'http://127.0.0.1:{port}'
@@ -116,14 +108,28 @@ def run(root, data, preferred):
             for _ in range(300):
                 if stopped.is_set(): return
                 if process.poll() is not None:
+                    # A simultaneous launcher may have acquired this data directory.
+                    url, access = discover_existing(client, preferred, data, expected, key)
+                    if access:
+                        process = None
+                        reused = True
+                        break
                     raise RuntimeError('本地服务启动失败，请查看数据目录的 local-logs/server.log')
-                if bootstrap(client, url, expected): break
+                access = identify(client, url, expected, key)
+                if access: break
                 stopped.wait(.1)
             else:
                 raise RuntimeError('本地服务启动超时，请查看数据目录的 local-logs/server.log')
-        print(json.dumps({'event':'ready', 'url':url, 'reused':reused, 'serverPid':process.pid if process else None}), flush=True)
-        while not stopped.wait(.25):
-            if process and process.poll() is not None:
+        print(json.dumps({'event':'ready', 'url':url, 'reused':reused, 'serverPid':process.pid if process else None,
+                          'sessionToken':access.desktop_token}), flush=True)
+        missed_proofs = 0
+        while not stopped.wait(2 if reused else .25):
+            if reused:
+                current = identify(client, url, expected, key)
+                missed_proofs = missed_proofs + 1 if current is None else 0
+                if missed_proofs >= 15 or (current and current.instance != access.instance):
+                    raise RuntimeError('复用的本地服务已停止或重新启动，请重新打开 CanvasFlow。')
+            elif process.poll() is not None:
                 raise RuntimeError('本地服务意外退出，请查看 local-logs/server.log')
     finally:
         if job: job.close()

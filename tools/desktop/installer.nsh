@@ -105,17 +105,9 @@ FunctionEnd
   !include "getProcessInfo.nsh"
   Var pid
 
-  ; electron-builder skips CHECK_APP_RUNNING in a UAC inner instance. Refuse
-  ; that path before installSection can invoke any legacy uninstaller. A user
-  ; can run the installer directly as administrator for a machine-wide upgrade;
-  ; that normal (non-inner) process still executes the preservation hook below.
-  !macro customInit
-    ${If} ${UAC_IsInnerInstance}
-      MessageBox MB_OK|MB_ICONSTOP "To protect existing CanvasFlow data, close this installer and start it directly with Run as administrator. No previous installation has been removed." /SD IDOK
-      SetErrorLevel 2
-      Quit
-    ${EndIf}
-  !macroend
+  ; The patched install section calls CHECK_APP_RUNNING in the installing
+  ; process, including after UAC elevation, before either old uninstaller.
+  !define CANVASFLOW_REQUIRE_UPGRADE_PREFLIGHT
 
   ; This runs immediately before uninstallOldVersion, after the old app is closed.
   ; It also protects upgrades FROM old installers whose uninstaller was unsafe.
@@ -139,6 +131,9 @@ FunctionEnd
   !macroend
 
   !macro customInstall
+    !ifndef CANVASFLOW_HAS_UPGRADE_PREFLIGHT
+      !error "Missing mandatory pre-uninstall hook. Install the locked desktop build dependencies with pnpm."
+    !endif
     nsExec::ExecToLog '"$PowerShellPath" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\canvasflow-upgrade.ps1" -Mode Restore -InstallDirectory "$INSTDIR" -StateFile "$PLUGINSDIR\canvasflow-upgrade-state.json"'
     Pop $R0
     ${If} $R0 != 0

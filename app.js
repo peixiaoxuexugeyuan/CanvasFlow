@@ -4,12 +4,14 @@ async function canvasflowVideoAudioInputs(output) {
   const values = (window.CanvasFlowConnections?.getEdges?.() || []).filter(edge => edge.target === output?.dataset.nodeId).map(edge => {
     const node = nodes.get(edge.source);
     const audio = node?.querySelector('audio');
-    return String(node?.dataset.audioData || node?.dataset.audioUrl || audio?.src || '').trim();
+    return String(node?.dataset.audioUrl || node?.dataset.audioData || audio?.src || '').trim();
   });
   for (const value of values) {
-    if (value.startsWith('data:audio/')) inputs.push(value);
+    const local = value.startsWith(location.origin + '/media/') ? value.slice(location.origin.length) : value;
+    if (/^\/media\/[\w.-]+$/.test(local)) inputs.push(local);
+    else if (value.startsWith('data:audio/')) inputs.push(value);
     else if (/^https?:\/\//.test(value) && !value.startsWith(location.origin + '/media/')) inputs.push(value);
-    else if (value.startsWith('blob:') || value.startsWith('/media/') || value.startsWith(location.origin + '/media/')) {
+    else if (value.startsWith('blob:')) {
       const response = await fetch(value, { credentials: 'same-origin' });
       if (!response.ok) continue;
       const blob = await response.blob();
@@ -18,7 +20,7 @@ async function canvasflowVideoAudioInputs(output) {
       inputs.push(inline);
     }
   }
-  return inputs.slice(0, 1);
+  return inputs;
 }
 (function () {
   'use strict';
@@ -903,7 +905,7 @@ return {box:null,refresh(){},dispose(){}};
     // 大文件（视频等）上传：**发原始二进制**，不走 api() 的 JSON 通道。
     // 原因：read_json 有 8MB 上限且要过 JSON/base64（体积再涨 33%），视频必然爆。
     // 返回 {mediaId, url, kind, size}，url 形如 `/media/media-<uuid>.mp4`。
-    async function uploadMediaFile(file) {
+    async function uploadMediaFile(file, {throwOnError = false} = {}) {
       if (!file) return null;
       try {
         const response = await fetch('/api/media', {
@@ -921,6 +923,7 @@ return {box:null,refresh(){},dispose(){}};
         return payload.media || null;
       } catch (error) {
         console.warn('[CanvasFlow Media]', error.message);
+        if (throwOnError) throw error;
         showToast(`素材保存失败：${error.message}`, '×');
         return null;
       }
@@ -1246,6 +1249,66 @@ return {box:null,refresh(){},dispose(){}};
     }
 
     const createdDraftProjectIds = new Set();
+    const pendingProjectSnapshots = new Map();
+    const recoveryCopies = new Map();
+    const recoveryIds = new Map();
+    let savedCanvasSignature = '';
+    function canvasSignature(snapshot) {
+      return JSON.stringify({ ...snapshot, shared:Boolean(state.projectShared) }, (key, value) =>
+        key === 'previewData' ? undefined : value);
+    }
+    function recoveryPrefix() {
+      return `canvasflow:recovery:${encodeURIComponent(currentUser().id)}:${encodeURIComponent(workspaceHeader()['X-Workspace-Id'] || '')}:`;
+    }
+    function preserveConflict(snapshot) {
+      const scope = snapshot.scope + snapshot.data.projectId;
+      const previous = recoveryIds.get(scope);
+      if (previous && !recoveryCopies.has(snapshot.scope + previous)) {
+        // Another window may already have restored this draft. Further edits need a new copy.
+        try { if (!localStorage.getItem(snapshot.scope + previous)) recoveryIds.delete(scope); } catch { /* Use session storage fallback. */ }
+      }
+      if (!recoveryIds.has(scope)) recoveryIds.set(scope, 'project-' + crypto.randomUUID());
+      const id = recoveryIds.get(scope), key = snapshot.scope + id;
+      const copy = { ...snapshot.data, id, projectName: snapshot.data.projectName + ' · 恢复副本',
+        shared:false, updatedAt:new Date().toISOString() };
+      try { localStorage.setItem(key, JSON.stringify(copy)); recoveryCopies.delete(key); return true; }
+      catch { recoveryCopies.set(key, copy); return false; }
+    }
+    function currentRecoveryCopies() {
+      const prefix = recoveryPrefix(), copies = new Map();
+      try {
+        for (let n = 0; n < localStorage.length; n++) {
+          const key = localStorage.key(n);
+          if (key?.startsWith(prefix)) {
+            try { copies.set(key, JSON.parse(localStorage.getItem(key))); } catch { /* Skip an unreadable draft. */ }
+          }
+        }
+      } catch { /* In private browsing the current session still holds its draft. */ }
+      for (const [key, copy] of recoveryCopies) if (key.startsWith(prefix)) copies.set(key, copy);
+      return [...copies.entries()].filter(([key, copy]) => copy?.id && key === prefix + copy.id);
+    }
+    async function restoreConflictCopy(key, copy, button) {
+      if (button.disabled || key !== recoveryPrefix() + copy.id) return;
+      copy = currentRecoveryCopies().find(([k]) => k === key)?.[1];
+      if (!copy) return;
+      const headers = {...workspaceHeader()}, epoch = navigationEpoch;
+      const sourceKey = recoveryPrefix() + copy.projectId;
+      if (recoveryIds.get(sourceKey) === copy.id) recoveryIds.delete(sourceKey);
+      button.disabled = true;
+      try {
+        const result = await api('/api/projects', { headers, method:'POST', throwOnError:true,
+          body:JSON.stringify({...copy, restoreConflictCopy:true}) });
+        if (result?.project?.id !== copy.id) throw Error('副本保存失败，请重试');
+        // Edits made during the request still have their own recoverable snapshot.
+        const current = currentRecoveryCopies().find(([k]) => k === key)?.[1];
+        if (current?.updatedAt === copy.updatedAt) {
+          try { localStorage.removeItem(key); } catch { /* Session-only draft. */ }
+          recoveryCopies.delete(key);
+        }
+        if (epoch === navigationEpoch && key === recoveryPrefix() + copy.id) await openProject(copy.id);
+      } catch (error) { showToast(error.message || '恢复副本失败，可稍后重试', '×'); }
+      finally { button.disabled = false; }
+    }
     async function sendProjectSnapshot(id, payload) {
         if(!isStandaloneFile()&&payload.ownerId!==currentUser().id)throw Object.assign(new Error('账户已切换'),{status:403});
         const { createDraft, ...snapshot } = payload;
@@ -1281,11 +1344,24 @@ return {box:null,refresh(){},dispose(){}};
         const status=$('#saveStatus');if(status)status.textContent='已自动保存';
       },
       onConflict:(id)=>{
+        const snapshot = pendingProjectSnapshots.get(id);
+        const persisted = snapshot && preserveConflict(snapshot);
         if(state.projectId!==id)return;
-        const status=$('#saveStatus');if(status)status.textContent='版本冲突 · 本机副本已保留';
-        showToast('项目已在其他位置修改。当前编辑保留在本机，请重新打开项目核对后继续。','⚠');
+        const status=$('#saveStatus');if(status)status.textContent='版本冲突 · 可在我的项目恢复副本';
+        showToast(persisted ? '项目已在其他窗口修改，可到「我的项目」恢复本机副本。'
+          : '本地存储空间不足，请在关闭窗口前到「我的项目」恢复副本。','⚠');
       }
     });
+
+    function projectSnapshot(graph = graphSnapshot()) {
+      return {
+        projectId: state.projectId, projectName: state.projectName, description: state.projectDescription || '',
+        nodeCount: graph.nodes.length, zoom: state.zoom, panX: state.panX, panY: state.panY,
+        advancedSettings: state.advancedSettings, generationSettings: state.generationSettings,
+        imageGenerationSettings: state.imageGenerationSettings, modelPrompt: state.modelPrompt || '',
+        references: state.references || [], jobBindings: state.jobBindings || [], ...graph
+      };
+    }
 
     function saveProject() {
       // ★★★ 数据安全闸门（r788）：带 `?project=` 打开时，**在项目数据真正加载成功之前，绝不写回**。
@@ -1302,7 +1378,7 @@ return {box:null,refresh(){},dispose(){}};
       if (state.projectIsDraft) state.draftPersistenceRequested = true;
       const user = currentUser();
       const owner = { id: state.projectOwnerId || user.id, name: state.projectOwnerName || user.name, avatar: state.projectOwnerAvatar || user.avatar };
-      const payload = { projectId: state.projectId, projectName: state.projectName, description: state.projectDescription || '', nodeCount: state.nodeCount, zoom: state.zoom, panX: state.panX, panY: state.panY, advancedSettings: state.advancedSettings, generationSettings: state.generationSettings, imageGenerationSettings: state.imageGenerationSettings, modelPrompt: state.modelPrompt || '', references: state.references || [], ownerId: owner.id, ownerName: owner.name, ownerAvatar: owner.avatar, shared: Boolean(state.projectShared), jobBindings: state.jobBindings || [], ...graph };
+      const payload = { ...projectSnapshot(graph), ownerId: owner.id, ownerName: owner.name, ownerAvatar: owner.avatar, shared: Boolean(state.projectShared) };
       safeStorage.set(payload);
       writeLocalProject(payload);
       const status = $('#saveStatus');
@@ -1319,8 +1395,27 @@ return {box:null,refresh(){},dispose(){}};
       const refsChanged = refsSig !== state.lastRefsSig;
       // 分镜格子的预览图与节点预览同理：base64 只进本机缓存，服务器只保留 previewAsset 引用。
       const serverPayload = { ...payload, createDraft:Boolean(state.projectIsDraft), revision: state.projectRevision, nodes: graph.nodes.map(({ previewData, ...rest }) => ({ ...rest, cells: Array.isArray(rest.cells) ? rest.cells.map(({ previewData: _cellPreview, ...cellRest }) => cellRest) : undefined })) };
+      const signature = canvasSignature(projectSnapshot(graph));
+      if (!state.projectIsDraft && !pendingProjectSnapshots.has(saveProjectId) && !projectSaveQueue.blocked(saveProjectId) && signature === savedCanvasSignature) {
+        if (status) status.textContent = '已自动保存';
+        return true;
+      }
+      const snapshot = {scope:recoveryPrefix(), data:{...serverPayload}};
+      delete snapshot.data.revision;
+      delete snapshot.data.createDraft;
+      if (projectSaveQueue.blocked(saveProjectId)) {
+        const persisted = preserveConflict(snapshot);
+        if (status) status.textContent = persisted ? '版本冲突 · 可在我的项目恢复副本' : '空间不足 · 请在关闭前恢复副本';
+        return false;
+      }
+      const canvasEpoch = state.canvasEpoch;
+      pendingProjectSnapshots.set(saveProjectId, snapshot);
       if (!refsChanged) delete serverPayload.references;
       return projectSaveQueue.enqueue(saveProjectId,serverPayload).then(result=>{
+        if (pendingProjectSnapshots.get(saveProjectId) === snapshot) {
+          pendingProjectSnapshots.delete(saveProjectId);
+          if (result && state.projectId === saveProjectId && state.canvasEpoch === canvasEpoch) savedCanvasSignature = signature;
+        }
         if(!result&&state.projectId===saveProjectId&&!projectSaveQueue.blocked(saveProjectId)&&status)status.textContent='已保存到本机';
         return Boolean(result);
       });
@@ -1333,6 +1428,7 @@ return {box:null,refresh(){},dispose(){}};
 
     // The desktop host waits for the final save before stopping its local service.
     window.CanvasFlowDesktop?.onBeforeClose(async () => {
+      if (window.CanvasFlowSkillEditor?.hasPendingChanges()) return 'skill-editor';
       clearTimeout(state.saveTimer);
       if (state.projectLoadPending || !state.projectId) return true;
       return await saveProject() !== false;
@@ -1382,6 +1478,7 @@ return {box:null,refresh(){},dispose(){}};
         : fetch(`/api/projects/${encodeURIComponent(requestedId)}`, { headers })
           .then(async response => {
             if (response.status === 404) return { missing: true };
+            if (response.status === 403) return response.json().catch(() => null);
             if (!response.ok) return null;
             return response.json().catch(() => null);
           })
@@ -1390,6 +1487,13 @@ return {box:null,refresh(){},dispose(){}};
         // 用户可能在请求期间打开了别的项目；迟到的旧图会覆盖新画布并被下一次自动保存落盘。
         if (state.projectId !== requestedId || state.isRestoring || requestId !== state.projectNavigationRequest
             || JSON.stringify(headers) !== JSON.stringify(workspaceHeader())) return;
+        if (result?.error === 'workspace_mismatch') {
+          clearCurrentProject();
+          openView('projects');
+          showToast('这个项目属于另一个工作区，请切换到对应工作区打开', 'ⓘ');
+          window.CanvasFlowStartup?.ready();
+          return;
+        }
         if (result?.missing) {
           activateFallbackProject();
           return;
@@ -1418,6 +1522,7 @@ return {box:null,refresh(){},dispose(){}};
         if (Array.isArray(project.edges)) setGraphEdges(project.edges);
         if (name) name.textContent = state.projectName;
         updateNodeCount(); updateTransform(); resetHistoryBaseline(); syncAdvancedSettings(); syncGenerationControls(); syncInspectorToNode($('.flow-node.selected'));
+        savedCanvasSignature = canvasSignature(projectSnapshot());
         resumeJobBindings();
         resumeGenerationJobs();
         window.CanvasFlowStartup?.ready();
@@ -4970,6 +5075,7 @@ return {box:null,refresh(){},dispose(){}};
       const node = scriptPanelNode() || $('.flow-node.selected');
       if (!node?.matches?.('.script-node')) return;
       if (!rows.length) return showToast('请先选择要生成的镜头', '⚠');
+      const context = generationContext(node);
       const settings = state.generationSettings || defaultGenerationSettings();
       const baseLeft = (parseFloat(node.style.left) || 0) + (node.offsetWidth || 330) + 46;
       const baseTop = parseFloat(node.style.top) || 0;
@@ -4987,15 +5093,18 @@ return {box:null,refresh(){},dispose(){}};
         memberShots: created.map((card, index) => ({ nodeId: card.dataset.nodeId, shotId: String(rows[index]?.shot?.id || '') })),
       });
       if (group) scriptBatchLinkGenerated(node, rows, created, group);
+      if (!await saveProject()) return showToast('分镜节点尚未保存，已停止提交视频任务', '⚠');
       for (let index = 0; index < created.length; index += 1) {
+        if (!generationContextActive(context)) break;
         const { shot, seconds } = rows[index];
         // 每镜时长是**本次生成**的临时值：只进这一次的 generationSettings，不写回脚本表格。
         const duration = `${videoDurationSeconds(seconds)} 秒`;
         // eslint-disable-next-line no-await-in-loop
         const result = await api('/api/generate', {
           method: 'POST',
+          headers: context.headers,
           body: JSON.stringify({
-            projectId: state.projectId, outputId: created[index].dataset.nodeId,
+            projectId: context.projectId, outputId: created[index].dataset.nodeId,
             // 生视频用「视频运动提示词」，没有就退回分镜提示词（老数据不会因此变空）。
             prompt: [String(shot.videoPrompt || '').trim(), String(shot.prompt || '').trim()].filter(Boolean).join('\n'),
             referenceImages: [], nodes: graphSnapshot().nodes, upstreamInputs: [],
@@ -5012,8 +5121,12 @@ return {box:null,refresh(){},dispose(){}};
             advancedSettings: state.advancedSettings,
           }),
         });
-        if (result?.job?.id) ok += 1;
+        if (result?.job?.id) {
+          ok += 1;
+          if (generationContextActive(context)) trackBatchVideoJob(created[index], result.job);
+        }
       }
+      if (!generationContextActive(context)) return showToast(`已切换画布，原项目已提交 ${ok} / ${created.length} 个视频任务`, 'ⓘ');
       if (!ok) return showToast('视频任务提交失败，请检查模型配置', '×');
       showToast(`已提交 ${ok} 个视频任务${group ? `，已创建「${group.name}」` : ''}`, '✓');
     }
@@ -14712,10 +14825,12 @@ const nodeTypeNames = { prompt: '文本节点', image: '图片节点', audio: '�
     async function batchExecuteGroup(groupId) {
       const members = groupMembers(groupId);
       if (!members.length) return showToast('组内没有节点', '⧉');
+      const context = generationContext(null);
       const group = (state.groups || []).find(item => item.id === groupId);
       const generator = scriptGeneratorContext(group);
       let done = 0, skipped = 0;
       for (const node of members) {
+        if (!generationContextActive(context)) break;
         const type = node.dataset.node;
         try {
           const shot = generator?.shots.get(String(node.dataset.nodeId || ''));
@@ -14726,24 +14841,38 @@ const nodeTypeNames = { prompt: '文本节点', image: '图片节点', audio: '�
             continue;
           }
           if (shot && type === 'output') {
+            if (!await prepareGenerationSubmission({ ...context, node })) break;
             const settings = state.generationSettings || defaultGenerationSettings();
             const result = await api('/api/generate', {
               method: 'POST',
+              headers: context.headers,
               body: JSON.stringify({
-                projectId: state.projectId, outputId: node.dataset.nodeId,
+                projectId: context.projectId, outputId: node.dataset.nodeId,
                 prompt: [String(shot.videoPrompt || '').trim(), String(shot.prompt || '').trim()].filter(Boolean).join('\n'),
                 referenceImages: [], nodes: graphSnapshot().nodes, upstreamInputs: [],
                 generationSettings: { ...settings, duration: `${videoDurationSeconds(scriptShotSeconds(shot))} 秒` },
                 advancedSettings: state.advancedSettings,
               }),
             });
-            if (result?.job?.id) done += 1; else skipped += 1;
+            if (result?.job?.id) {
+              done += 1;
+              if (generationContextActive(context)) trackBatchVideoJob(node, result.job);
+            } else skipped += 1;
             continue;
           }
           skipped += 1;
         } catch { skipped += 1; }
       }
+      if (!generationContextActive(context)) return showToast(`已切换画布，原项目已提交 ${done} / ${members.length} 个节点`, 'ⓘ');
       showToast(done ? `已整组执行 ${done} 个节点${skipped ? `，${skipped} 个需单独生成` : ''}` : '组内没有可批量执行的节点', '✦');
+    }
+    function trackBatchVideoJob(node, job) {
+      node.dataset.jobId = node.dataset.generationJobId = job.id;
+      state.jobBindings = [...(state.jobBindings || []).filter(item => item.outputId !== node.dataset.nodeId),
+        { jobId:job.id, outputId:node.dataset.nodeId, done:false }];
+      renderJobProgress(node, job);
+      watchPendingJobs({ silent:true });
+      scheduleSave();
     }
     function syncGroupToolbarState() {
       const bar = $('#groupToolbar');
@@ -15256,9 +15385,6 @@ const nodeTypeNames = { prompt: '文本节点', image: '图片节点', audio: '�
     }
     let navigationEpoch = 0;
     let unmountGenerationStudio;
-    // Navigation drafts stay in memory, isolated by workspace and medium.
-    // Do not write unlimited prompts into quota-limited browser storage.
-    const generationStudioDrafts = new Map();
     function setActiveNav(viewName) {
       document.body.classList.toggle('agent-hub-active', viewName === 'agent-hub');
       document.body.classList.toggle('box3d-active', viewName === 'box3d');
@@ -15421,6 +15547,18 @@ const nodeTypeNames = { prompt: '文本节点', image: '图片节点', audio: '�
       const totalNodes = list.reduce((sum, project) => sum + (Number(project.nodeCount) || 0), 0);
       panel.innerHTML = `<div class="view-stats"><div><span>全部项目</span><strong>${list.length}</strong></div><div><span>本周更新</span><strong>${recent}</strong></div><div><span>节点总计</span><strong>${totalNodes}</strong></div></div><div class="project-grid">${list.map((project, index) => `<button class="project-card ${index === 0 ? 'featured' : ''}" data-project-id="${escapeHtml(project.id)}"><span class="project-thumb ${['city','product','music','city'][index % 4]}" data-project-thumb="${escapeHtml(project.id)}"></span><span class="project-cover-edit" role="button" tabindex="0" data-edit-project-cover="${escapeHtml(project.id)}" title="编辑封面">✎</span><span class="project-card-copy"><strong>${escapeHtml(project.projectName)}</strong><small>${escapeHtml(formatUpdatedAt(project.updatedAt))} · ${Number(project.nodeCount) || 0} 个节点</small></span><span class="project-card-footer"><b>${project.id === resumeProjectId ? '继续创作 →' : '打开 →'}</b><span class="project-move" role="button" tabindex="0" title="移动到其它工作区" data-move-project="${escapeHtml(project.id)}">⇄</span><span class="project-delete" role="button" tabindex="0" title="删除项目" data-delete-project="${escapeHtml(project.id)}">×</span></span></button>`).join('')}<button class="project-card dashed" data-project-id="new"><span class="project-plus">＋</span><span class="project-card-copy"><strong>创建新项目</strong><small>从空白画布开始</small></span></button></div>`;
       if (!list.length) panel.insertAdjacentHTML('afterbegin', '<div class="project-empty-notice" role="status"><strong>当前工作区还没有项目</strong><p>请先新建项目，再进入创作画布。可以点击左侧或右上角的“新建项目”。</p></div>');
+      for (const [key, copy] of currentRecoveryCopies()) {
+        const row = document.createElement('div');
+        row.className = 'project-empty-notice';
+        const label = document.createElement('strong');
+        label.textContent = copy.projectName;
+        const recover = document.createElement('button');
+        recover.type = 'button';
+        recover.textContent = '恢复为新项目';
+        recover.addEventListener('click', () => restoreConflictCopy(key, copy, recover));
+        row.append(label, document.createTextNode('　'), recover);
+        panel.prepend(row);
+      }
       list.forEach(project => {
         if (!project.cover) return;
         const thumb = panel.querySelector(`[data-project-thumb="${CSS.escape(String(project.id))}"]`);
@@ -16137,240 +16275,566 @@ const nodeTypeNames = { prompt: '文本节点', image: '图片节点', audio: '�
 
     // 离开画布（切到项目 / 素材 / 社区 / 模板 / 后台…）时把对话面板收起来：
     // 面板和设置弹窗都是 position:fixed，不收起来会一直浮在别的页面上挡内容。
+    function createStudioVideoAdapter(model) {
+      const doc = currentModelContract(model) || {};
+      const provider = doc.providerContract || model.providerContract || {};
+      const hasProvider = Object.keys(provider).length > 0;
+      const video = model.params?.video || model.modelParams?.video || {};
+      const rows = specRowsFor('video', model) || [];
+      const definitions = doc.params || [];
+      const defaults = modelDefaultSettings(model);
+      const media = model.mediaGenerate || definitions.length > 0;
+      const protocol = model.videoProtocol || 'openai-video';
+      const workflow = model.videoProfile === 'sanyuan-video';
+      const zhongheng = model.videoProfile === 'zhongheng-video';
+      const docByName = new Map(definitions.map(field => [field.name, field]));
+      const rowName = row => row.field || row.key;
+      function inputKind(name) {
+        if (['audio_url', 'audio', 'sound_file', 'audio_file', 'reference_audio'].includes(name)) return 'audio';
+        if ([...VIDEO_INPUT_SOURCE_KEYS, 'reference_video', 'source_video', 'clips'].includes(name)) return 'video';
+        if (['images', 'image', 'image_url', 'image_urls', 'reference_images', 'reference_urls', 'input_image', 'lip_ref_url'].includes(name)) return 'image';
+        return '';
+      }
+      const uploads = definitions.filter(field => field.type === 'upload');
+      const imageFields = uploads.filter(field => inputKind(field.name) === 'image');
+      const generationTypes = docByName.get('generation_type')?.options?.filter(option => !option.currently_unavailable).map(option => option.value) || [];
+      const generationType = mode => ({text2video:'TEXT', singleImage2video:'REFERENCE', image2video:'REFERENCE', frames2video:'FIRST&LAST'})[mode];
+      const frameField = imageFields.find(field => /首尾帧/.test(field.upload_role || field.label));
+      const firstOnly = imageFields.length === 1 && /首帧/.test(imageFields[0].label) && !frameField;
+      const sourceVideoRow = rows.some(row => VIDEO_INPUT_SOURCE_KEYS.includes(rowName(row)) && !docByName.has(rowName(row)));
+      const caps = {};
+      const needed = {};
+      for (const [kind, limit] of Object.entries({ image: 2, video: 1, audio: 1 })) {
+        const declared = uploads.filter(field => inputKind(field.name) === kind);
+        const legacy = kind === 'image' || (kind === 'video' && sourceVideoRow);
+        caps[kind] = hasProvider ? Number(provider['max_' + kind] || 0)
+          : definitions.length ? (declared.length ? (doc.referenceLimits?.[kind] ?? limit) : 0) : (legacy ? limit : 0);
+        needed[kind] = declared.some(field => field.required && !field.available_when)
+          || (kind === 'video' && sourceVideoRow);
+      }
+      const hasImage = caps.image > 0, hasVideo = caps.video > 0, hasAudio = caps.audio > 0;
+      // Vidu Q4 marks both image fields optional because they are mutually exclusive
+      // by mode. Its first-frame and reference-generation contracts each require an image.
+      if (model.model === 'viduq4-preview' && imageFields.length) needed.image = true;
+      const hasFirstFrame = !definitions.length || generationTypes.includes('FIRST&LAST')
+        || imageFields.some(field => /首帧|首尾帧/.test(field.upload_role || field.label));
+      const hasReferenceImages = hasImage && !firstOnly && (!frameField || imageFields.length > 1);
+      const hasFrames = caps.image >= 2 && (frameField || zhongheng || generationTypes.includes('FIRST&LAST')
+        || provider.apiReferenceModes?.includes('frames2video')
+        || (!media && (protocol === 'kling' || (protocol === 'dashscope' && /kf2v/i.test(model.model)))));
+      const canMix = [hasImage, hasVideo, hasAudio].filter(Boolean).length > 1 || provider.apiReferenceModes?.includes('mixed2video');
+      const modeKinds = {
+        text2video: [], singleImage2video: ['image'], frames2video: ['image'], image2video: ['image'],
+        video2video: ['video'], videoEdit2video: ['video'], audio2video: ['audio'],
+        mixed2video: ['image','video','audio'], videoExtend2video: ['video'], longVideo2video: ['image','video','audio'],
+      };
+      const listed = {
+        text2video: true, singleImage2video: hasImage && hasFirstFrame, frames2video: hasFrames, image2video: hasReferenceImages && (media || hasProvider),
+        video2video: hasVideo, videoEdit2video: hasVideo, audio2video: hasAudio, mixed2video: canMix, videoExtend2video: hasVideo && !needed.video,
+        longVideo2video: video.longVideo === true || (video.modes || video.modeTypes || []).includes('longVideo2video'),
+      };
+      const referenceTypes = docByName.get('_quan_neng_mode')?.options?.filter(option => !option.currently_unavailable).map(option => option.value);
+      const modes = VIDEO_GEN_MODES.filter(({key}) => listed[key]
+        && (!generationTypes.length || generationTypes.includes(generationType(key)))
+        && (!referenceTypes || key !== 'videoEdit2video' || referenceTypes.includes('edit'))
+        && (!referenceTypes || key !== 'videoExtend2video' || referenceTypes.includes('extend'))
+        && (!provider.apiReferenceModes || provider.apiReferenceModes.includes(key))
+        && Object.keys(needed).every(kind => !needed[kind] || modeKinds[key].includes(kind)))
+        .map(({key, label}) => ({value:key, label}));
+      const modeField = {key:'referenceMode', label:'生成方式', options:modes, default:modes[0]?.value || ''};
+      const docModes = docByName.get('mode')?.options?.map(option => option.value) || [];
+      const modeManaged = docModes.includes('shouweizhen') || docModes.includes('cankaosheng');
+      function providerMode(mode) {
+        if (!modeManaged) return '';
+        if (mode === 'text2video' && docModes.includes('wensheng')) return 'wensheng';
+        const frames = ['text2video','singleImage2video','frames2video'].includes(mode);
+        const value = frames ? 'shouweizhen' : 'cankaosheng';
+        return docModes.includes(value) ? value : docModes[0];
+      }
+      function references(settings) {
+        const mode = settings.referenceMode || modeField.default;
+        const slot = (key, label, kind, min, max) => ({key, label, kinds:[kind], min, max,
+          urlOnly:kind === 'video' && !zhongheng, allowLink:kind === 'video',
+          ...(kind === 'video' && zhongheng ? {maxBytes:25 * 1024 * 1024} : {})});
+        const first = slot('firstFrame', '首帧', 'image', 1, 1);
+        if (mode === 'singleImage2video') return [first];
+        if (mode === 'frames2video') return [first, slot('lastFrame', '尾帧', 'image', 1, 1)];
+        const kinds = modeKinds[mode] || [];
+        const labels = {image:'参考图片', video:'参考视频', audio:'参考音频'};
+        return kinds.filter(kind => caps[kind]).map(kind => {
+          const multiImage = hasProvider || imageFields.some(field => field.name.endsWith('s')
+            || (field.name === 'image_url' && field.available_when?.mode?.includes('cankaosheng')));
+          const max = kind === 'image' && (firstOnly || !multiImage) ? 1 : caps[kind];
+          return slot(kind + 'Refs', labels[kind], kind, kinds.length === 1 || needed[kind] ? 1 : 0, max);
+        });
+      }
+
+      const core = new Set(['aspectRatio','resolution','duration','count','generateAudio']);
+      const asOptions = values => values.map(value => ({value:String(value), label:String(value)}));
+      const cameraNames = [...new Set(['无运镜', ...CAMERA_MOTION_PRESETS.map(p => p.name), ...readCameraCustom().map(p => p.name)])];
+      const descriptors = rows.slice();
+      for (const field of definitions) {
+        if (field.type === 'upload' || field.name === 'prompt' || descriptors.some(row => rowName(row) === field.name)) continue;
+        descriptors.push({key:field.name, field:field.name, label:field.label, options:field.options || [], default:field.default});
+      }
+      for (const key of ['duration','resolution','aspectRatio']) {
+        if (descriptors.some(row => row.key === key)) continue;
+        const fallback = key === 'duration' ? (!definitions.length || provider.durationOptions?.length)
+          : key === 'resolution' ? provider.resolutions?.length : video.aspectRatio;
+        if (fallback) descriptors.push({key, label:{duration:'时长', resolution:'清晰度', aspectRatio:'画面比例'}[key], options:[], default:defaults[key]});
+      }
+      const camera = {key:'cameraMove',label:'运镜',default:'无运镜',options:asOptions(cameraNames),advanced:true};
+      // Some routes disallow two frames entirely; their resolutions must not expand this mode's menu.
+      function channelsForMode(mode) {
+        const imageCount = {text2video:0, singleImage2video:1, frames2video:2}[mode];
+        const inputForm = {text2video:'wensheng', singleImage2video:'shouzhen', frames2video:'shouweizhen'}[mode];
+        return (doc.channel_constraints || []).filter(channel => !(channel.capability_rules || []).some(rule =>
+          rule.effect === 'reject' && rule.when?.every(condition => {
+            if (condition.source === 'derived' && condition.param === 'input_form' && inputForm) {
+              if (condition.op === 'in') return condition.values?.includes(inputForm);
+              if (condition.op === 'not_in') return !condition.values?.includes(inputForm);
+            }
+            if (condition.param === 'images' && imageCount != null) {
+              if (condition.op === 'count_gt') return imageCount > Number(condition.value);
+              if (condition.op === 'count_lt') return imageCount < Number(condition.value);
+            }
+            return false;
+          })));
+      }
+      function fieldsFor(settings = {}) {
+        const mode = settings.referenceMode || modeField.default;
+        const channels = channelsForMode(mode);
+        const params = {};
+        for (const row of descriptors) {
+          const value = settings[core.has(row.key) ? row.key : 'option.' + rowName(row)] ?? row.default;
+          if (value != null) params[rowName(row)] = value;
+        }
+        if (modeManaged) params.mode = providerMode(mode);
+        const result = [modeField];
+        for (const row of descriptors) {
+          const name = rowName(row), schema = docByName.get(name) || {};
+          if (schema.type === 'upload' || name === 'prompt' || name === '_quan_neng_mode' || (name === 'generation_type' && generationTypes.length)
+              || (modeManaged && name === 'mode') || (!schema.type && VIDEO_INPUT_SOURCE_KEYS.includes(name))
+              || ['negative_prompt','seed'].includes(name)) continue;
+          if (Object.entries(schema.available_when || {}).some(([key, values]) =>
+            Object.hasOwn(params,key) && Array.isArray(values) && !values.map(String).includes(String(params[key])))) continue;
+          const standard = core.has(row.key);
+          const key = standard ? row.key : 'option.' + name;
+          const field = {key, label:row.label || schema.label || name, default:row.default ?? '', advanced:!standard || row.key === 'count' || row.key === 'generateAudio'};
+          const original = row.options?.length ? row.options : schema.options || [];
+          let values = original.map(option => option.value);
+          if (row.key === 'duration') {
+            const configured = parseDurationStepsParam(video);
+            if (provider.durationOptions?.length) values = provider.durationOptions;
+            if (configured.length) values = values.length ? values.filter(v => configured.includes(Number(v))) : configured;
+            const res = settings.resolution || defaults.resolution;
+            const numeric = schema.type === 'number' && !schema.options?.length;
+            const hasSteps = values.length > 0;
+            const min = Math.max(Number.parseFloat(video.minDuration) || 0, provider.minDuration || 0,
+              Number(schema.min) || (numeric ? .01 : hasSteps ? 1 : VIDEO_DURATION_MIN));
+            const max = Math.min(Number.parseFloat(video.maxDuration) || Infinity, provider.maxDuration || Infinity,
+              provider.maxByResolution?.[res] || Infinity, Number(schema.max) || (numeric || hasSteps ? Infinity : VIDEO_DURATION_MAX));
+            values = values.filter(v => ['auto','adaptive','-1'].includes(String(v)) || (+v >= min && +v <= max));
+            Object.assign(field, {min, step:numeric ? .01 : 1});
+            if (Number.isFinite(max)) field.max = max;
+            field.default = defaults.duration;
+          }
+          if (row.key === 'resolution' && provider.resolutions?.length) {
+            if (provider.omitResolution) continue;
+            values = provider.resolutions;
+            field.default = provider.defaultResolution;
+          }
+          values = contractControlOptions(model, name, values, params);
+          if (channels.length && channels.every(channel => channel.supported_options?.[name])) {
+            const allowed = new Set(channels.flatMap(channel => channel.supported_options[name]).map(value => String(value).toLowerCase()));
+            values = values.filter(value => allowed.has(String(value).toLowerCase()));
+          }
+          if (values.length) {
+            field.options = values.map(value => ({
+              value:String(value), label:row.key === 'count' ? value + ' 个' : original.find(option => String(option.value) === String(value))?.label
+                || (row.key === 'duration' && +value > 0 ? value + ' 秒' : String(value))
+            }));
+          } else if (original.length) continue;
+          else if (row.key === 'duration' || schema.type === 'number') {
+            field.inputType = 'number';
+            if (row.key === 'duration' && !/秒/.test(field.label)) field.label += '（秒）';
+            if (row.key !== 'duration') {
+              field.min = Number(schema.min) || .01;
+              if (schema.max != null) field.max = Number(schema.max);
+              field.step = schema.step || 'any';
+            }
+          }
+          else if (row.key === 'generateAudio' || schema.type === 'switch') {
+            field.inputType = 'checkbox';
+            field.default = row.default ?? (row.key === 'generateAudio' ? defaults.generateAudio ?? true : false);
+          }
+          else if (schema.type === 'textarea') field.inputType = 'textarea';
+          else if (schema.type === 'input' || (standard && defaults[row.key] != null)) field.inputType = 'text';
+          else continue;
+          if (schema.required) field.required = true;
+          result.push(field);
+        }
+        result.push(camera);
+        if ((!media && !zhongheng) || docByName.has('seed')) {
+          result.push({key:'seed',label:'随机种子',inputType:'number',min:0,max:999999999,step:1,default:'',advanced:true});
+        }
+        if ((!media && !workflow) || docByName.has('negative_prompt')) {
+          result.push({key:'negativePrompt',label:'负面提示词',inputType:'textarea',default:'',advanced:true});
+        }
+        return result;
+      }
+      const truth = value => value === true || ['true','1','on'].includes(String(value).toLowerCase());
+      function normalize(settings = {}) {
+        const next = {};
+        for (const field of fieldsFor(settings)) {
+          let value = settings[field.key] ?? field.default ?? '';
+          if (field.options?.length) {
+            const find = v => field.options.find(option => String(option.value).toLowerCase() === String(v).toLowerCase());
+            value = (find(value) || find(field.default) || field.options[0]).value;
+          } else if (field.inputType === 'checkbox') value = truth(value);
+          else if (field.inputType === 'number' && field.key === 'duration' && value !== '') {
+            value = Number.parseFloat(value);
+            value = String(Math.min(field.max ?? Infinity, Math.max(field.min, Number.isFinite(value) ? value : field.min)));
+          }
+          next[field.key] = value;
+        }
+        return next;
+      }
+      const localMedia = url => /^\/media\/[\w.-]+$/.test(url);
+      function validate(settings, refs, prompt) {
+        if (!modes.length) return '当前模型没有可用的生成方式。';
+        if (!doc.promptOptional && !String(prompt || '').trim()) return '请输入视频提示词。';
+        for (const slot of references(settings)) {
+          const items = refs[slot.key] || [];
+          if (items.length < slot.min) return '请添加' + slot.label + '。';
+          if (items.length > slot.max) return slot.label + '最多可添加 ' + slot.max + ' 个。';
+          for (const item of items) {
+            if (!slot.kinds.includes(item.kind)) return '请重新选择' + slot.label + '。';
+            if (item.kind === 'video' && !(zhongheng && localMedia(item.url))
+                && (!/^https?:\/\//i.test(item.url) || item.url.length > 4000)) return '参考视频需要可公开访问的 HTTP(S) 直链。';
+            if (item.kind === 'audio' && !localMedia(item.url) && !/^(https?:\/\/|data:audio\/)/i.test(item.url)) return '请提供可读取的参考音频。';
+            if (item.url?.startsWith('data:') && item.url.length > 5000000) return slot.label + '过大，请压缩后再试。';
+          }
+        }
+        for (const field of fieldsFor(settings)) {
+          const value = settings[field.key];
+          if (field.required && !String(value ?? '').trim() && !['option.script_content','option.script_name'].includes(field.key)) return '请填写' + field.label + '。';
+          if (field.inputType === 'number' && value != null && value !== '') {
+            const n = Number(value);
+            if (!Number.isFinite(n) || n < field.min || n > field.max || (field.step === 1 && !Number.isInteger(n))) return '请检查' + field.label + '的取值范围。';
+          }
+        }
+        return '';
+      }
+      function payload(settings, refs, prompt) {
+        const generationSettings = {modelId:model.id, referenceMode:settings.referenceMode, modelOptions:{}};
+        const advancedSettings = {};
+        for (const field of fieldsFor(settings)) {
+          const value = settings[field.key];
+          if (value == null || value === '') continue;
+          if (field.key.startsWith('option.')) generationSettings.modelOptions[field.key.slice(7)] = field.inputType === 'number' ? Number(value) : value;
+          else if (field.key === 'count') generationSettings.generateCount = 1;
+          else if (field.key === 'generateAudio') generationSettings.generateAudio = truth(value);
+          else if (field.key === 'seed' || field.key === 'negativePrompt') advancedSettings[field.key] = String(value);
+          else generationSettings[field.key] = value;
+        }
+        if (modeManaged) generationSettings.modelOptions.mode = providerMode(settings.referenceMode);
+        if (generationTypes.length) generationSettings.modelOptions.generation_type = generationType(settings.referenceMode);
+        const mediaRefs = {image:[], video:[], audio:[]};
+        for (const slot of references(settings)) {
+          for (const item of refs[slot.key] || []) mediaRefs[item.kind].push(item.url);
+        }
+        generationSettings.videoMode = mediaRefs.image.length ? 'image-to-video' : 'text-to-video';
+        const body = {generationSettings, advancedSettings, referenceImages:mediaRefs.image, sourceVideos:mediaRefs.video, sourceAudios:mediaRefs.audio};
+        if (prompt != null && settings.cameraMove && settings.cameraMove !== '无运镜') {
+          const token = '[[运镜:' + settings.cameraMove + ']]';
+          const motion = resolvePromptTokens(token);
+          body.prompt = resolvePromptTokens(prompt.includes(token) || prompt.includes(motion) ? prompt : prompt + ' ' + token);
+        }
+        return body;
+      }
+
+      function submissionCount(settings) {
+        return Number(normalize(settings).count) || 1;
+      }
+      function restoreLegacy(job) {
+        const generation = job.generationSettings || {};
+        const advanced = job.advancedSettings || {};
+        const mode = isKnownReferenceMode(generation.referenceMode) ? normalizeReferenceMode(generation.referenceMode)
+          : generation.videoMode === 'image-to-video' ? 'singleImage2video' : modeField.default;
+        const settings = {referenceMode:mode, count:generation.generateCount, duration:generation.duration,
+          aspectRatio:generation.aspectRatio, resolution:generation.resolution, generateAudio:generation.generateAudio,
+          cameraMove:generation.cameraMove, seed:advanced.seed, negativePrompt:advanced.negativePrompt};
+        // Older canvas projects stored durations as presentation text, e.g. “8 秒”.
+        const seconds = String(settings.duration || '').match(/^(\d+(?:\.\d+)?)\s*(?:秒|s)$/i);
+        if (seconds) settings.duration = seconds[1];
+        for (const row of descriptors) {
+          const key = rowName(row);
+          if (!core.has(row.key) && Object.hasOwn(generation.modelOptions || {}, key)) settings['option.' + key] = generation.modelOptions[key];
+        }
+        const normalized = normalize(settings);
+        const refs = {};
+        const urls = {image:job.referenceImages, video:job.sourceVideos, audio:job.sourceAudios};
+        for (const slot of references(normalized)) {
+          const kind = slot.kinds[0], values = urls[kind];
+          if (!Array.isArray(values)) continue;
+          const start = slot.key === 'lastFrame' ? 1 : 0;
+          refs[slot.key] = values.slice(start,start + slot.max).filter(url =>
+            typeof url === 'string' && url.length <= 4000 && (/^https?:\/\//i.test(url) || (!slot.urlOnly && localMedia(url))))
+            .map(url => ({kind,url,name:slot.label}));
+        }
+        return {settings:normalized, refs};
+      }
+      return {fields:fieldsFor(), fieldsFor, normalize, references, validate, payload, submissionCount, restoreLegacy};
+    }
+
     function agentCollapseForViewChange() {
       if (agentState.open) agentToggle(false);
       agentSettingsClose();
     }
 
     function mountGenerationStudio(host, kind) {
-      const isImage = kind === 'image';
-      const medium = isImage ? '图片' : '视频';
       const epoch = navigationEpoch;
       const headers = workspaceHeader();
-      const draftKey = JSON.stringify([headers['X-Workspace-Id'] || '', kind]);
-      const active = () => epoch === navigationEpoch && !host.hidden
-        && headers['X-Workspace-Id'] === workspaceHeader()['X-Workspace-Id'];
-      const request = (path, options = {}) => api(path, { ...options, headers, throwOnError: true });
-      host.innerHTML = `<div class="content-view-inner generation-studio">
-        <header class="view-heading"><div><span class="eyebrow">独立创作</span><h1>${medium}生成台</h1>
-          <p>在当前工作区直接生成${medium}，生成结果可在素材管理中找到。</p></div></header>
-        <div class="studio-layout">
-          <form class="studio-panel studio-form">
-            <label>生成模型<select name="model" required><option value="">正在加载模型…</option></select></label>
-            <p class="studio-note" data-model-note></p>
-            <button class="studio-secondary" type="button" data-provider>供应商设置</button>
-            <label>提示词<textarea name="prompt" required placeholder="${isImage ? '描述主体、构图和光线…' : '描述主体动作、镜头运动和场景变化…'}"></textarea></label>
-            <div class="studio-fields" data-specs></div>
-            <label data-reference>${isImage ? '参考图片（可选）' : '参考图片'}<input name="reference" type="file" accept="image/png,image/jpeg,image/webp"></label>
-            <button class="view-action" type="submit" disabled>生成${medium}</button>
-            <p class="studio-note" role="status" data-submit-status></p>
-          </form>
-          <section class="studio-panel studio-history" aria-label="工作区任务">
-            <header><h2>工作区任务</h2><button class="studio-secondary" type="button" data-refresh>刷新</button></header>
-            <div data-history aria-live="polite"><p class="studio-note">正在加载任务…</p></div>
-            <button class="studio-secondary" type="button" data-more hidden>查看更多</button>
-          </section>
-        </div></div>`;
-      const form = host.querySelector('.studio-form');
-      form.elements.prompt.value = generationStudioDrafts.get(draftKey) || '';
-      const saveDraft = () => generationStudioDrafts.set(draftKey, form.elements.prompt.value);
-      form.elements.prompt.addEventListener('input', saveDraft);
-      const modelSelect = form.elements.model;
-      const reference = form.elements.reference;
-      const referenceField = reference.closest('label');
-      const specs = form.querySelector('[data-specs]');
-      const submit = form.querySelector('[type="submit"]');
-      const status = form.querySelector('[data-submit-status]');
-      const modelNote = form.querySelector('[data-model-note]');
-      const history = host.querySelector('[data-history]');
-      const more = host.querySelector('[data-more]');
-      let models = [], busy = false, loading = false, historyLoading = false;
-      let limit = 12, timer, lastHistory, pollIndex = 0;
-      const selectedModel = () => models.find(model => model.id === modelSelect.value);
-
-      function renderModelControls() {
-        const model = selectedModel();
-        const contract = currentModelContract(model)?.providerContract || {};
-        const rows = model ? (specRowsFor(kind, model) || []) : [];
-        const select = (key, label, options, defaultValue) => options.length ? `<label>${label}<select name="${key}">${options.map(({ value, label: caption }) =>
-          `<option value="${escapeHtml(value)}"${String(value) === String(defaultValue) ? ' selected' : ''}>${escapeHtml(caption || value)}</option>`).join('')}</select></label>` : '';
-        const field = (key, label) => {
-          const row = specRowOf(rows, key);
-          return select(key, label, row?.options || [], row?.default);
-        };
-        const modes = [
-          { value: 'text2video', label: '文生视频' },
-          { value: 'singleImage2video', label: '图生视频' },
-        ].filter(mode => !contract.apiReferenceModes?.length || contract.apiReferenceModes.includes(mode.value));
-        specs.innerHTML = model ? (isImage
-          ? field('aspectRatio', '画面比例') + field('resolution', '清晰度') + field('quality', '画质')
-          : select('mode', '生成方式', modes, 'text2video') + field('aspectRatio', '画面比例')
-            + field('resolution', '清晰度') + field('duration', '时长') + field('generateAudio', '生成音频')) : '';
-        modelNote.textContent = !model ? '请在供应商设置中启用对应的模型。'
-          : !isImage && !modes.length ? '此模型需要其他参考素材，请在创作画布中使用。' : '';
-        updateForm();
-      }
-
-      function updateForm() {
-        referenceField.hidden = !isImage && form.elements.mode?.value !== 'singleImage2video';
-        reference.required = !referenceField.hidden && !isImage;
-        submit.disabled = busy || loading || !selectedModel() || (!isImage && !form.elements.mode);
-      }
-
-      async function loadModels() {
-        if (!active() || loading) return;
-        loading = true;
-        updateForm();
-        try {
-          const [, result] = await Promise.all([loadModelSpecs(), request('/api/ai/models')]);
-          if (!active()) return;
-          const previous = modelSelect.value;
-          models = result.models?.[isImage ? 't2i' : 'video'] || [];
-          modelSelect.innerHTML = models.length ? models.map(model =>
-            `<option value="${escapeHtml(model.id)}">${escapeHtml(model.name || model.model || model.id)}</option>`).join('')
-            : '<option value="">没有已启用的模型</option>';
-          if (models.some(model => model.id === previous)) modelSelect.value = previous;
-          renderModelControls();
-        } catch (error) {
-          if (active()) modelNote.textContent = error.message || '模型列表加载失败。';
-        } finally {
-          loading = false;
-          if (active()) updateForm();
-        }
-      }
-
-      function mediaUrl(job) {
-        const url = String(isImage ? job.imageUrl || '' : job.videoUrl || '');
-        if (/^\/media\/[\w.-]+$/.test(url)) return url;
-        try {
-          const parsed = new URL(url);
-          return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : '';
-        } catch { return ''; }
-      }
-
-      function renderHistory(result) {
-        const jobs = result.jobs || [];
-        const markup = jobs.map(job => {
-          const url = escapeHtml(mediaUrl(job));
-          const progress = job.progress == null ? '' : ` · ${Math.round(Number(job.progress) || 0)}%`;
-          const label = ({ queued: '排队中', running: '生成中', completed: '已完成', failed: '失败' })[job.status] || '处理中';
-          const media = job.status === 'completed' && url
-            ? (isImage ? `<img src="${url}" alt="生成的图片" loading="lazy">`
-              : `<video src="${url}" controls preload="none" playsinline aria-label="生成的视频"></video>`)
-            : '';
-          return `<article class="studio-job">${media}<div class="studio-job-copy">
-            <strong>${escapeHtml(job.prompt || medium + '任务')}</strong>
-            <span>${label}${job.status === 'running' ? progress : ''} · ${escapeHtml(models.find(model => model.id === job.modelId)?.name || job.modelId || '生成模型')}</span>
-            ${job.error ? `<p>${escapeHtml(job.error)}</p>` : ''}
-            ${media ? `<a href="${url}" ${url.startsWith('/media/') ? 'download' : 'target="_blank" rel="noopener"'}>${url.startsWith('/media/') ? '下载原文件' : '打开原文件'}</a>` : ''}
-          </div></article>`;
-        }).join('');
-        // Keep video playback intact when a refresh leaves the task list unchanged.
-        if (markup !== lastHistory) {
-          history.innerHTML = markup || `<p class="studio-note studio-empty">这个工作区还没有${medium}任务。</p>`;
-          lastHistory = markup;
-        }
-        more.hidden = jobs.length >= result.total || limit >= 200;
-      }
-
-      async function loadHistory(sync = false) {
-        if (!active() || historyLoading) return;
-        clearTimeout(timer);
-        historyLoading = true;
-        try {
-          const path = `/api/jobs?kind=${kind}&limit=${limit}`;
-          let result = await request(path);
-          if (!active()) return;
-          if (sync && result.activeCount) {
-            const candidates = (await request(`/api/jobs?kind=${kind}&status=running&limit=200`)).jobs || [];
-            const queued = (await request(`/api/jobs?kind=${kind}&status=queued&limit=200`)).jobs || [];
-            const pending = [...candidates, ...queued];
-            if (active() && pending.length) {
-              const job = pending[pollIndex++ % pending.length];
-              await request(`/api/jobs/${encodeURIComponent(job.id)}`).catch(() => null);
-              if (active()) result = await request(path);
-            }
-          }
-          if (active()) renderHistory(result);
-        } catch (error) {
-          if (active()) {
-            lastHistory = undefined;
-            history.textContent = error.message || '任务记录加载失败，请刷新。';
-          }
-        } finally {
-          historyLoading = false;
-          if (active()) timer = setTimeout(() => loadHistory(true), 3500);
-        }
-      }
-
-      form.addEventListener('submit', async event => {
-        event.preventDefault();
-        const model = selectedModel();
-        const prompt = form.elements.prompt.value.trim();
-        if (!active() || busy || !model || submit.disabled) return;
-        if (!prompt) { status.textContent = '请填写提示词。'; return; }
-        const values = new FormData(form);
-        const mode = values.get('mode');
-        const file = referenceField.hidden ? null : reference.files[0];
-        busy = true;
-        updateForm();
-        status.textContent = file ? '正在上传参考图片…' : '正在提交任务…';
-        try {
-          const referenceImages = [];
-          if (file) {
-            const uploaded = await uploadMediaFile(file);
-            if (!active()) return;
-            if (!uploaded?.url) throw new Error('参考图片上传失败，请检查文件格式后重试。');
-            referenceImages.push(uploaded.url);
-          }
-          const payload = { modelId: model.id, prompt, referenceImages };
-          if (isImage) {
-            const aspect = values.get('aspectRatio');
-            const resolution = values.get('resolution');
-            payload.asyncTask = true;
-            if (resolution || aspect) payload.size = aspectToResolution(aspect || '1:1', resolution || '1K');
-            if (values.has('quality')) payload.quality = values.get('quality');
-            payload.generationSettings = { ...(aspect ? { aspect } : {}), ...(resolution ? { resolution } : {}) };
-          } else {
-            const settings = modelDefaultSettings(model);
-            settings.referenceMode = mode;
-            settings.videoMode = mode === 'singleImage2video' ? 'image-to-video' : 'text-to-video';
-            for (const key of ['aspectRatio', 'resolution', 'duration', 'generateAudio']) {
-              if (!values.has(key)) continue;
-              const value = values.get(key);
-              settings[key] = key === 'generateAudio' ? ['true', 'on', '1'].includes(value) : value;
-            }
-            if (typeof settings.generateAudio === 'string') settings.generateAudio = ['true', 'on', '1'].includes(settings.generateAudio);
-            settings.generateCount = 1;
-            payload.generationSettings = settings;
-          }
-          await request(isImage ? '/api/ai/image-generate' : '/api/generate', {
-            method: 'POST', body: JSON.stringify(payload),
-          });
-          if (active()) {
-            status.textContent = '任务已提交，可在右侧查看进度。';
-            void loadHistory();
-          }
-        } catch (error) {
-          if (active()) status.textContent = error.message || '生成任务提交失败。';
-        } finally {
-          busy = false;
-          if (active()) updateForm();
-        }
+      const workspace = headers['X-Workspace-Id'] || '';
+      const user = currentUser()?.id || 'local-device';
+      const sameWorkspace = () => workspace === (workspaceHeader()['X-Workspace-Id'] || '')
+        && user === (currentUser()?.id || 'local-device');
+      unmountGenerationStudio = window.CanvasFlowGenerationStudio.mount(host, kind, {
+        key: 'canvasflow-generation-studio-v2:' + JSON.stringify([user, workspace, kind]),
+        active: () => epoch === navigationEpoch && !host.hidden && sameWorkspace(),
+        sameWorkspace,
+        notify: message => showToast(message),
+        request: (path, options = {}) => api(path, { ...options, headers, throwOnError: true }),
+        loadModels: async () => {
+          const [loaded, catalog] = await Promise.all([loadModelSpecs(), api('/api/ai/models', { headers, throwOnError: true })]);
+          if (!loaded) throw Error('模型参数加载失败，请重试。');
+          return catalog;
+        },
+        makeAdapter: kind === 'image' ? createStudioImageAdapter : createStudioVideoAdapter,
+        upload: file => uploadMediaFile(file, {throwOnError: true}),
+        download: job => downloadJobVideo(job.id),
+        openProviders: () => window.CanvasFlowSettings?.open?.('providers')
       });
-      modelSelect.addEventListener('change', renderModelControls);
-      specs.addEventListener('change', updateForm);
-      form.querySelector('[data-provider]').addEventListener('click', () => window.CanvasFlowSettings?.open?.('providers'));
-      host.querySelector('[data-refresh]').addEventListener('click', () => { void loadHistory(true); void loadModels(); });
-      more.addEventListener('click', () => { limit = Math.min(200, limit + 12); void loadHistory(); });
-      window.addEventListener('canvasflow:models-changed', loadModels);
-      unmountGenerationStudio = () => {
-        saveDraft();
-        clearTimeout(timer);
-        window.removeEventListener('canvasflow:models-changed', loadModels);
+    }
+
+    function createStudioImageAdapter(model) {
+      const rows = specRowsFor('image', model);
+      const doc = currentModelContract(model);
+      const table = state.modelSpecs?.image || {};
+      const registered = [model.model, model.name].some(key => key && Array.isArray(table[key]));
+      const fields = [];
+      const modelRows = [];
+      const core = new Set(['aspectRatio', 'resolution', 'quality', 'count']);
+      const labels = { aspectRatio: '画面比例', resolution: '分辨率', quality: '画质', count: '生成张数' };
+      const add = (key, label, options, initial, advanced = false) => {
+        if (!options.length) return;
+        const valid = options.some(o => o.value === String(initial));
+        fields.push({ key, label, options, default: valid ? String(initial) : options[0].value, advanced });
       };
-      void loadModels();
-      void loadHistory();
+      const plain = values => values.map(value => ({ value: String(value), label: String(value) }));
+      function optionLabel(row, option) {
+        const value = String(option.value);
+        const label = String(option.label || value || '默认');
+        if (row.key === 'count') return value + ' 张';
+        if (row.key === 'resolution' && /^\d+x\d+$/.test(value) && !/\d+\s*:\s*\d+/.test(label)) {
+          const [width, height] = value.split('x').map(Number);
+          let a = width, b = height;
+          while (b) [a, b] = [b, a % b];
+          return label + ' · ' + (width / a) + ':' + (height / a);
+        }
+        return label;
+      }
+      for (const row of rows || []) {
+        if (!row.options?.length || row.key === 'size' || row.key === 'prompt') continue;
+        const name = row.field || row.key;
+        const allowed = contractControlOptions(model, name, specRowValues(row));
+        let options = row.options.filter(o => allowed.includes(o.value) || o.value === '');
+        if (row.key === 'quality' && !model.mediaGenerate && !registered && !doc?.params?.some(p => p.name === 'quality')) {
+          options = options.filter(o => model.qualities?.includes(o.value));
+        }
+        if (row.key === 'count') options = options.filter(o => Number.isInteger(Number(o.value)) && Number(o.value) > 0);
+        if (!options.length || model.chatImage && (row.key === 'quality' || !core.has(row.key))) continue;
+        modelRows.push(row);
+        add(row.key, labels[row.key] || row.label || name, options.map(o => ({
+          value: String(o.value), label: optionLabel(row, o)
+        })), row.default, !core.has(row.key));
+      }
+      if (!rows) {
+        add('aspectRatio', labels.aspectRatio, plain(['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '21:9', '9:21', '2:1', '1:2', '5:4', '4:5']), '1:1');
+        add('resolution', labels.resolution, plain(['1K', '2K', '4K']), '1K');
+        if (!model.chatImage) add('quality', labels.quality, plain(model.qualities || []), 'standard');
+        add('count', labels.count, plain([1, 2, 4]), '1');
+      }
+      const customSizeField = doc?.params?.find(p => p.name === 'size' && p.type === 'input');
+      const customSize = settings => customSizeField && settings.sizeMode === 'custom';
+      if (customSizeField) {
+        add('sizeMode', '尺寸设置', [{value:'preset',label:'按比例和分辨率'}, {value:'custom',label:'自定义尺寸'}], 'preset', true);
+        fields.push({key:'customSize', label:customSizeField.label || '自定义尺寸', inputType:'text',
+          placeholder:'例如 1536x864 或 auto', default:'', advanced:true, visible:customSize});
+        for (const field of fields.filter(f => ['aspectRatio','resolution'].includes(f.key))) {
+          field.visible = settings => !customSize(settings);
+        }
+      }
+      const promptField = doc?.params?.find(p => p.name === 'prompt');
+      const maxPrompt = Number(promptField?.description?.match(/(?:最多|不超过)\s*(\d+)\s*字/)?.[1]) || 0;
+
+      const cameraDefaults = defaultCameraControl();
+      if (CAMERA_COLUMNS.some(col => cameraLibraryItems(col.key).length)) {
+        add('useCamera', '摄像机控制', [{ value: 'off', label: '关闭' }, { value: 'on', label: '开启' }], 'off', true);
+        for (const col of CAMERA_COLUMNS) {
+          const key = 'camera_' + col.key;
+          const options = cameraLibraryItems(col.key).map(item => ({ value: item.key, label: item.name || item.key }));
+          if (options.length) {
+            add(key, col.title, options, cameraDefaults[col.key], true);
+            fields[fields.length - 1].visible = settings => settings.useCamera === 'on';
+          }
+        }
+      }
+      const valueOf = (settings, key) => settings[key] ?? fields.find(f => f.key === key)?.default;
+      const limits = model.imageReferences || {};
+      const references = () => limits.max === 0 ? [] : [{
+        key: 'referenceImages', label: '参考图片', kinds: ['image'], min: limits.min || 0, max: limits.max ?? Infinity
+      }];
+      function selectedParams(settings) {
+        const selected = {};
+        for (const row of modelRows) {
+          if (customSize(settings) && ['aspectRatio', 'resolution'].includes(row.key)) continue;
+          if (row.key !== 'count') selected[row.field || row.key] = valueOf(settings, row.key);
+        }
+        return selected;
+      }
+      function cameraText(settings) {
+        if (settings.useCamera !== 'on') return '';
+        const camera = { enabled: true };
+        for (const col of CAMERA_COLUMNS) camera[col.key] = valueOf(settings, 'camera_' + col.key);
+        return cameraControlPromptText(camera);
+      }
+      function customSizeError(input) {
+        if (input === 'auto') return '';
+        const match = input.match(/^(\d{1,5})x(\d{1,5})$/);
+        if (!match) return '请输入像素尺寸，例如 1536x864，或填写 auto。';
+        const [w, h] = match.slice(1).map(Number);
+        if (w % 16 || h % 16 || w > 3*h || h > 3*w || w*h < 655360 || w*h > 8294400) {
+          return '宽高须为 16 的倍数，比例在 1:3 到 3:1 之间，总像素在 655360 到 8294400 之间。';
+        }
+        return '';
+      }
+      function channelAccepts(group, params) {
+        const includes = (values, value) => values.some(v => String(v).toLowerCase() === String(value).toLowerCase());
+        if (Object.entries(group.supported_options || {}).some(([name, options]) =>
+          params[name] != null && params[name] !== '' && !includes(options, params[name]))) return false;
+        return !(group.capability_rules || []).some(rule => rule.effect === 'reject' && rule.when?.every(condition => {
+          if (condition.source === 'internal') return false;
+          const value = params[condition.param];
+          if (condition.op === 'count_gt') return Array.isArray(value) && value.length > Number(condition.value);
+          return condition.op === 'in' && value != null && includes(condition.values || [], value);
+        }));
+      }
+      return {
+        fields, references,
+        restoreLegacy(job) {
+          const legacy = job.generationSettings || {};
+          const summary = job.inputSummary || {};
+          const extras = {...legacy.modelOptions, ...summary.modelOptions};
+          const settings = {};
+          const size = String(job.size || summary.size || legacy.resolution || '').toLowerCase();
+          const quality = legacy.quality || summary.quality;
+          const dimensions = size.match(/^(\d+)x(\d+)$/);
+          for (const field of fields) {
+            if (!field.options?.length) continue;
+            const row = modelRows.find(r => r.key === field.key);
+            const candidates = [legacy[field.key], row && extras[row.field || row.key]];
+            if (field.key === 'quality') {
+              candidates.push(quality, {medium:'standard', standard:'medium', hd:'high'}[quality]);
+            }
+            if (field.key === 'aspectRatio') {
+              candidates.push(legacy.aspect, isAutoAspect(size) ? size :
+                field.options.find(o => resolutionMatchesAspect(size, o.value))?.value);
+            }
+            if (field.key === 'resolution') {
+              candidates.push(size);
+              if (dimensions) {
+                const longSide = Math.max(Number(dimensions[1]), Number(dimensions[2]));
+                const tiers = field.options.filter(o => /^\d+(?:\.\d+)?k$/i.test(o.value));
+                tiers.sort((a,b) => Math.abs(parseFloat(a.value)*1024-longSide) - Math.abs(parseFloat(b.value)*1024-longSide));
+                candidates.push(tiers[0]?.value);
+              }
+            }
+            for (const candidate of candidates) {
+              if (candidate == null) continue;
+              const option = field.options.find(o => o.value.toLowerCase() === String(candidate).toLowerCase());
+              if (option) { settings[field.key] = option.value; break; }
+            }
+          }
+          const explicitSize = typeof extras.size === 'string' ? extras.size.trim().toLowerCase() : '';
+          if (customSizeField && (explicitSize || dimensions)) {
+            const pixels = explicitSize || size;
+            if (!customSizeError(pixels) && (explicitSize || !settings.aspectRatio || !settings.resolution ||
+                aspectToResolution(settings.aspectRatio, settings.resolution) !== pixels)) {
+              settings.sizeMode = 'custom';
+              settings.customSize = pixels;
+            }
+          }
+          // Older image jobs retained only referenceCount, not the original reference handles.
+          return {settings,refs:{}};
+        },
+        submissionCount(settings) {
+          const count = fields.find(f => f.key === 'count');
+          return count ? Number(count.options.find(o => o.value === String(settings.count))?.value ?? count.default) : 1;
+        },
+        validate(settings, refs, prompt = '') {
+          const count = (refs.referenceImages || []).length;
+          if (count < (limits.min || 0)) return '请添加参考图片。';
+          if (limits.max != null && count > limits.max) return '此模型最多支持 ' + limits.max + ' 张参考图片。';
+          if (promptField?.required && !prompt.trim()) return '此模型需要提示词，请描述想要生成或修改的内容。';
+          if (maxPrompt && Array.from([prompt, cameraText(settings)].filter(Boolean).join('\n')).length > maxPrompt) {
+            return '此模型的提示词最多支持 ' + maxPrompt + ' 字符（含摄像机参数）。';
+          }
+          if (customSize(settings)) {
+            const input = String(settings.customSize || '').trim().toLowerCase();
+            const error = customSizeError(input);
+            if (error) return error;
+          }
+          const params = selectedParams(settings);
+          params.images = refs.referenceImages || [];
+          for (const row of modelRows) {
+            const name = row.field || row.key;
+            const value = params[name];
+            if (value && !contractControlOptions(model, name, [value], params).length) return (row.label || name) + '与当前选项不兼容，请调整后再生成。';
+          }
+          if (doc?.channel_constraints?.length && !doc.channel_constraints.some(g => channelAccepts(g, params))) {
+            return '此模型没有支持这组参数和参考图片的线路，请调整参数或减少参考图片。';
+          }
+          return '';
+        },
+        payload(settings, refs, prompt) {
+          const aspect = valueOf(settings, 'aspectRatio');
+          const resolution = valueOf(settings, 'resolution');
+          const quality = valueOf(settings, 'quality');
+          const pixels = /^\d+x\d+$/i.test(resolution || '');
+          const auto = isAutoAspect(aspect) || isAutoAspect(resolution);
+          let size = pixels ? resolution : auto ? 'auto' : aspectToResolution(aspect || '1:1', resolution || '1K');
+          const modelOptions = {};
+          const imageSpec = {};
+          for (const row of modelRows) {
+            if (customSize(settings) && ['aspectRatio','resolution'].includes(row.key)) continue;
+            const value = valueOf(settings, row.key);
+            if (!core.has(row.key)) modelOptions[row.field || row.key] = value;
+            else if (model.mediaGenerate && row.key !== 'count') imageSpec[row.key] = value;
+          }
+          if (customSize(settings)) {
+            size = String(settings.customSize).trim().toLowerCase();
+            if (model.mediaGenerate) modelOptions.size = size;
+          }
+          const request = { size, referenceImages: (refs.referenceImages || []).map(item => item.url), modelOptions };
+          if (quality) request.quality = quality;
+          if (Object.keys(imageSpec).length) request.imageSpec = imageSpec;
+          const text = cameraText(settings);
+          if (text) request.prompt = [prompt, text].filter(Boolean).join('\n');
+          return request;
+        }
+      };
     }
 
     let box3DStarting=false;
@@ -16614,6 +17078,7 @@ const nodeTypeNames = { prompt: '文本节点', image: '图片节点', audio: '�
       // （连带弹出快捷工具栏、把提示词 Dock 钉到该卡片下方）。选中只由用户点击卡片产生。
       clearNodeSelection();
       syncInspectorToNode(null);
+      savedCanvasSignature = canvasSignature(projectSnapshot());
       resumeJobBindings();
       void resumeGenerationJobs();
     }
@@ -16638,6 +17103,22 @@ const nodeTypeNames = { prompt: '文本节点', image: '图片节点', audio: '�
       const name = $('#projectName'); if (name) name.textContent = '';
     }
 
+    async function openCanvasFilm() {
+      if (!state.projectId || state.projectLoadPending) return showToast('请等待画布载入后打开成片工作台', 'ⓘ');
+      const projectId = state.projectId;
+      const workspace = currentWorkspaceId();
+      const view = navigationEpoch;
+      if (state.projectIsDraft) {
+        // The embedded editor saves independently, so give it a durable canvas before it opens.
+        state.draftPersistenceRequested = true;
+        if (await saveProject() !== true) return showToast('未能保存剪辑所属画布，请重试', '×');
+      }
+      if (state.projectId !== projectId || currentWorkspaceId() !== workspace || view !== navigationEpoch || workspaceNavigationPending) return;
+      return window.CanvasFlowFilm?.open({ api, toast:showToast, onOpen:agentEnterFilm, onClose:agentLeaveFilm,
+        getCanvas:graphSnapshot, onEffects:agentApplyEffects, onReference:agentReferenceFilm,
+        context:{projectId, title:state.projectName || '当前画布成片', headers:workspaceHeader()} });
+    }
+
     function activateFallbackProject() {
       const missingId = state.projectId;
       clearCurrentProject();
@@ -16652,13 +17133,17 @@ const nodeTypeNames = { prompt: '文本节点', image: '图片节点', audio: '�
       const requestId = state.projectNavigationRequest = (state.projectNavigationRequest || 0) + 1;
       const viewEpoch = navigationEpoch;
       const headers = { ...workspaceHeader() };
-      const result = await api(`/api/projects/${encodeURIComponent(projectId)}`, { headers });
+      let result;
+      try {
+        result = await api(`/api/projects/${encodeURIComponent(projectId)}`, { headers, throwOnError: true });
+      } catch (error) {
+        if (error.status && !isStandaloneFile()) return showToast(error.message || '项目暂时无法打开', '×');
+      }
       if (requestId !== state.projectNavigationRequest || viewEpoch !== navigationEpoch
           || JSON.stringify(headers) !== JSON.stringify(workspaceHeader())) return;
       const project = result?.project || findLocalProject(projectId);
       if (!project) return showToast('项目暂时无法打开', '×');
       applyLoadedProject(project);
-      saveProject();
       showToast(`已打开${state.projectName}`, '↗');
     }
 
@@ -16700,7 +17185,7 @@ const nodeTypeNames = { prompt: '文本节点', image: '图片节点', audio: '�
 
     function exportProject() {
       if (!requireCurrentProject()) return;
-      const blob = new Blob([JSON.stringify({ projectId: state.projectId, projectName: state.projectName, ...graphSnapshot(), zoom: state.zoom, panX: state.panX, panY: state.panY, generationSettings: state.generationSettings, advancedSettings: state.advancedSettings }, null, 2)], { type: 'application/json' });
+      const blob = new Blob([JSON.stringify(projectSnapshot(), null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `${state.projectName || 'canvasflow-project'}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); showToast('项目 JSON 已导出', '↓');
     }
 
@@ -17271,11 +17756,35 @@ const active=currentWorkspace();
     // 进入另一个工作区。两个空间的数据、收藏、画布都不同，而内存里的状态有二十来处，
     // 手工清理漏掉任何一处都会把上个空间的东西带过来 —— 所以这里直接重载页面，
     // 让所有状态从零按新空间重新拉取（这条以前踩过：清了界面没清状态，界面是新的但行为还是旧的）。
-    function enterWorkspace(workspace) {
-      if (!workspace?.id) return;
-      stashWorkspaceLocalState(currentWorkspaceId());
+    let workspaceNavigationPending = false;
+    async function saveBeforeWorkspaceChange() {
+      const id = state.projectId;
+      if (!id || state.projectLoadPending || (state.projectOwnerId && state.projectOwnerId !== currentUser().id)) return true;
+      try {
+        let timer;
+        do {
+          timer = state.saveTimer;
+          clearTimeout(timer);
+          if (await saveProject() === false) throw new Error('当前画布尚未保存成功，请先重试保存');
+          if (state.projectId !== id) return false;
+        } while (state.saveTimer !== timer);
+        return true;
+      } catch (error) {
+        showToast(error.message || '当前画布尚未保存成功，请先重试保存', 'ⓘ');
+        return false;
+      }
+    }
+    async function enterWorkspace(workspace, { projectId = '', deletedWorkspace = false } = {}) {
+      if (!workspace?.id || workspaceNavigationPending) return;
+      workspaceNavigationPending = true;
+      if (!deletedWorkspace && !await saveBeforeWorkspaceChange()) {
+        workspaceNavigationPending = false;
+        return;
+      }
+      if (!deletedWorkspace) stashWorkspaceLocalState(currentWorkspaceId());
       identity.write({ ...identity.read(), workspaceId: workspace.id, workspace: workspace.name });
       applyWorkspaceLocalState(workspace.id);
+      updateProjectUrl(projectId);
       try { sessionStorage.setItem('canvasflow-workspace-switched', workspace.name); } catch { /* private browsing */ }
       $('#workspacePopover')?.classList.remove('open');
       window.location.reload();
@@ -17298,13 +17807,15 @@ const active=currentWorkspace();
       if (workspace.isDefault) return showToast('默认工作区不能删除', '×');
       const confirmed = await askConfirm({ title: '删除工作区', message: `确定删除「${workspace.name}」吗？空间里的项目和素材不会被删除，会回到你的默认工作区。`, confirmText: '删除', danger: true, icon: '⌫' });
       if (!confirmed) return;
+      const deletingActive = currentWorkspaceId() === workspaceId;
+      if (deletingActive && !await saveBeforeWorkspaceChange()) return;
       const result = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}`, { method: 'DELETE' }).catch(() => null);
       if (!result?.deleted) return showToast('删除失败，请稍后重试', '×');
       const remaining = list.filter(item => item.id !== workspaceId);
       workspacesStorage.set(remaining);
       dropWorkspaceLocalState(workspaceId);
       $('#workspacePopover')?.classList.remove('open');
-      if (currentWorkspaceId() === workspaceId) return enterWorkspace(remaining.find(item => item.isDefault) || remaining[0]);
+      if (deletingActive) return enterWorkspace(remaining.find(item => item.isDefault) || remaining[0], { deletedWorkspace: true });
       applyIdentity();
       showToast(`已删除工作区「${workspace.name}」，里面的内容已回到默认工作区`, '⌫');
     }
@@ -17364,8 +17875,11 @@ const active=currentWorkspace();
       if (!target || target === currentWorkspaceId()) return;
       const card = $$('.project-card').find(item => item.dataset.projectId === projectId);
       const label = card?.querySelector('strong')?.textContent?.trim() || '这个项目';
-      const result = await api(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PUT', body: JSON.stringify({ workspaceId: target }) }).catch(() => null);
-      if (!result?.project) return showToast('移动失败，请稍后重试', '×');
+      if (state.projectId === projectId && !await saveBeforeWorkspaceChange()) return;
+      try {
+        const result = await api(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PUT', body: JSON.stringify({ workspaceId: target }), throwOnError: true });
+        if (!result?.project) throw new Error('移动失败，请稍后重试');
+      } catch (error) { return showToast(error.message || '移动失败，请稍后重试', '×'); }
       const workspace = readWorkspaces().find(item => item.id === target);
       removeLocalProject(projectId);
       // 项目已经不属于这个空间了：画布上如果正开着它，得先摘掉，
@@ -17916,7 +18430,7 @@ const active=currentWorkspace();
         if(item.workspaceId&&item.workspaceId!==currentWorkspaceId()){
           const workspace=readWorkspaces().find(w=>w.id===item.workspaceId);
           if(!workspace)return showToast('工作区不可用','×');
-          updateProjectUrl(item.sourceId);enterWorkspace(workspace);return;
+          return enterWorkspace(workspace, { projectId: item.sourceId });
         }
         return openProject(item.sourceId);
       },openWorks:()=>renderProfileCenter('works'),openLibrary:()=>{
@@ -20866,12 +21380,7 @@ const active=currentWorkspace();
       if (id === 'profileBtn') { event.stopPropagation(); return togglePopover('profileMenu', target.closest('#profileBtn')); }
       if (id === 'adminMenuBtn') { $('#profileMenu')?.classList.remove('open'); return openAdminCenter(); }
       if (id === 'filmWorkbenchBtn') {
-        return window.CanvasFlowFilm?.open({api, toast:showToast, onOpen:agentEnterFilm, onClose:agentLeaveFilm,
-          getCanvas:graphSnapshot,onEffects:agentApplyEffects,onReference:agentReferenceFilm,context:{
-          projectId:state.projectId || '', draft:Boolean(state.projectIsDraft),
-          title:state.projectIsDraft ? '新建画布' : (state.projectName || '当前画布成片'),
-          headers:workspaceHeader()
-        }});
+        return openCanvasFilm();
       }
       if (id === 'helpBtn') return showHelp();
       if (id === 'helpClose' || id === 'helpGotIt' || event.target.id === 'helpBackdrop') return hideHelp();
@@ -21558,36 +22067,42 @@ const active=currentWorkspace();
       const bindings = state.jobBindings || [];
       if (!bindings.length) return;
       const context = generationContext(null);
-      // 任务记录可能被删除或被 jobs.jsonl 裁剪；不设上限轮询会让生成按钮永久禁用。
-      const MAX_TICKS = 900; // 700ms × 900 ≈ 10.5 分钟
-      let ticks = 0;
+      const startedAt = Date.now();
       let polling = false;
       const timer = state.jobTimer = setInterval(async () => {
         if (polling || !generationContextActive(context) || state.jobTimer !== timer) return;
         polling = true;
         try {
-          ticks += 1;
           for (const binding of bindings) {
-            if (binding.done) continue;
+            if (binding.done || Date.now() < (binding.nextPollAt || 0)) continue;
             const output = document.querySelector(`[data-node-id="${CSS.escape(binding.outputId)}"]`);
             if (!output || (output.dataset.node !== 'output' && output.dataset.node !== 'model')) { binding.done = true; continue; }
-            const poll = await api(`/api/jobs/${encodeURIComponent(binding.jobId)}`, { headers: context.headers });
-            if (!generationContextActive(context) || state.jobTimer !== timer) return;
-            const job = poll?.job;
-            if (!job) {
-              binding.misses = (binding.misses || 0) + 1;
+            let job;
+            try {
+              const poll = await api(`/api/jobs/${encodeURIComponent(binding.jobId)}`, { headers: context.headers, throwOnError:true });
+              job = poll?.job;
+              if (!job) throw new Error('任务状态暂时不可用');
+            } catch (error) {
+              if (!generationContextActive(context) || state.jobTimer !== timer) return;
+              binding.misses = error.status === 404 ? (binding.misses || 0) + 1 : 0;
               if (binding.misses >= 3) {
                 binding.done = true; binding.failed = true;
                 renderJobProgress(output, { status: 'failed', error: '任务记录已不存在（可能被删除或清理），无法继续跟踪进度' });
+              } else {
+                if (!binding.retryDelay && !silent) showToast('暂时无法读取视频任务进度，将自动重新连接', 'ⓘ');
+                binding.retryDelay = Math.min(30000, (binding.retryDelay || 700) * 2);
+                binding.nextPollAt = Date.now() + binding.retryDelay;
               }
               continue;
             }
+            if (!generationContextActive(context) || state.jobTimer !== timer) return;
             binding.misses = 0;
+            binding.retryDelay = 0;
+            // Lengthy provider jobs still need their result. Poll less often after ten minutes.
+            binding.nextPollAt = Date.now() - startedAt > 600000 ? Date.now() + 5000 : 0;
             output.dataset.jobId = job.id || binding.jobId;
             if (renderJobProgress(output, job)) { binding.done = true; binding.failed = job.status === 'failed'; }
           }
-          const timedOut = ticks >= MAX_TICKS;
-          if (timedOut) bindings.forEach(item => { item.done = true; });
           if (bindings.every(item => item.done)) {
             stopJobPolling();
             state.jobBindings = [];
@@ -21601,7 +22116,6 @@ const active=currentWorkspace();
             if (!silent) {
               const failed = bindings.some(item => item.failed);
               showToast(failed ? '视频模型生成失败，可右键输出卡片重试' : '视频已生成，可右键输出卡片下载', failed ? '×' : '✓');
-              if (timedOut && !failed) showToast('生成等待超时，可稍后刷新画布查看最新进度', 'ⓘ');
             }
           }
         } finally { polling = false; }
@@ -23380,6 +23894,16 @@ const active=currentWorkspace();
         }
         if (jobs.length < 200) break;
       }
+      // A recovered copy owns a new project ID. Its pending image/audio nodes still
+      // refer to the original paid jobs; reattach by the persisted ID, never resubmit.
+      for (const node of document.querySelectorAll('.image-node[data-generation-job-id], .audio-node[data-generation-job-id]')) {
+        const { nodeId, generationJobId, appliedGenerationJobId } = node.dataset;
+        if (!generationJobId || generationJobId === 'pending' || generationJobId === appliedGenerationJobId || latest.has(nodeId)) continue;
+        const result = await api('/api/jobs/' + encodeURIComponent(generationJobId), { headers:context.headers });
+        if (!generationContextActive(context)) return;
+        const job = result?.job;
+        if (job?.id === generationJobId && job.outputId === nodeId && job.kind === node.dataset.node) latest.set(nodeId, job);
+      }
       await Promise.allSettled(Array.from(latest.values(), async job => {
         if (!generationContextActive(context) || !job.id || job.status === 'failed') return;
         const node = document.querySelector(`.flow-node[data-node-id="${CSS.escape(String(job.outputId))}"]`);
@@ -23672,40 +24196,30 @@ const active=currentWorkspace();
       }
     }
 
-    async function collectVideoReferenceImages(output) {
+    async function collectVideoReferenceImages(output, mode) {
       const images = [];
-      const add = value => {
-        const data = String(value || '').trim();
-        if ((data.startsWith('data:image/') || data.startsWith('http://') || data.startsWith('https://')) && !images.includes(data)) images.push(data);
-      };
-      // 文本引用只进提示词，不当参考图。
-      activeReferences().forEach(item => { if (!item?.text) add(item?.data); });
       const edges = window.CanvasFlowConnections?.getEdges?.() || [];
       const byId = new Map($$('.flow-node').map(node => [node.dataset.nodeId, node]));
-      // 刷新后 previewData 只存本机缓存，可能为空；所有只剩 previewAsset 的图片节点都要回源，
-      // 否则多图参考时第二张之后会悄悄缺失。
-      const needFetch = [];
-      const needMediaFetch = [];
-      for (const edge of edges.filter(item => item.target === output?.dataset.nodeId)) {
-        const node = byId.get(edge.source);
-        if (node?.dataset.node === 'image') {
-          const handles = nodeImageHandles(node);
-          add(handles.previewData);
-          if (handles.previewAsset) needFetch.push(handles.previewAsset);
-          // ★ 只剩落盘直链的节点（Agent 生图）也算参考图，否则图生视频会悄悄少一张。
-          //   注意 `add()` 只收 data:/http(s)，相对路径 `/media/...` 得先转成 data URI。
-          else if (handles.previewMedia) needMediaFetch.push(handles.previewMedia);
+      const handles = edges.filter(edge => edge.target === output?.dataset.nodeId)
+        .map(edge => byId.get(edge.source)).filter(node => node?.dataset.node === 'image').map(nodeImageHandles);
+      for (const ref of activeReferences()) {
+        if (ref?.linked || ref?.text || ref?.video || ref?.audio || typeof ref?.data !== 'string' || !ref.data) continue;
+        handles.push(ref.data.startsWith('/media/') ? { previewMedia:ref.data } : { previewData:ref.data });
+      }
+      // Resolve each frame in connection order, including frames restored from the asset library.
+      for (const frame of handles) {
+        const localMedia = /^\/media\/[\w.-]+$/.test(frame.previewMedia || '') ? frame.previewMedia : '';
+        let data = localMedia || frame.previewData || '';
+        if (!data && frame.previewAsset) data = await fetchAssetData(frame.previewAsset);
+        if (!data && /^https?:\/\//i.test(frame.previewMedia || '')) data = frame.previewMedia;
+        if (!localMedia && !/^(?:data:image\/|https?:\/\/)/i.test(data)) {
+          if (mode === 'frames2video') throw new Error(`第 ${images.length + 1} 张参考图无法读取，请重新选择后生成`);
+          continue;
         }
+        if (mode === 'frames2video' || !images.includes(data)) images.push(data);
+        if (mode === 'singleImage2video' || (mode === 'frames2video' && images.length === 2)) break;
       }
-      for (const assetId of needFetch) {
-        if (images.length >= 2) break;
-        add(await fetchAssetData(assetId));
-      }
-      for (const mediaUrl of needMediaFetch) {
-        if (images.length >= 2) break;
-        add(await fetchMediaUrlAsDataUrl(mediaUrl));
-      }
-      return images.slice(0, 2);
+      return images;
     }
 
     // ★★★ r873：「源视频」收集 —— 视频超分 / 视频编辑这类模型**必传**一段源视频。
@@ -23740,9 +24254,8 @@ const active=currentWorkspace();
         if (!isVideoNode && !(kind === 'model' || kind === 'output')) continue;
         if (!isVideoNode && !String(node.dataset.videoUrl || preview?.dataset?.videoUrl || '').trim()) continue;
         add(node.dataset.videoUrl || preview?.dataset?.videoUrl);
-        if (videos.length) break;
       }
-      return videos.slice(0, 1);
+      return videos;
     }
 
     async function generateVideo() {
@@ -23754,7 +24267,7 @@ const active=currentWorkspace();
       if ((state.jobBindings || []).some(binding => binding.outputId === output.dataset.nodeId && !binding.done)) return showToast('这个节点已有视频任务正在生成', 'ⓘ');
       const upstream = collectUpstreamInputs(output);
       const prompt = upstream.prompt;
-      if (!prompt) return showToast('请先填写提示词再生成', '×');
+      if (!prompt && !currentModelContract(currentVideoModelEntry())?.promptOptional) return showToast('请先填写提示词再生成', '×');
       const context = generationContext(output);
       const settings = JSON.parse(JSON.stringify(state.generationSettings || defaultGenerationSettings()));
       const advancedSettings = JSON.parse(JSON.stringify(state.advancedSettings || {}));
@@ -23789,7 +24302,7 @@ const active=currentWorkspace();
       try {
         // Both readers begin on the original canvas; no current-state reads after awaiting.
         const [images, sourceAudios] = await Promise.all([
-          collectVideoReferenceImages(output), canvasflowVideoAudioInputs(output),
+          collectVideoReferenceImages(output, settings.referenceMode), canvasflowVideoAudioInputs(output),
         ]);
         if (!generationContextActive(context)) return;
         if (!isKnownReferenceMode(settings.referenceMode) && settings.videoMode === 'image-to-video' && !images.length) return showToast('图生视频需要先上传参考图或连接图片节点', '×');
@@ -25787,7 +26300,8 @@ const ids=new Set(state.assetFavorites||readAssetFavorites());
         const result = await api('/api/agent/skills', {
           method: 'POST',
           headers: context.headers,
-          body: JSON.stringify({ name: parsed.title, description: parsed.desc, prompt: parsed.prompt, icon: 'doc', source: 'import', files:[{path:'SKILL.md',content:text,primary:true}],primarySkillFilePath:'SKILL.md' }),
+          throwOnError: true,
+          body: JSON.stringify({ createOnly: true, name: parsed.title, description: parsed.desc, prompt: parsed.prompt, icon: 'doc', source: 'import', files:[{path:'SKILL.md',content:text,primary:true}],primarySkillFilePath:'SKILL.md' }),
         });
         if (!generationContextActive(context)) return false;
         if (!result?.skill) { showToast('导入失败，请检查文件内容', '×'); return false; }
@@ -25796,8 +26310,8 @@ const ids=new Set(state.assetFavorites||readAssetFavorites());
         window.dispatchEvent(new Event('canvasflow:skills-changed'));
         showToast(`已导入技能：${result.skill.name}`, '✓');
         return true;
-      } catch {
-        showToast('读取文件失败', '×');
+      } catch (error) {
+        if (generationContextActive(context)) showToast(error.message || '读取文件失败', '×');
         return false;
       }
     }
@@ -25805,17 +26319,19 @@ const ids=new Set(state.assetFavorites||readAssetFavorites());
     async function agentImportSkillFolder(files) {
       const context=generationContext(null);
       try {
-        const markdown=files.filter(file=>/\.(md|markdown)$/i.test(file.name));
-        if(!markdown.length||markdown.length>100)throw Error('请选择含 SKILL.md 的文件夹，最多 100 个 Markdown 文件');
-        if(markdown.reduce((sum,file)=>sum+file.size,0)>2_000_000)throw Error('Skill 文档总大小不能超过 2 MB');
-        const documents=await Promise.all(markdown.map(async file=>({path:(file.webkitRelativePath||file.name).replace(/^[^/]+\//,''),content:await file.text()})));
+        const picked=Array.from(files);
+        if(!picked.length||picked.length>100)throw Error('请选择含 SKILL.md 的文件夹，最多 100 个文档');
+        const unsupported=picked.find(file=>!/\.(md|markdown|txt)$/i.test(file.name));
+        if(unsupported)throw Error('文件夹含有暂不支持的文件：'+(unsupported.webkitRelativePath||unsupported.name)+'。本次未导入');
+        if(picked.reduce((sum,file)=>sum+file.size,0)>2_000_000)throw Error('Skill 文档总大小不能超过 2 MB');
+        const documents=await Promise.all(picked.map(async file=>({path:(file.webkitRelativePath||file.name).replace(/^[^/]+\//,''),content:await file.text()})));
         const primary=documents.find(file=>/^SKILL\.md$/i.test(file.path));
         if(!primary)throw Error('文件夹根目录需要包含 SKILL.md');
         primary.primary=true;
         const parsed=agentParseSkillMarkdown(primary.content,files[0].webkitRelativePath?.split('/')[0]||'导入的技能');
         const prompt=documents.map(file=>`文件：${file.path}\n${file.content}`).join('\n\n');
         if(!generationContextActive(context))return false;
-        const result=await api('/api/agent/skills',{method:'POST',headers:context.headers,throwOnError:true,body:JSON.stringify({name:parsed.title,description:parsed.desc,prompt,icon:'doc',source:'import',files:documents,primarySkillFilePath:primary.path})});
+        const result=await api('/api/agent/skills',{method:'POST',headers:context.headers,throwOnError:true,body:JSON.stringify({createOnly:true,name:parsed.title,description:parsed.desc,prompt,icon:'doc',source:'import',files:documents,primarySkillFilePath:primary.path})});
         if(!generationContextActive(context))return false;
         await agentLoadUserSkills();window.dispatchEvent(new Event('canvasflow:skills-changed'));
         showToast(`已导入技能：${result.skill.name}（${documents.length} 个文件）`,'✓');return true;

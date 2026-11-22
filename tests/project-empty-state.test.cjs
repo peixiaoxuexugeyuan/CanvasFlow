@@ -176,10 +176,43 @@ function draftSavingContext(api, nodes=[{id:'first',type:'prompt',copy:'hello'}]
     $:selector=>labels[selector.slice(1)]||null,writeLocalProject:payload=>env.calls.push(['cache',payload.nodes.length]),
     refreshProjectBadge:()=>env.calls.push(['badge'])});
   env.Queue=require('../project-save-queue.js');
-  const queueDefinition=source.slice(source.indexOf('    const projectSaveQueue='),source.indexOf('    function saveProject()'));
-  vm.runInContext('const createdDraftProjectIds=new Set(); window.CanvasFlowProjectSaveQueue=Queue;\n'+queueDefinition+'\nthis.projectSaveQueue=projectSaveQueue;',env);
+  const queueDefinition=source.slice(source.indexOf('    const createdDraftProjectIds'),source.indexOf('    function saveProject()'));
+  vm.runInContext('window.CanvasFlowProjectSaveQueue=Queue;\n'+queueDefinition+'\nthis.projectSaveQueue=projectSaveQueue;',env);
   return {env,nodes,labels};
 }
+
+test('a conflicted canvas can reopen its own recoverable snapshot after a reload', async()=>{
+  const store=new Map();
+  const storage={
+    get length(){return store.size;},key:i=>[...store.keys()][i],getItem:k=>store.get(k)||null,
+    setItem:(k,v)=>store.set(k,v),removeItem:k=>store.delete(k),
+  };
+  const conflict=Object.assign(new Error('conflict'),{status:409});
+  const {env,nodes}=draftSavingContext(async()=>{throw conflict;});
+  env.localStorage=storage;
+  env.state.projectIsDraft=false;
+  env.state.jobBindings=[{jobId:'video-A',outputId:'clip'}];
+  assert.equal(await env.saveProject(),false);
+  nodes[0].copy='latest unsynced edit';await env.saveProject();
+  const recoveredCalls=[];
+  const fresh=draftSavingContext(async(_path,options)=>{
+    const body=JSON.parse(options.body);recoveredCalls.push(body);
+    return {project:{id:body.id}};
+  }).env;
+  fresh.localStorage=storage;fresh.openProject=async id=>recoveredCalls.push(id);
+  const [[key,copy]]=fresh.currentRecoveryCopies();
+  assert.equal(copy.nodes[0].copy,'latest unsynced edit');
+  assert.equal(copy.jobBindings[0].jobId,'video-A');
+  assert.equal(copy.shared,false);
+  assert.notEqual(copy.id,env.state.projectId);
+  fresh.workspaceHeader=()=>({'X-Workspace-Id':'other-workspace'});
+  assert.equal(fresh.currentRecoveryCopies().length,0);
+  fresh.workspaceHeader=env.workspaceHeader;
+  await fresh.restoreConflictCopy(key,copy,{disabled:false});
+  assert.equal(recoveredCalls[0].restoreConflictCopy,true);
+  assert.equal(recoveredCalls[1],copy.id);
+  assert.equal(fresh.currentRecoveryCopies().length,0);
+});
 
 test('first node creates a project once, queued edits use its accepted revision, and later empty state remains saved',async()=>{
   let release;const requests=[];

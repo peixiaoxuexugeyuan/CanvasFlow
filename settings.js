@@ -913,7 +913,7 @@ return TAB_DEFS.filter(tab => !['providers','pricing'].includes(tab.id));
     const first = keyInheritSource(group) || {};
     return first.apiKeySet
       ? `已设置 ${first.apiKeyHint || ''}，留空表示不修改`.trim()
-      : '输入供应商提供的密钥';
+      : (group.apiKeyHint || first.apiKeyHint || '输入供应商提供的密钥');
   }
 
   function renderSelectOptions(options, current) {
@@ -1362,7 +1362,7 @@ return TAB_DEFS.filter(tab => !['providers','pricing'].includes(tab.id));
   }
 
   function renderProviderModelCard(model) {
-    const hint = model.apiKeySet ? `密钥已设置 ${esc(model.apiKeyHint || '')}` : '未设置密钥';
+    const hint = model.apiKeySet ? `密钥已设置 ${esc(model.apiKeyHint || '')}` : esc(model.apiKeyHint || '未设置密钥');
     const usages = modelUsages(model);
     const profile = REQUEST_PROFILE_OPTIONS.some(option => option.value === model.requestProfile) ? (model.requestProfile || 'auto') : 'auto';
     return `<div class="provider-model-card ${model.enabled ? 'is-checked' : ''}" data-model-id="${esc(model.id)}">
@@ -3223,7 +3223,7 @@ return TAB_DEFS.filter(tab => !['providers','pricing'].includes(tab.id));
 
   // ---------------------------------------------------------------- 通用设置
 
-  function releaseNotesMarkup(id, version = '1.0.1') {
+  function releaseNotesMarkup(id, version = '1.0.2') {
     return `<dialog class="about-updates-dialog" id="${esc(id)}" aria-labelledby="${esc(id)}Title">
         <header class="about-updates-heading"><h3 id="${esc(id)}Title"><span aria-hidden="true">✧</span> 近期更新</h3>
           <button type="button" class="about-dismiss" aria-label="关闭近期更新" data-updates-close>×</button>
@@ -3231,6 +3231,16 @@ return TAB_DEFS.filter(tab => !['providers','pricing'].includes(tab.id));
         <div class="about-updates-scroll" tabindex="0" aria-label="版本更新记录">
           <section class="about-release">
             <header><h4>v${esc(version)}</h4><span class="about-release-status">当前版本</span></header>
+            <ul>
+              <li><span class="about-change-type">改进</span><span>图片和视频生成台可直接选用素材库参考，视频参数随模型切换，支持首尾帧、全能参考与超分。</span></li>
+              <li><span class="about-change-type">修复</span><span>重开应用可继续查询已提交的生成任务，任务历史减少重复占用的磁盘空间。</span></li>
+              <li><span class="about-change-type">修复</span><span>同名导入会保留已有 Skill，退出或安装更新前会提醒保存正在编辑的 Skill。</span></li>
+              <li><span class="about-change-type">修复</span><span>移动项目时会保留 Agent 对话，重复启动应用也能保护运行中的 Blender 任务。</span></li>
+              <li><span class="about-change-type">改进</span><span>本地服务启动时会验证身份。重启后可继续安装已下载并通过校验的更新包。</span></li>
+            </ul>
+          </section>
+          <section class="about-release">
+            <header><h4>v1.0.1</h4></header>
             <ul>
               <li><span class="about-change-type">新增</span><span>桌面应用启动后自动检查更新，发现新版本可选择稍后更新或立即更新，并查看下载进度。</span></li>
               <li><span class="about-change-type">新增</span><span>关闭窗口时可选择收起到系统托盘或直接退出，支持记住选择。</span></li>
@@ -3358,7 +3368,7 @@ return TAB_DEFS.filter(tab => !['providers','pricing'].includes(tab.id));
         <div class="about-product">
           <div class="about-identity">
             <span class="about-logo" aria-hidden="true"><span class="brand-orb"></span></span>
-            <div><h3 class="cf-brand-prism">CanvasFlow</h3><p class="about-version" data-desktop-version>版本 1.0.1 · 浏览器预览</p></div>
+            <div><h3 class="cf-brand-prism">CanvasFlow</h3><p class="about-version" data-desktop-version>版本 1.0.2 · 浏览器预览</p></div>
           </div>
           <a class="about-link about-link-primary" href="https://video.zzzapi.xyz/" target="_blank" rel="noopener noreferrer">官方网站 <span aria-hidden="true">↗</span></a>
         </div>

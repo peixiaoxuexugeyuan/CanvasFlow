@@ -31,9 +31,14 @@ test('real NSIS legacy upgrade, safe uninstall, and pre-uninstall failure keep f
   write(stage,'resources/runtime/program.dll','new dll');
   const wrapper=prepareInstaller(stage), old=path.join(root,'old.exe'), next=path.join(root,'new.exe');
   const dummy=write(root,'old.bin','old app');
-  const moduleBase=path.resolve(__dirname,'../tools/desktop/node_modules/.pnpm');
-  const builder=fs.readdirSync(moduleBase).find(n=>n.startsWith('app-builder-lib@'));
-  const includes=path.join(moduleBase,builder,'node_modules/app-builder-lib/templates/nsis/include');
+  const builderRequire=require('node:module').createRequire(require.resolve('electron-builder',{paths:[path.resolve(__dirname,'../tools/desktop')]}));
+  const templates=path.join(path.dirname(builderRequire.resolve('app-builder-lib/package.json')),'templates/nsis');
+  const includes=path.join(templates,'include');
+  // Exercise the installed builder's branch with the UAC inner-instance predicate
+  // true, without changing Windows accounts or touching the real product registry.
+  const section=fs.readFileSync(path.join(templates,'installSection.nsh'),'utf8');
+  const dispatch=section.match(/^!ifdef ONE_CLICK\b[\s\S]*?(?=^Var \/GLOBAL keepShortcuts)/m);
+  assert(dispatch,'Missing production process-check dispatch');
   const installerInclude=path.resolve(__dirname,'../tools/desktop/installer.nsh');
   const compile=(name,body)=>{
     const script=write(root,name,body);
@@ -65,24 +70,24 @@ SilentInstall silent
 !addincludedir "${q(includes)}"
 !define INSTALL_REGISTRY_KEY "${key}"
 !define UNINSTALL_REGISTRY_KEY "${key}"
-!define UAC_IsInnerInstance '0 = 1'
+!define UAC_IsInnerInstance '1 = 1'
 Var PowerShellPath
 !macro IS_POWERSHELL_AVAILABLE
  StrCpy $PowerShellPath "$SYSDIR\\WindowsPowerShell\\v1.0\\powershell.exe"
 !macroend
 !macro _CHECK_APP_RUNNING
 !macroend
+!macro CHECK_APP_RUNNING
+ !insertmacro customCheckAppRunning
+!macroend
 !include "${q(wrapper)}"
 !define BUILD_UNINSTALLER
 !include "${q(installerInclude)}"
 !undef BUILD_UNINSTALLER
-Function .onInit
- !insertmacro customInit
-FunctionEnd
 OutFile "${q(next)}"
 InstallDir "${q(installed)}"
 Section
- !insertmacro customCheckAppRunning
+${dispatch[0]}
  CopyFiles /SILENT "$INSTDIR\\Uninstall CanvasFlow.exe" "${q(path.join(root,'run-old.exe'))}"
  ExecWait '"${q(path.join(root,'run-old.exe'))}" /S _?=$INSTDIR' $0
  SetOutPath "$INSTDIR"

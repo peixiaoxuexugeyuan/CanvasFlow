@@ -1,5 +1,6 @@
 """Film integration boundaries. Temporary local data; never call AI services."""
 import base64
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
@@ -54,6 +55,58 @@ class FilmRoutesTests(unittest.TestCase):
             self.assertEqual(self.request('POST', '/api/film/open', {}, headers={'X-Workspace-Id':'missing'})[0], 404)
             self.assertEqual(self.request('POST', '/api/film/open', {'projectId':'missing'})[0], 404)
             call.assert_not_called()
+
+    def test_moved_project_keeps_legacy_film_files_and_rejects_busy_transfers(self):
+        app = self.app
+        manager = app.FILM_WORKBENCH
+        source = app.default_workspace_id(app.LOCAL_CONTEXT['id'])
+        _, created, _ = self.request('POST', '/api/workspaces', {'name':'Target'})
+        target = created['workspace']['id']
+        _, result, _ = self.request('POST', '/api/projects', {'projectName':'Move with film'})
+        project = result['project']['id']
+        route = '/api/projects/' + project
+        headers = {'X-Workspace-Id':target}
+        key = hashlib.sha256(project.encode()).hexdigest()[:24]
+        old_folder = manager.workspace_home(source) / 'projects' / key
+        old_folder.mkdir(parents=True)
+        (old_folder / 'clip.txt').write_text('original')
+        self.assertEqual(self.request('GET', route, headers=headers)[0],403)
+        with patch.object(manager,'release_project',side_effect=FilmUnavailable('成片正忙')):
+            self.assertEqual(self.request('PUT', route, {'workspaceId':target})[0],409)
+        self.assertEqual(self.request('GET', route)[1]['project']['workspaceId'],source)
+        self.assertEqual(self.request('PUT', route, {'workspaceId':target})[0],200)
+        self.assertEqual(app.resolve_film_storage(target,project),source)
+        self.assertEqual(self.request('PUT', route, {'projectName':'Renamed'}, headers=headers)[0],200)
+        self.assertEqual(app.resolve_film_storage(target,project),source)
+        # An old build would have updated only workspaceId, leaving no storage marker.
+        rows = app.read_projects()
+        next(row for row in rows if row['id']==project).pop('filmStorageWorkspaceId')
+        app.write_file(app.PROJECTS_FILE, rows)
+        self.assertEqual(app.resolve_film_storage(target,project),source)
+        empty = manager.workspace_home(target)/'projects'/key/'Untitled'
+        (empty/'.film').mkdir(parents=True)
+        (empty/'film.html').write_text('<!doctype html>\n<html>\n<head>\n<meta charset="utf-8">\n'
+            '<meta name="viewport" content="width=1920, height=1080">\n</head>\n<body>\n</body>\n</html>\n')
+        self.assertEqual(app.resolve_film_storage(target,project),source)
+        second_edit = empty/'second.txt'
+        second_edit.write_text('second edit')
+        with self.assertRaises(app.FilmVersionChoice) as conflict:
+            app.resolve_film_storage(target,project)
+        self.assertEqual({v['directory'] for v in conflict.exception.versions}, {str(old_folder), str(empty.parent)})
+        status,choice,_ = self.request('POST','/api/film/open',{'projectId':project},headers=headers)
+        self.assertEqual((status,choice['error']), (409,'film_version_choice'))
+        self.assertEqual(len(choice['versions']),2)
+        invalid = {'projectId':project,'storageWorkspaceId':'unavailable-version'}
+        self.assertEqual(self.request('POST','/api/film/open',invalid,headers=headers)[0],400)
+        with patch.object(manager, 'call', return_value={'ok':True}):
+            request = {'projectId':project, 'storageWorkspaceId':source}
+            self.assertEqual(self.request('POST','/api/film/open',request,headers=headers)[0],200)
+            self.assertEqual(self.request('POST','/api/film/open',request,headers=headers)[0],200)
+        self.assertEqual(app.resolve_film_storage(target,project),source)
+        self.assertEqual(second_edit.read_text(),'second edit')
+        self.assertEqual(self.request('DELETE', route, headers=headers)[0],200)
+        self.assertFalse(old_folder.exists())
+        self.assertTrue(any(p.read_text()=='original' for p in (manager.workspace_home(source)/'recycle').rglob('clip.txt')))
 
     def test_empty_drafts_are_isolated_and_keep_their_key_after_first_node(self):
         before = self.app.read_projects()

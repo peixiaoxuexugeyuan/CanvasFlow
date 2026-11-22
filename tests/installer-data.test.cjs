@@ -55,11 +55,12 @@ test('production NSIS cannot enter legacy uninstall through the UAC branch that 
   const installer=fs.readFileSync(path.join(templates,'installer.nsi'),'utf8');
   const section=fs.readFileSync(path.join(templates,'installSection.nsh'),'utf8');
   const hooks=fs.readFileSync(path.resolve(__dirname,'../tools/desktop/installer.nsh'),'utf8');
-  assert(installer.indexOf('!insertmacro customInit')<installer.indexOf('!include "installSection.nsh"'));
-  assert.match(section,/\$\{ifNot\} \$\{UAC_IsInnerInstance\}\s+!insertmacro CHECK_APP_RUNNING\s+\$\{endif\}/);
-  assert(section.indexOf('!insertmacro CHECK_APP_RUNNING')<section.indexOf('!insertmacro uninstallOldVersion'));
-  const init=hooks.match(/!macro customInit\b([\s\S]*?)!macroend/)[1];
-  assert.match(init,/\$\{If\} \$\{UAC_IsInnerInstance\}[\s\S]*?SetErrorLevel 2\s+Quit\s+\$\{EndIf\}/);
+  assert.match(installer,/!include "installSection\.nsh"/);
+  assert.match(hooks,/!define CANVASFLOW_REQUIRE_UPGRADE_PREFLIGHT/);
+  const beforeUninstall=section.slice(0,section.indexOf('!insertmacro uninstallOldVersion'));
+  assert.match(beforeUninstall,/!else ifdef CANVASFLOW_REQUIRE_UPGRADE_PREFLIGHT\s+!define CANVASFLOW_HAS_UPGRADE_PREFLIGHT\s+!insertmacro CHECK_APP_RUNNING\s+!else/);
+  assert.doesNotMatch(hooks,/UAC_IsInnerInstance/);
+  assert.match(hooks,/!ifndef CANVASFLOW_HAS_UPGRADE_PREFLIGHT\s+!error/);
   const prepare=hooks.match(/!macro customCheckAppRunning\b([\s\S]*?)!macroend/)[1];
   assert.match(prepare,/-Mode Prepare\b/);
   assert.match(prepare,/\$\{If\} \$R0 != 0[\s\S]*?SetErrorLevel 2\s+Quit/);

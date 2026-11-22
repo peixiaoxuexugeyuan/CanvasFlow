@@ -34,7 +34,10 @@ function harness(existingFiles = new Map(), version = '1.0.0', updateOptions = {
   const electron = {app, BrowserWindow:function(){}, session:{}, shell:{openPath:async()=>{updateEvents.push('open-installer');return updateOptions.openError || '';}},
     Tray:function(){if(failTray) throw Error('Tray failed'); return tray;},
     Menu:{buildFromTemplate:x=>x}, ipcMain:{on:(n,f)=>handlers.set(n,f),handle:(n,f)=>handlers.set(n,f)},
-    dialog:{showErrorBox:(...args)=>errors.push(args),showMessageBox:async()=>{
+    dialog:{showErrorBox:(...args)=>errors.push(args),showMessageBox:async(_window,options)=>{
+      if(options.signal && updateOptions.waitForJobs) return new Promise(resolve=>{
+        updateEvents.push('wait');options.signal.addEventListener('abort',()=>resolve({response:0}),{once:true});
+      });
       counters.prompts++; return replies.shift() || {response:2,checkboxChecked:false};
     }}};
   const fakeFS = {
@@ -49,10 +52,16 @@ function harness(existingFiles = new Map(), version = '1.0.0', updateOptions = {
     if(name==='./updater.cjs')return {createUpdater:()=>updateManager};
     if(name.startsWith('./'))return require(path.join(__dirname,'../tools/desktop/app',name));
     return require(name);
-  },process:{execPath:'/app/CanvasFlow.exe',platform:'win32',arch:'x64',argv:[]},__dirname:'/app',setTimeout,clearTimeout});
+  },process:{execPath:'/app/CanvasFlow.exe',platform:'win32',arch:'x64',argv:[]},__dirname:'/app',AbortController,AbortSignal,clearTimeout,
+    setTimeout:(fn,ms)=>setTimeout(fn,ms===2000?0:ms),fetch:async(_url,options)=>{
+      const {action}=JSON.parse(options.body);updateEvents.push(action);
+      assert.ok(options.headers['X-CanvasFlow-Desktop']);
+      return {ok:true,json:async()=>({busy:updateOptions.busy?.(action)??false})};
+    }});
   vm.runInContext(source + `
     globalThis.control = {
       initialize(window) { mainWindow=window; origin='http://127.0.0.1:5181'; rendererReady=true; },
+      ownHost(){ownsHost=true;},
       requestWindowClose, prepareClose, saveCloseAction, showWindow, checkStartupUpdate,
       get action(){return closeAction;}, get allowed(){return allowClose;}
     };
@@ -96,6 +105,21 @@ test('repeated close while choosing shows one dialog',async()=>{
   const h=harness(); h.replies.push({response:0});
   await Promise.all([h.control.requestWindowClose(),h.control.requestWindowClose()]);
   assert.equal(h.counters.prompts,1); assert.equal(h.counters.hidden,1);
+});
+
+test('pending Skill changes keep the editor open on exit and before installing an update',async()=>{
+  const h=harness(new Map(),'1.0.0',{packaged:true,status:'available'});
+  h.control.saveCloseAction('quit');
+  h.window.webContents.send=()=>h.handlers.get('desktop:close-result')(h.event,{ok:false,pendingSkill:true});
+  await h.control.requestWindowClose();
+  assert.equal(h.counters.closed,0);
+  h.replies.push({response:0});
+  await h.handlers.get('desktop:install-update')(h.event);
+  assert.equal(h.updateEvents.includes('open-installer'),false);
+  assert.equal(h.counters.closed,0);
+  h.window.webContents.send=()=>h.handlers.get('desktop:close-result')(h.event,{ok:true});
+  await h.control.requestWindowClose();
+  assert.equal(h.counters.closed,1);
 });
 test('tray failure never leaves an inaccessible hidden application',async()=>{
   const h=harness(); h.failTray(); h.replies.push({response:0});
@@ -178,6 +202,21 @@ test('postponed update and cancelled failed save do not open installer or close 
     assert.equal(h.updateEvents.includes('open-installer'),false);
     assert.equal(h.counters.closed,0); assert.equal(h.updateManager.getState().status,'ready');
   }
+});
+test('owned host waits for image completion and reserves it before launching the update',async()=>{
+  let pending=true;const h=harness(new Map(),'1.0.0',{packaged:true,status:'available',waitForJobs:true,
+    busy:action=>{if(action==='status'&&pending){pending=false;return true;}return false;}});
+  h.control.ownHost();h.replies.push({response:0});
+  await h.handlers.get('desktop:install-update')(h.event);
+  assert.deepEqual(h.updateEvents,['download','status','wait','status','save','verify','reserve','open-installer','close']);
+});
+test('a job starting during save rechecks and users can postpone without closing or resubmitting',async()=>{
+  const statuses=[false,true];const h=harness(new Map(),'1.0.0',{packaged:true,status:'available',
+    busy:action=>action==='reserve'||statuses.shift()});
+  h.control.ownHost();h.replies.push({response:0},{response:0});
+  await h.handlers.get('desktop:install-update')(h.event);
+  assert.equal(h.counters.closed,0);assert.equal(h.updateEvents.includes('open-installer'),false);
+  assert.deepEqual(h.updateEvents,['download','status','save','verify','reserve','status']);
 });
 test('installer verification and launch failure leave the app open and surface an error',async()=>{
   for(const options of [{invalidFile:true},{openError:'blocked by OS'}]){

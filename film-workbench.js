@@ -154,7 +154,35 @@
     if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !url.port || url.pathname !== '/open' || url.username || url.password) throw Error('编辑器返回了无效地址');
     return url.href;
   }
-  async function connect() {
+  function chooseVersion(versions) {
+    const box = el('form', '', 'film-materials film-version-choice');
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-label', '选择成片版本');
+    const head = el('header');
+    head.append(el('strong','选择成片版本'),button('×','关闭版本选择',()=>box.remove()));
+    const list = el('div', '', 'film-materials-list');
+    const submit = el('button','打开此版本');
+    submit.type = 'submit'; submit.disabled = true;
+    for (const version of versions) {
+      const row = el('label'), radio = el('input'), info = el('span');
+      radio.type = 'radio'; radio.name = 'version'; radio.value = version.workspaceId;
+      radio.addEventListener('change', () => { submit.disabled = false; });
+      info.append(el('strong',version.name));
+      if (version.timelineModifiedAt) info.append(el('small','时间线更新于 '+new Date(version.timelineModifiedAt * 1000).toLocaleString()));
+      info.append(el('small',version.directory));
+      row.append(radio,info); list.append(row);
+    }
+    box.append(head, el('p','同一画布在多个工作区留下了剪辑。选择后，画布会继续使用该版本，其他版本的文件会保留。'),list,submit);
+    box.addEventListener('submit', event => {
+      event.preventDefault();
+      const selected = new FormData(box).get('version');
+      if (selected) void connect(selected);
+    });
+    box.addEventListener('keydown', event => { if (event.key === 'Escape') { event.stopPropagation(); box.remove(); } });
+    panel.append(box);list.querySelector('input')?.focus();
+  }
+
+  async function connect(storageWorkspaceId) {
     if(externalJob)void action({action:'agent_stop',id:externalJob}).catch(()=>{});
     const run = ++epoch;
     clearInterval(materialTimer);clearTimeout(layoutTimer);externalAttachments=[];externalState={};externalActivity?.remove();externalActivity=null;
@@ -165,14 +193,18 @@
     frame.removeAttribute('src'); status.hidden = false; status.textContent = '正在启动本地成片编辑器…';
     try {
       const result = await deps.api('/api/film/open', {method: 'POST', headers: context.headers,
-        body: JSON.stringify(scopeBody(context)), throwOnError: true});
+        body: JSON.stringify({...scopeBody(context),storageWorkspaceId}), throwOnError: true});
       if (run !== epoch || panel.hidden) return;
       const url = validEditorURL(result.url);
       editorOrigin = new URL(url).origin;
       editorProject = String(result.projectId || '');
       frame.src = url;
       clearInterval(materialTimer);materialTimer=setInterval(syncMaterialsQuietly,15000);
-    } catch (error) { if (run === epoch && !panel.hidden) status.textContent = (error.message || '编辑器连接失败') + '；可点击 ↻ 重试。'; }
+    } catch (error) {
+      if (run !== epoch || panel.hidden) return;
+      status.textContent = (error.message || '编辑器连接失败') + '；可点击 ↻ 重试。';
+      if (error.payload?.error === 'film_version_choice' && error.payload.versions?.length > 1) chooseVersion(error.payload.versions);
+    }
   }
   async function importMaterials() {
     if (!editorProject || visibleProject !== editorProject) { deps.toast('请等待成片载入，或点击 ↻ 返回关联成片', '!'); return; }

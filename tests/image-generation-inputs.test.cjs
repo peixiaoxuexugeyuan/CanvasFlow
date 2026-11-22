@@ -3,6 +3,76 @@ const acorn=require('../tools/release/node_modules/acorn');
 const source=fs.readFileSync('app.js','utf8'),functions={};
 function walk(n){if(!n||typeof n!=='object')return;if(n.type==='FunctionDeclaration')functions[n.id.name]=source.slice(n.start,n.end);for(const v of Object.values(n)){if(Array.isArray(v))v.forEach(walk);else if(v&&typeof v==='object')walk(v);}}
 walk(acorn.parse(source,{ecmaVersion:'latest'}));
+function studioImage(rows, model = {}, contract = null) {
+  const c = {state:{modelSpecs:{image:{fixture:rows}},modelContracts:{fixture:contract}},
+    CAMERA_COLUMNS:[{key:'lens',title:'镜头'}],
+    CAMERA_LIBRARY:{lens:[{key:'prime',name:'定焦',prompt:'定焦镜头'}]},
+    specRowsFor:()=>rows, IMAGE_RES_LONG_SIDE:{'1K':1024,'2K':2048}};
+  vm.createContext(c);
+  vm.runInContext(['currentModelContract','contractControlOptions','specRowValues','isAutoAspect',
+    'aspectToResolution','resolutionMatchesAspect','cameraLibraryItems','cameraItemOf','defaultCameraControl','normalizeCameraControl',
+    'cameraControlPromptText','createStudioImageAdapter'].map(name=>functions[name]).join('\n'),c);
+  return c.createStudioImageAdapter({id:'fixture',model:'fixture',...model});
+}
+const studioRow = (key, field, values) => ({key,field,default:values[0],options:values.map(value=>({value,label:value}))});
+test('studio preserves concrete pixels and auto, sends ordered references, local batch count and optional camera prompt',()=>{
+  const adapter=studioImage([studioRow('resolution','size',['auto','1024x1536']),
+    studioRow('quality','quality',['auto','medium']),studioRow('count','n',['1','2','4'])],
+    {imageReferences:{min:0,max:2}});
+  const refs={referenceImages:[{url:'/media/a.png'},{url:'/media/b.png'}]};
+  assert.equal(adapter.payload({},refs,'草地').size,'auto');
+  assert.equal(adapter.fields.find(f=>f.key==='resolution').options[1].label,'1024x1536 · 2:3');
+  const settings={resolution:'1024x1536',quality:'medium',count:'2',useCamera:'on',camera_lens:'prime'};
+  const request=adapter.payload(settings,refs,'草地');
+  assert.equal(request.size,'1024x1536');assert.equal(request.quality,'medium');
+  assert.deepEqual(Array.from(request.referenceImages),['/media/a.png','/media/b.png']);
+  assert.equal(request.prompt,'草地\n定焦镜头');
+  assert.equal(adapter.submissionCount(settings),2);
+  assert.equal(adapter.submissionCount({count:'9000'}),1);
+  assert.ok(!('n' in request.modelOptions));
+  assert.equal(adapter.validate(settings,refs),'');
+  assert.match(adapter.validate(settings,{referenceImages:[{},{},{}]}),/最多支持 2 张/);
+});
+test('studio keeps independent media aspect, size and provider-specific options without canvas state',()=>{
+  const adapter=studioImage([studioRow('aspectRatio','aspect_ratio',['auto','3:2']),
+    studioRow('resolution','resolution',['auto','2K']),studioRow('background','background',['opaque','transparent'])],
+    {mediaGenerate:true,imageReferences:{min:0,max:0}});
+  const settings={aspectRatio:'auto',resolution:'2K',background:'transparent'};
+  const req=adapter.payload(settings,{},'草地');
+  assert.equal(adapter.references(settings).length,0);assert.equal(req.size,'auto');
+  assert.equal(req.imageSpec.aspectRatio,'auto');assert.equal(req.imageSpec.resolution,'2K');
+  assert.equal(req.modelOptions.background,'transparent');
+  assert.ok(!('quality' in req));assert.ok(!('prompt' in req));
+});
+test('image studio validates required prompt, input dimensions and reference-dependent channel rules',()=>{
+  const contract={params:[{name:'size',type:'input',label:'自定义尺寸'}, {name:'prompt',type:'textarea',required:true}],
+    channel_constraints:[{capability_rules:[{effect:'reject',when:[{param:'images',op:'count_gt',value:2}]}]}]};
+  const adapter=studioImage([studioRow('aspectRatio','aspect_ratio',['auto','1:1']),
+    studioRow('resolution','resolution',['auto','2K'])], {mediaGenerate:true}, contract);
+  const settings={sizeMode:'custom',customSize:'1536x864'};
+  assert.match(adapter.validate(settings,{referenceImages:[{}]},''),/需要提示词/);
+  assert.match(adapter.validate({...settings,customSize:'1000x1000'},{},'测试'),/16 的倍数/);
+  assert.match(adapter.validate(settings,{referenceImages:[{},{},{}]},'测试'),/线路/);
+  assert.equal(adapter.validate(settings,{},'测试'),'');
+  const req=adapter.payload(settings,{},'测试');
+  assert.equal(req.size,'1536x864');assert.equal(req.modelOptions.size,'1536x864');
+  assert.equal(req.imageSpec,undefined);
+  assert.equal(adapter.fields.find(f=>f.key==='aspectRatio').visible(settings),false);
+});
+test('old image jobs restore stored pixels, mapped quality and model-specific values without inventing references',()=>{
+  const adapter=studioImage([studioRow('aspectRatio','aspect_ratio',['1:1','3:2']),
+    studioRow('resolution','resolution',['1K','2K']),studioRow('quality','quality',['low','standard','high']),
+    studioRow('styleChoice','style',['natural','vivid'])],{mediaGenerate:true});
+  const result=adapter.restoreLegacy({size:'2048x1365',inputSummary:{quality:'medium',referenceCount:2,modelOptions:{style:'vivid'}}});
+  assert.deepEqual({...result.settings},{aspectRatio:'3:2', resolution:'2K',quality:'standard',styleChoice:'vivid'});
+  assert.deepEqual({...result.refs},{});
+  const pixels=studioImage([studioRow('resolution','size',['auto','1024x1536'])],{mediaGenerate:true});
+  assert.equal(pixels.restoreLegacy({inputSummary:{size:'1024x1536'}}).settings.resolution,'1024x1536');
+  const custom=studioImage([studioRow('aspectRatio','aspect_ratio',['1:1','16:9']),
+    studioRow('resolution','resolution',['1K','2K'])],{mediaGenerate:true},{params:[{name:'size',type:'input'}]});
+  const restored=custom.restoreLegacy({size:'1536x864'}).settings;
+  assert.equal(restored.sizeMode,'custom');assert.equal(restored.customSize,'1536x864');
+});
 function node(id,type='image'){return {dataset:{nodeId:id,node:type},style:{},matches:()=>true,querySelector:()=>null};}
 function fixture(){
  const target=node('target'),up=node('up'),down=node('down'),other=node('other');

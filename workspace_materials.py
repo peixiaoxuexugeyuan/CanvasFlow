@@ -151,7 +151,8 @@ def build_catalog(workspace_id, projects, assets, music, models, jobs, in_scope,
         field={'image':'imageUrl','video':'videoUrl','audio':'audioUrl'}.get(kind)
         if field and job.get(field):
             add({'url':job[field],'name':job.get('name') or job.get('projectName') or '生成'+{'image':'图片','video':'视频','audio':'音频'}[kind],
-                 'createdAt':job.get('createdAt')},kind,project_map.get(str(job.get('projectId') or '')),'generated')
+                   'createdAt':job.get('createdAt')},kind,project_map.get(str(job.get('projectId') or '')),'generated',
+                label=(job.get('studioDraft') or {}).get('prompt', '')[:80])
 
     saved=(metadata or {}).get(workspace_id,{})
     ratings={(str(p.get('id')),str(n.get('id'))):max(0,min(5,int(n.get('rating') or 0)))

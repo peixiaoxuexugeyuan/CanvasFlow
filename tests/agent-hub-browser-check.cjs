@@ -11,7 +11,7 @@ const output = path.join(root, 'build-private/agent-hub-check');
 fs.mkdirSync(output, {recursive:true});
 const port = 5197, origin = `http://127.0.0.1:${port}`;
 const server = spawn(path.join(root,'.runtime/python/python.exe'), ['server.py',String(port)], {
-  cwd:root, env:{...process.env,CANVASFLOW_DATA_DIR:data}, windowsHide:true, stdio:'ignore'
+  cwd:root, env:{...process.env,CANVASFLOW_DATA_DIR:data, LOCALAPPDATA:data}, windowsHide:true, stdio:'ignore'
 });
 let browser;
 const wait = ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -19,7 +19,7 @@ async function count(page, selector, expected) { await page.waitForFunction(({se
 (async()=>{
   for(let i=0;i<80;i++){try{if((await fetch(origin)).ok)break;}catch{}if(i===79)throw Error('Test server did not start');await wait(250);}
   browser=await chromium.launch({executablePath:path.join(root,'.runtime/openfilm-browser/chromium_headless_shell-1228/chrome-headless-shell-win64/chrome-headless-shell.exe'),headless:true});
-  const context=await browser.newContext({viewport:{width:1600,height:1000},reducedMotion:'reduce'});
+  const context=await browser.newContext({extraHTTPHeaders:require('./local-browser-access.cjs')(root,data,origin).headers,viewport:{width:1600,height:1000},reducedMotion:'reduce'});
   await context.addInitScript(()=>{
     localStorage.setItem('canvasflow-startup-animation',JSON.stringify({enabled:false}));
     Object.defineProperty(navigator,'clipboard',{value:{writeText:async text=>{window.testClipboard=text;}}});
@@ -302,6 +302,7 @@ async function count(page, selector, expected) { await page.waitForFunction(({se
   const importedText='---\nname: local-skill\ndescription: 请制作分镜。\n---\n# 我的验证技能\n<img src=x onerror="window.badImport=true">';
   await page.locator('.cse-file-input').setInputFiles({name:'local-skill.md',mimeType:'text/markdown',buffer:Buffer.from(importedText)});
   await page.waitForFunction(()=>document.querySelector('.cse-field input').value==='我的验证技能');
+  assert.equal(await page.evaluate(()=>CanvasFlowSkillEditor.hasPendingChanges()),true);
   assert.equal(await page.getByRole('textbox',{name:'一句话介绍',exact:true}).inputValue(),'请制作分镜。','Frontmatter description replaces the old --- summary');
   assert.equal((await(await context.request.get(origin+'/api/agent/skills')).json()).skills.length,0,'Upload is staged until Save');
   assert.equal(await page.evaluate(()=>window.badImport),undefined);
@@ -322,6 +323,7 @@ async function count(page, selector, expected) { await page.waitForFunction(({se
   await page.screenshot({path:path.join(output,'skill-editor-metadata.png')});
   await page.getByRole('button',{name:'保存',exact:true}).click();
   await page.getByRole('button',{name:'查看技能：我的验证技能',exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>CanvasFlowSkillEditor.hasPendingChanges()),false);
   await page.getByRole('button',{name:'查看技能：我的验证技能',exact:true}).click();
   assert.match(await page.locator('.cah-detail-prompt').innerText(),/<img src=x/);
   assert.equal(await page.evaluate(()=>window.badImport),undefined);
@@ -370,9 +372,16 @@ async function count(page, selector, expected) { await page.waitForFunction(({se
   fs.writeFileSync(path.join(folder,'ignored.py'),'This is not an executable Skill document.');
   await page.getByRole('button',{name:'＋ 创建Skill ⌄',exact:true}).click();
   await page.locator('.cah-popover-create button').filter({hasText:'导入已有Skill'}).click();
-  await page.getByRole('button',{name:'上传 Skill 文件',exact:true}).click();
-  const [folderChooser]=await Promise.all([page.waitForEvent('filechooser'),page.getByRole('button',{name:'上传文件夹',exact:true}).click()]);
-  await folderChooser.setFiles(folder);
+  async function importFolder() {
+    await page.getByRole('button',{name:'上传 Skill 文件',exact:true}).click();
+    const [chooser]=await Promise.all([page.waitForEvent('filechooser'),page.getByRole('button',{name:'上传文件夹',exact:true}).click()]);
+    await chooser.setFiles(folder);
+  }
+  await importFolder();
+  await page.locator('.cse-error').filter({hasText:'ignored.py'}).waitFor();
+  assert.equal(await page.getByRole('button',{name:'打开文件：references/camera.md',exact:true}).count(),0);
+  fs.unlinkSync(path.join(folder,'ignored.py'));
+  await importFolder();
   await page.getByRole('button',{name:'打开文件：references/camera.md',exact:true}).click();
   await page.getByRole('button',{name:'编辑代码',exact:true}).click();
   await page.getByRole('textbox',{name:'Skill 文件内容',exact:true}).fill('# 镜头参考\n\n保持空间轴线。编辑后保留。\n');

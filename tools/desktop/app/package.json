@@ -1,8 +1,8 @@
 {
   "name": "canvasflow-desktop",
   "productName": "CanvasFlow",
-  "version": "1.0.1",
-  "buildNumber": 2026111801,
+  "version": "1.0.2",
+  "buildNumber": 2026112201,
   "description": "CanvasFlow 本地创作工作台",
   "main": "main.cjs",
   "author": "CanvasFlow",

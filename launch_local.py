@@ -1,6 +1,5 @@
 """Launch the local service and open CanvasFlow in a desktop app window."""
 import argparse
-import json
 import os
 from pathlib import Path
 import shutil
@@ -8,9 +7,9 @@ import socket
 import subprocess
 import sys
 import time
-from urllib.request import build_opener, ProxyHandler
 import webbrowser
 from local_app import installation_id
+from local_access import discover_existing, identify, local_client, user_secret
 
 ROOT = Path(__file__).resolve().parent
 
@@ -32,18 +31,11 @@ def main():
     if not 1 <= args.port <= 65535: parser.error('端口必须在 1–65535 之间')
     data = Path(os.environ.get('CANVASFLOW_DATA_DIR') or ROOT / 'server-data').resolve()
     expected = installation_id(ROOT, data)
-    url = f'http://127.0.0.1:{args.port}'
-    client = build_opener(ProxyHandler({}))
+    client = local_client()
 
-    def ready():
-        try:
-            with client.open(url + '/api/local/bootstrap', timeout=1) as response:
-                payload = json.load(response)
-                return isinstance(payload, dict) and payload.get('mode') == 'local' and payload.get('installationId') == expected
-        except (OSError, ValueError):
-            return False
-
-    if not ready():
+    key = user_secret()
+    url, access = discover_existing(client, args.port, data, expected, key)
+    if not access:
         args.port = available_port(args.port)
         url = f'http://127.0.0.1:{args.port}'
         logs = data / 'local-logs'
@@ -53,13 +45,18 @@ def main():
                                        cwd=ROOT, stdout=output, stderr=output,
                                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         for _ in range(100):
-            if ready():
+            access = identify(client, url, expected, key)
+            if access:
                 break
             if process.poll() is not None:
+                url, access = discover_existing(client, args.port, data, expected, key)
+                if access:
+                    break
                 raise RuntimeError('Local service failed to start. See server-data/local-logs/server.log')
             time.sleep(.1)
         else:
             raise RuntimeError('Local service startup timed out. See server-data/local-logs/server.log')
+    link = access.browser_url(url)
     if not args.no_open:
         candidates = [Path(os.environ.get(key, '')) / suffix
                       for key in ('ProgramFiles(x86)', 'ProgramFiles', 'LOCALAPPDATA')
@@ -67,10 +64,10 @@ def main():
         browser = next((str(file) for file in candidates if file.is_file()), None)
         browser = browser or shutil.which('msedge') or shutil.which('chrome')
         if browser:
-            subprocess.Popen([browser, '--app=' + url + '/', '--new-window'])
+            subprocess.Popen([browser, '--app=' + link, '--new-window'])
         else:
-            webbrowser.open(url + '/')
-    print(url + '/')
+            webbrowser.open(link)
+    print(link if args.no_open else url + '/')
 
 
 if __name__ == '__main__':

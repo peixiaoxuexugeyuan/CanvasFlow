@@ -72,8 +72,8 @@ let browser,server;
   await deferred.evaluate(()=>document.querySelector('#existing').close());await deferred.locator('.desktop-update-dialog').waitFor();
   // Also exercise the real application bootstrap, theme and recent-release modal together.
   const data=fs.mkdtempSync(path.join(os.tmpdir(),'canvasflow-startup-update-')),origin='http://127.0.0.1:5201';
-  server=spawn(path.join(root,'.runtime/python/python.exe'),['server.py','5201'],{cwd:root,env:{...process.env,CANVASFLOW_DATA_DIR:data},windowsHide:true,stdio:'ignore'});
-  for(let i=0;i<60;i++){try{if((await fetch(origin+'/api/health')).ok)break;}catch{}if(i===59)throw Error('Isolated server did not start');await new Promise(resolve=>setTimeout(resolve,250));}
+  server=spawn(path.join(root,'.runtime/python/python.exe'),['server.py','5201'],{cwd:root,env:{...process.env,CANVASFLOW_DATA_DIR:data, LOCALAPPDATA:data},windowsHide:true,stdio:'ignore'});
+  for(let i=0;i<60;i++){try{if((await fetch(origin+'/local-connect')).ok)break;}catch{}if(i===59)throw Error('Isolated server did not start');await new Promise(resolve=>setTimeout(resolve,250));}
   const full=await browser.newPage({viewport:{width:1092,height:871}});
   await full.addInitScript(()=>{
     localStorage.setItem('canvasflow-startup-animation',JSON.stringify({enabled:false}));
@@ -85,7 +85,8 @@ let browser,server;
   });
   const errors=[];full.on('pageerror',error=>errors.push(error.message));
   await full.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort());
-  await full.goto(origin,{waitUntil:'domcontentloaded'});
+  await full.goto(require('./local-browser-access.cjs')(root,data,origin).link);
+  await full.waitForURL(origin+'/');
   await full.locator('#startupUpdatesDialog').waitFor();
   assert.equal(await full.locator('.desktop-update-dialog').count(),0);
   await full.locator('#startupUpdatesDialog').getByRole('button',{name:'知道了',exact:true}).click();

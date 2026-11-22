@@ -39,7 +39,7 @@ class SecurityAuditTests(unittest.TestCase):
                 cls.tokens[user] = cls.app.create_session(db, user, cls.app.auth_now())
         class QuietHandler(cls.app.Handler):
             def log_message(self, *args): pass
-        cls.http = cls.app.ThreadingHTTPServer(('127.0.0.1', 0), QuietHandler)
+        cls.http = cls.app.ThreadingHTTPServer(('127.0.0.1', 0), QuietHandler, access_key=os.urandom(32))
         cls.thread = threading.Thread(target=cls.http.serve_forever, daemon=True)
         cls.thread.start()
 
@@ -68,7 +68,7 @@ class SecurityAuditTests(unittest.TestCase):
 
     def request(self, method, path, data=None, user='alice', headers=None, raw=None):
         connection = http.client.HTTPConnection('127.0.0.1', self.http.server_port, timeout=5)
-        all_headers = dict(headers or {})
+        all_headers = {'X-CanvasFlow-Session': self.http.local_access.desktop_token, **(headers or {})}
         if user: all_headers['Cookie'] = f'{self.app.SESSION_COOKIE}={self.tokens[user]}'
         if data is not None:
             raw = json.dumps(data).encode(); all_headers['Content-Type'] = 'application/json'

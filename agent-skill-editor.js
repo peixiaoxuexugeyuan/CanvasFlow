@@ -7,6 +7,7 @@
   const icon=name=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${paths[name]||paths.file}"/></svg>`;
   const hint='输入 Skill 内容，或上传 SKILL.md 文件直接替换\n\n## 做什么\n（一句话说明用途）例：把一句话故事想法做成一条短漫剧成片\n\n## 需要什么输入\n（最少提供什么）例：一句话想法，可选画风、时长、主角设定\n\n## 怎么做\n（写你在意的环节和要求，不用写全）例：脚本要反转多，画风固定成静漫\n\n## 产出什么\n（最终交付什么）例：成片，附脚本和分镜\n\n## 什么时候问你\n（什么情况下停下来问你）例：拿不准题材或风格时问一次，其余自己定';
   function validPath(path){return !!path&&!path.startsWith('/')&&!/[<>:"\\|?*\u0000-\u001f]/.test(path)&&path.split('/').every(p=>p&&p!=='.'&&p!=='..');}
+  const pendingEditors = new Set();
   function open(o){
     const skill=o.skill,initial=skill?.details?.files;
     let files=initial?.length?initial.map(f=>({path:f.path,content:f.content})): [{path:'SKILL.md',content:skill?.prompt||''}];
@@ -46,7 +47,8 @@
     if(skill&&(!description.value||/^[-*_]{3,}$/.test(description.value)))description.value=derived.desc;
     const fail=message=>{error.textContent=message;error.hidden=false;};
     function closeAux(){aux?.remove();aux=null;}
-    function close(){if(closed)return;closed=true;if(coverPreview)URL.revokeObjectURL(coverPreview);closeAux();dialog.close();dialog.remove();o.onClose?.();}
+    const hasChanges = () => dirty || busy;
+    function close(){if(closed)return;closed=true;pendingEditors.delete(hasChanges);if(coverPreview)URL.revokeObjectURL(coverPreview);closeAux();dialog.close();dialog.remove();o.onClose?.();}
     function askClose(){if(busy)return;if(!dirty){close();return;}confirm('放弃未保存的修改？','返回后，本次未保存的内容将丢失。','放弃修改',close);}
     function modal(title){closeAux();aux=make('dialog','cse-small-dialog');aux.setAttribute('aria-label',title);aux.append(make('h2','',title));dialog.append(aux);aux.addEventListener('cancel',e=>{e.preventDefault();closeAux();});aux.showModal();return aux;}
     function confirm(title,message,label,run){const box=modal(title);box.append(make('p','',message));const actions=make('div','cse-small-actions');actions.append(button('取消','',closeAux),button(label,'cse-danger',()=>{closeAux();run();}));box.append(actions);}
@@ -84,8 +86,12 @@
       if(!picked.length||busy)return;error.hidden=true;
       busy=true;fields.disabled=true;save.disabled=true;save.textContent='读取中…';
       try{
-        const docs=picked.filter(f=>/\.(md|markdown|txt)$/i.test(f.name));if(!docs.length)throw Error('请选择 Markdown 文件');
-        if(!folder&&docs.length!==picked.length)throw Error('包含不支持的文件，请仅选择 Markdown 或文本文件；本次未导入');
+        const unsupported=picked.filter(f=>!/\.(md|markdown|txt)$/i.test(f.name));
+        if(unsupported.length){
+          const names=unsupported.slice(0,4).map(f=>f.webkitRelativePath||f.name).join('、');
+          throw Error(`仅支持 Markdown 或 TXT 文档，包含不支持的文件：${names}${unsupported.length>4?` 等 ${unsupported.length} 个`:''}。本次未导入。`);
+        }
+        const docs=picked;
         if(docs.length>100||docs.reduce((sum,f)=>sum+f.size,0)>2_000_000)throw Error('最多导入 100 个文档，合计不超过 2 MB');
         const loaded=await Promise.all(docs.map(async f=>({path:folder?f.webkitRelativePath.split('/').slice(1).join('/'):docs.length>1?f.name:selected,content:await f.text()})));if(closed)return;
         if(loaded.some(f=>!validPath(f.path)))throw Error('文件夹包含无效路径');
@@ -126,7 +132,8 @@
       finally{busy=false;if(!closed){fields.disabled=false;save.disabled=false;save.textContent='保存';}}
     });
     document.body.append(dialog);paint();dialog.showModal();name.focus();
+    pendingEditors.add(hasChanges);
     return {close,element:dialog};
   }
-  window.CanvasFlowSkillEditor={open};
+  window.CanvasFlowSkillEditor={open, hasPendingChanges:()=>Array.from(pendingEditors).some(check=>check())};
 })();

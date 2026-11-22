@@ -52,26 +52,29 @@ def check_connected_peer(connection,url):
     peer=ipaddress.ip_address(connection.sock.getpeername()[0])
     if isinstance(peer,ipaddress.IPv6Address) and peer.ipv4_mapped:peer=peer.ipv4_mapped
     if not peer.is_global:
-        if any(origin[1]==connection.host.lower() and origin[2]==connection.port for origin in policy[1]):return
+        # urllib sets the proxy on this particular request after proxy selection.
+        # A local proxy may carry public traffic, but its URL is not a trusted
+        # media destination and direct connections cannot use this exemption.
+        if connection.via_proxy:return
         connection.close();raise error.URLError('拒绝连接未经授权的本机或局域网地址')
 
 
 class CheckedHTTPConnection(http.client.HTTPConnection):
-    def __init__(self,host,*,url,**options):super().__init__(host,**options);self.url=url
+    def __init__(self,host,*,url,via_proxy=False,**options):super().__init__(host,**options);self.url=url;self.via_proxy=via_proxy
     def connect(self):super().connect();check_connected_peer(self,self.url)
 
 
 class CheckedHTTPSConnection(http.client.HTTPSConnection):
-    def __init__(self,host,*,url,**options):super().__init__(host,**options);self.url=url
+    def __init__(self,host,*,url,via_proxy=False,**options):super().__init__(host,**options);self.url=url;self.via_proxy=via_proxy
     def connect(self):super().connect();check_connected_peer(self,self.url)
 
 
 class CheckedHTTPHandler(request.HTTPHandler):
-    def http_open(self,req):return self.do_open(lambda host,**options:CheckedHTTPConnection(host,url=req.full_url,**options),req)
+    def http_open(self,req):return self.do_open(lambda host,**options:CheckedHTTPConnection(host,url=req.full_url,via_proxy=req.has_proxy(),**options),req)
 
 
 class CheckedHTTPSHandler(request.HTTPSHandler):
-    def https_open(self,req):return self.do_open(lambda host,**options:CheckedHTTPSConnection(host,url=req.full_url,**options),req,context=self._context)
+    def https_open(self,req):return self.do_open(lambda host,**options:CheckedHTTPSConnection(host,url=req.full_url,via_proxy=bool(req._tunnel_host or req.has_proxy()),**options),req,context=self._context)
 
 
 class CheckedProxyHandler(request.ProxyHandler):

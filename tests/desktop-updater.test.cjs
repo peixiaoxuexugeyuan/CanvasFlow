@@ -84,6 +84,43 @@ test('changed downloaded installer is rejected before opening it',async t=>{
   await fs.promises.writeFile(file,Buffer.alloc(bytes.length));
   await assert.rejects(h.manager.verifyInstaller(),/校验失败/);
 });
+test('postponed installers are verified and reused after restart or a second check',async t=>{
+  const h=await harness(t);
+  await h.manager.check();
+  const file=await h.manager.download();
+  await h.manager.check();
+  assert.equal(await h.manager.download(),file);
+  let downloads=0;
+  const restarted=createUpdater({version:'1.0.0',directory:h.directory,fetchImpl:async url=>{
+    if(url===FEED_URL)return new Response(JSON.stringify(manifest));
+    downloads++;return new Response(bytes);
+  }});
+  await restarted.check();
+  assert.equal(await restarted.download(),file);
+  assert.equal(await restarted.verifyInstaller(),file);
+  assert.equal(downloads,0);
+  await fs.promises.writeFile(file, Buffer.alloc(bytes.length));
+  await restarted.check();
+  assert.notEqual(await restarted.download(),file);
+  assert.equal(downloads,1);
+  await restarted.verifyInstaller();
+});
+test('a successful upgrade reclaims only owned cache files for installed builds',async t=>{
+  const h=await harness(t);await h.manager.check();const file=await h.manager.download();
+  await h.manager.cleanInstalledDownloads();assert.equal(fs.existsSync(file),true);
+  const installed=createUpdater({version:manifest.version,directory:h.directory});
+  const unknown=await fs.promises.mkdtemp(path.join(h.directory,'update-'));
+  await fs.promises.writeFile(path.join(unknown,'CanvasFlow-Setup.exe'),bytes);
+  await installed.cleanInstalledDownloads();
+  assert.equal(fs.existsSync(path.dirname(file)),false);
+  assert.equal(fs.existsSync(unknown),true,'unmarked legacy files need a known hash from the official feed');
+  await installed.cleanInstalledDownloads({...validateManifest(manifest),sha256:'0'.repeat(64)});
+  assert.equal(fs.existsSync(unknown),true);
+  const userFile=path.join(unknown,'notes.txt');await fs.promises.writeFile(userFile,'keep');
+  await installed.cleanInstalledDownloads(validateManifest(manifest));assert.equal(fs.existsSync(userFile),true);
+  await fs.promises.unlink(userFile);
+  await installed.cleanInstalledDownloads(validateManifest(manifest));assert.equal(fs.existsSync(unknown),false);
+});
 test('unavailable or malformed feeds show errors rather than claiming up to date',async t=>{
   for(const response of [new Response('',{status:404}), new Response('<html>fallback</html>'),new Response(' '.repeat(65537))]){
     const h=await harness(t,()=>response); await h.manager.check();

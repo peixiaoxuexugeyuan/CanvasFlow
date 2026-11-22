@@ -3,15 +3,17 @@ import ast
 import json
 import pathlib
 import tempfile
+import importlib.util
+import os
+from unittest.mock import patch
 import unittest
 from urllib.parse import parse_qs, urlparse
 
 tree = ast.parse((pathlib.Path(__file__).resolve().parents[1] / 'server.py').read_text(encoding='utf-8-sig'))
-latest = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'latest_jobs')
 route = next(n for n in ast.walk(tree) if isinstance(n, ast.If) and isinstance(n.test, ast.Compare) and isinstance(n.test.left, ast.Name) and n.test.left.id == 'path' and any(isinstance(c, ast.Constant) and c.value == '/api/jobs' for c in n.test.comparators))
 handler = ast.parse('def get_jobs(self, user):\n    pass').body[0]
 handler.body = route.body
-module = ast.fix_missing_locations(ast.Module(body=[latest, handler], type_ignores=[]))
+module = ast.fix_missing_locations(ast.Module(body=[handler], type_ignores=[]))
 
 class ImageHistoryTest(unittest.TestCase):
     def test_paginated_completed_images_are_not_capped_before_filtering(self):
@@ -22,7 +24,14 @@ class ImageHistoryTest(unittest.TestCase):
             jobs += [dict(id='private', userId='other', workspaceId='w', kind='image', status='completed'), dict(id='other-workspace', userId='u', workspaceId='elsewhere', kind='image', status='completed'), dict(id='video', userId='u', workspaceId='w', kind='video', status='completed')]
             jobs.append({**jobs[0], 'name': 'latest snapshot'})
             file.write_text('\n'.join(map(json.dumps, jobs)), encoding='utf-8')
-            scope = dict(json=json, JOBS_FILE=file, parse_qs=parse_qs, urlparse=urlparse, job_view=lambda j, sync=False: j, local_job=lambda j:j, in_workspace=lambda j, w, valid: j.get('workspaceId') == w)
+            with patch.dict(os.environ, CANVASFLOW_DATA_DIR=folder):
+                spec = importlib.util.spec_from_file_location('director_history_server', pathlib.Path(__file__).resolve().parents[1] / 'server.py')
+                server = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(server)
+            server.JOBS_FILE = file
+            server.local_job = lambda row: row
+            server.in_workspace = lambda job, workspace, valid: job.get('workspaceId') == workspace
+            scope = dict(latest_jobs=server.latest_jobs, parse_qs=parse_qs, urlparse=urlparse, job_view=lambda j, sync=False: j)
             exec(compile(module, 'history-route', 'exec'), scope)
             class Request:
                 path = '/api/jobs?kind=image&status=completed&limit=200'

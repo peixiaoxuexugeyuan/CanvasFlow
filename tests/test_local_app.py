@@ -33,6 +33,229 @@ import server
 
 
 class LocalAppTest(unittest.TestCase):
+    def test_workspace_review_skill_cover_survives_canvas_cleanup(self):
+        png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jEOcAAAAASUVORK5CYII=')
+        blob = server.save_media_blob(png, 'image/png', 'shared.png', server.LOCAL_ID)
+        again = server.save_media_blob(png, 'image/png', 'cover.png', server.LOCAL_ID)
+        self.assertEqual(again['url'], blob['url'])
+        payload = {'name':'Cover retention', 'prompt':'Example', 'metadata':{
+            'useScenario':'Test', 'inputType':'Image', 'outputContent':'Image', 'kind':'图片', 'cover':again['url']}}
+        self.assertEqual(self.api('/api/agent/skills', 'POST', payload)[0], 200)
+        project = self.api('/api/projects', 'POST', {'projectName':'Cover sharing'})[1]['project']
+        path = '/api/projects/' + project['id']
+        project['nodes'] = [{'id':'image-test', 'type':'image', 'previewMedia':blob['url']}]
+        self.assertEqual(self.api(path, 'PUT', project)[0], 200)
+        status, result = self.api(path, 'DELETE')
+        self.assertEqual(status, 200)
+        self.assertEqual(result['mediaFilesDeleted'], 0)
+        with self.client.open(self.base+again['url']) as response:
+            self.assertEqual(response.read(), png)
+
+    def test_workspace_review_persisted_materials_and_blender_after_removal(self):
+        old = self.api('/api/workspaces', 'POST', {'name':'Source for recovery'})[1]['workspace']['id']
+        headers = {'X-Workspace-Id':old}
+        assets = server.read_assets()
+        assets.append({'id':'workspace-recovery-image', 'ownerId':server.LOCAL_ID, 'workspaceId':old,
+                       'name':'Recovery image', 'kind':'image', 'url':'https://fixture.invalid/recovery.png'})
+        server.write_file(server.ASSETS_FILE, assets)
+        material = self.api('/api/workspace/materials', headers=headers)[1]['materials'][0]['id']
+        local_tag = self.api('/api/workspace/materials/categories', 'POST', {'name':'Recovered tag'})[1]['category']['id']
+        tag = self.api('/api/workspace/materials/categories', 'POST', {'name':'Recovered tag'}, headers)[1]['category']['id']
+        self.assertEqual(self.api('/api/workspace/materials/categories/scene', 'DELETE', headers=headers)[0], 200)
+        png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jEOcAAAAASUVORK5CYII=')
+        replacement = server.save_media_blob(png, 'image/png', 'replacement.png', server.LOCAL_ID)
+        route = '/api/workspace/materials/' + material
+        status, result = self.api(route, 'PUT', {'category':tag, 'rating':5, 'favorite':True,
+                                                 'replacementMediaId':replacement['mediaId']}, headers)
+        self.assertEqual(status, 200, result)
+        job = 'blend-'+'5'*32
+        folder = server.BLENDER_BRIDGE.directory / job
+        folder.mkdir()
+        (folder/'model.blend').write_bytes(b'fixture-version')
+        server.BLENDER_BRIDGE._write(folder/'job.json', {'id':job, 'workspaceId':old, 'status':'succeeded'})
+        self.assertEqual(self.api('/api/blender/jobs/'+job)[0], 404)
+        self.assertEqual(self.api('/api/workspaces/'+old, 'DELETE')[0], 200)
+        row = self.api(route)[1]['material']
+        self.assertEqual((row['category'], row['rating'], row['favorite'], row['url']),
+                         (tag, 5, True, replacement['url']))
+        categories = {c['id']:c['name'] for c in self.api('/api/workspace/materials/categories')[1]['categories']}
+        self.assertIn('scene', categories)
+        self.assertEqual(categories[local_tag], 'Recovered tag')
+        self.assertEqual(categories[tag], 'Recovered tag (2)')
+        self.assertIn(job, [j['id'] for j in self.api('/api/blender/jobs')[1]['jobs']])
+        with self.client.open(self.base+'/api/blender/jobs/'+job+'/download') as response:
+            self.assertEqual(response.read(), b'fixture-version')
+        self.assertEqual(self.api(route, 'PUT', {'rating':1})[0], 200)
+        self.assertEqual(self.api(route)[1]['material']['rating'], 1)
+
+    def test_workspace_review_project_move_includes_conversation(self):
+        source = self.api('/api/workspaces', 'POST', {'name':'Source canvas'})[1]['workspace']['id']
+        target = self.api('/api/workspaces', 'POST', {'name':'Destination canvas'})[1]['workspace']['id']
+        src, dst = {'X-Workspace-Id':source}, {'X-Workspace-Id':target}
+        project = self.api('/api/projects', 'POST', {'projectName':'Project and chat'}, src)[1]['project']
+        session = self.api('/api/agent/sessions', 'POST', {'projectId':project['id']}, src)[1]['session']
+        route = '/api/agent/sessions/'+session['id']
+        status, result = self.api('/api/projects/'+project['id'], 'PUT', {**project, 'workspaceId':target}, src)
+        self.assertEqual(status, 200, result)
+        self.assertEqual(self.api(route, headers=src)[0], 404)
+        self.assertEqual(self.api(route, headers=dst)[0], 200)
+        raw = json.loads(server.AGENT_SESSIONS_FILE.read_text(encoding='utf-8'))
+        self.assertEqual(next(row for row in raw if row['id']==session['id'])['workspaceId'], target)
+        # Older builds left the source workspace in this file.
+        next(row for row in raw if row['id']==session['id'])['workspaceId'] = source
+        server.write_agent_sessions(raw)
+        self.assertEqual(self.api(route, headers=dst)[0], 200)
+        self.assertEqual(self.api(route, headers=src)[0], 404)
+
+    def test_workspace_review_removed_space_tombstones_respect_existing_default_materials(self):
+        workspace = self.api('/api/workspaces', 'POST', {'name':'Old tombstones'})[1]['workspace']['id']
+        default = server.default_workspace_id(server.LOCAL_ID)
+        headers = {'X-Workspace-Id':workspace}
+        assets = server.read_assets()
+        for key, url, scope in [('local','shared',default),('other','shared',workspace),('hidden','hidden',workspace)]:
+            assets.append({'id':'tombstone-'+key, 'ownerId':server.LOCAL_ID, 'workspaceId':scope,
+                           'kind':'image', 'name':url, 'url':'https://fixture.invalid/tombstone-'+url+'.png'})
+        server.write_file(server.ASSETS_FILE, assets)
+        rows = self.api('/api/workspace/materials', headers=headers)[1]['materials']
+        ids = {row['name']:row['id'] for row in rows}
+        self.assertEqual(self.api('/api/workspace/materials', 'DELETE', {'ids':list(ids.values())}, headers)[0], 200)
+        self.assertEqual(self.api('/api/workspaces/'+workspace, 'DELETE')[0], 200)
+        self.assertEqual(self.api('/api/workspace/materials/'+ids['shared'])[0], 200)
+        self.assertEqual(self.api('/api/workspace/materials/'+ids['hidden'])[0], 404)
+
+    def test_workspace_review_chat_reply_preserves_delete_and_rename(self):
+        for action in ('DELETE', 'PUT'):
+            session = self.api('/api/agent/sessions', 'POST', {})[1]['session']
+            route = '/api/agent/sessions/'+session['id']
+            changes = []
+            def loop(messages, **kwargs):
+                changes.append(self.api(route, action, {'title':'New title'} if action=='PUT' else None)[0])
+                messages.append({'role':'assistant','content':'Offline reply'})
+                yield {'type':'text','text':'Offline reply'}
+            with patch.object(server,'agent_resolve_model',return_value=({'model':'test'},None)), \
+                 patch.object(server,'agent_chat_quote',return_value={'canAfford':True}), \
+                 patch.object(server.agent,'run_agent_loop',side_effect=loop):
+                body = json.dumps({'sessionId':session['id'], 'message':'Continue'}).encode()
+                with self.client.open(Request(self.base+'/api/agent/chat', data=body,
+                                              headers={'Content-Type':'application/json'}),timeout=10) as response:
+                    self.assertIn(b'Offline reply', response.read())
+            self.assertEqual(changes, [200])
+            status, result = self.api(route)
+            if action == 'DELETE':
+                self.assertEqual(status, 404)
+            else:
+                self.assertEqual(result['session']['title'], 'New title')
+                self.assertEqual(result['session']['messages'][-1]['content'], 'Offline reply')
+
+    def test_studio_job_restores_editable_inputs_and_skips_inline_media_in_lists(self):
+        raw = {'prompt': 'original prompt', 'settings': {'seed': 0, 'generateAudio': False,
+               'option.shape': 'wide', 'constructor': 'ignored'}, 'refs': {'firstFrame': [
+                   {'name': '首帧', 'kind': 'image', 'url': '/media/first.png'},
+                   {'name': 'inline', 'kind': 'image', 'url': 'data:image/png;base64,AAAA'}]}}
+        job = {'id': 'test', 'kind': 'video', 'referenceImages': ['data:image/png;base64,AAAA'],
+               'sourceAudios': ['data:audio/wav;base64,AAAA'], 'prompt': 'resolved camera description'}
+        server.attach_studio_draft(job, {'studioDraft': raw})
+        view = server.studio_job_view(job)
+        self.assertEqual(view['studioDraft'], {'prompt': 'original prompt',
+            'settings': {'seed': 0, 'generateAudio': False, 'option.shape': 'wide'},
+            'refs': {'firstFrame': [{'name': '首帧', 'kind': 'image', 'url': '/media/first.png'}]}})
+        self.assertNotIn('referenceImages', view)
+        self.assertNotIn('sourceAudios', view)
+
+    def test_studio_recovery_queries_existing_video_once_and_keeps_terminal_state(self):
+        job = {'id': 'fixture', 'kind': 'video', 'providerJobId': 'upstream-id', 'status': 'completed',
+               'prompt': 'original', 'submittedAt': '2020-01-01', 'videoUrl': ''}
+        with (patch.object(server, 'refresh_video_job', return_value={'videoUrl': '/media/recovered.mp4'}) as poll,
+              patch.object(server, 'resolve_media_file', return_value=Path('recovered.mp4')),
+              patch.object(server, 'append_job') as append):
+            recovered = server.recover_studio_video(job)
+            self.assertEqual(poll.call_args.args[0]['providerJobId'], 'upstream-id')
+            self.assertEqual(poll.call_args.args[0]['submittedAt'], '')
+            self.assertEqual(recovered['status'], 'completed')
+            self.assertEqual(recovered['submittedAt'], job['submittedAt'])
+            self.assertEqual(server.completed_media_update(job, recovered)['videoUrl'], '/media/recovered.mp4')
+            append.assert_called_once()
+        with patch.object(server, 'refresh_video_job', return_value={'status': 'failed'}) as poll:
+            self.assertEqual(server.recover_studio_video(job), job)
+            self.assertEqual(server.recover_studio_video({**job, 'status':'failed'})['status'], 'failed')
+            poll.assert_called_once()
+        remote = {**job, 'videoUrl':'https://fixture.invalid/result.mp4', 'videoPersistError':'temporary'}
+        self.assertFalse(server.completed_media_update(job, remote)['videoUrl'])
+        self.assertEqual(server.completed_media_update(job, {**remote, '_studioLookup': True})['videoUrl'], remote['videoUrl'])
+
+    def test_studio_submission_can_be_loaded_from_workspace_history(self):
+        saved = {'prompt': '原始镜头描述', 'settings': {'referenceMode': 'frames2video', 'duration': '5'},
+                 'refs': {'firstFrame': [{'url':'https://fixture.invalid/first.jpg','kind':'image','name':'首帧'}],
+                          'lastFrame': [{'url':'https://fixture.invalid/last.jpg','kind':'image','name':'尾帧'}]}}
+        model = {'id':'studio-video', 'kind':'video', 'usages':['video'], 'enabled':True,
+                 'model':'demo', 'baseUrl':'https://fixture.invalid', 'apiKey':'fixture'}
+        body = {'modelId':model['id'], 'prompt':'镜头描述与展开的运镜设置', 'studioDraft':saved,
+                'generationSettings': saved['settings'],
+                'referenceImages':[saved['refs'][slot][0]['url'] for slot in ('firstFrame','lastFrame')]}
+        with patch.object(server, 'visible_ai_models', return_value=[model]), \
+                patch.object(server, 'call_video_submit', return_value=({'providerJobId':'existing-id'}, None)) as send:
+            status, response = self.api('/api/generate', 'POST', body)
+        self.assertEqual(status, 202, response)
+        send.assert_called_once()
+        submitted_job = response['job']
+        self.assertEqual(submitted_job['studioDraft'], saved)
+        status, history = self.api('/api/jobs?kind=video&view=studio')
+        self.assertEqual(status, 200)
+        recorded = next(row for row in history['jobs'] if row['id'] == submitted_job['id'])
+        self.assertEqual(recorded['studioDraft'], saved)
+        self.assertNotIn('referenceImages', recorded)
+        self.assertEqual(recorded['prompt'], body['prompt'])
+
+    def test_studio_image_auto_size_and_provider_options_reach_upstream(self):
+        entry = {'id': 'newapi-lk888-studio', 'model': 'tt-image-2.5', 'apiKey': 'fixture',
+                 'baseUrl': 'https://fixture.invalid', 'imageTransport': 'media-generate'}
+        doc = server.upstream_contract(entry)
+        schema = {p['name']: p for p in doc['params']}
+        request = {'size': 'auto', 'quality': 'high',
+                   'imageSpec': {'aspectRatio': 'auto', 'resolution': '2K', 'quality': 'high'},
+                   'modelOptions': {'version': 'sunburst', 'background': 'auto'}}
+        with patch.object(server, 'read_ai_models', return_value=[entry]), \
+                patch.object(server, 'media_model_schema', return_value=schema), \
+                patch.object(server, 'request_json_candidates',
+                             return_value=({'code': 200, 'data': {'task_id': 'fixture'}}, 'fixture', None)) as upstream:
+            prepared = server.image_entry_options(entry, request)
+            result, error = server.submit_media_generate(prepared, 'prompt', request['size'], quality=request['quality'])
+        self.assertIsNone(error)
+        self.assertTrue(result)
+        params = upstream.call_args.args[1]['params']
+        self.assertEqual({k: params[k] for k in ('aspect_ratio', 'resolution', 'quality', 'version', 'background')},
+                         {'aspect_ratio': 'auto', 'resolution': '2K', 'quality': 'high',
+                          'version': 'sunburst', 'background': 'auto'})
+        self.assertNotIn('size', params)
+        with patch.object(server, 'read_ai_models', return_value=[entry]), \
+                patch.object(server, 'media_model_schema', return_value=schema), \
+                patch.object(server, 'request_json_candidates',
+                             return_value=({'code': 200, 'data': {'task_id': 'fixture'}}, 'fixture', None)) as upstream:
+            with self.assertRaisesRegex(ValueError, '像素范围'):
+                server.image_entry_options(entry, {'modelOptions': {'size': '1000x1000'}})
+            prepared = server.image_entry_options(entry, {'modelOptions': {'size': '1536x864'}})
+            server.submit_media_generate(prepared, 'prompt', '1536x864')
+            params = upstream.call_args.args[1]['params']
+            self.assertEqual(params['size'], '1536x864')
+            self.assertFalse({'resolution', 'aspect_ratio'} & set(params))
+
+    def test_studio_image_pixel_size_native_quality_and_reference_limits(self):
+        entry = {'id': 'newapi-lk888-pixels', 'model': 'tt-image-2', 'apiKey': 'fixture',
+                 'baseUrl': 'https://fixture.invalid', 'imageTransport': 'openai-images'}
+        self.assertEqual(server.image_reference_limits(entry), {'min': 0, 'max': 14})
+        self.assertEqual(server.image_reference_limits({**entry, 'model': 'gk-image-2.0'})['max'], 3)
+        self.assertEqual(server.image_reference_limits({**entry, 'model': 'tt-image-2.5'})['max'], 16)
+        self.assertEqual(server.image_reference_limits({'imageTransport': 'generation-input-image'})['max'], 1)
+        with self.assertRaisesRegex(ValueError, '参考图数量'):
+            server.image_entry_options(entry, {'referenceImages': ['fixture'] * 15})
+        for size, quality in [('1024x1536', 'medium'), ('auto', 'auto')]:
+            with self.subTest(size=size), patch.object(server, 'request_json_candidates',
+                    return_value=({'task_id': 'fixture'}, 'fixture', None)) as upstream:
+                prepared = server.image_entry_options(entry, {'quality': quality})
+                server.submit_image_generation(prepared, 'prompt', size=size, quality=quality)
+                payload = upstream.call_args.args[1]
+                self.assertEqual((payload['size'], payload['quality'], payload['n']), (size, quality, 1))
+
     def test_community_bridge_routes_and_cross_origin_protection(self):
         with patch.object(server.COMMUNITY_SKILLS, 'catalog', return_value={'skills': [], 'count': 0}) as catalog:
             status, result = self.api('/api/agent/community-skills?refresh=1')
@@ -99,6 +322,10 @@ class LocalAppTest(unittest.TestCase):
         saved = next(item for item in self.api('/api/agent/skills')[1]['skills'] if item['id'] == skill['id'])
         self.assertEqual(saved['files'][1]['content'], 'Camera reference\r\n')
         self.assertEqual(saved['primarySkillFilePath'], 'SKILL.md')
+        # The canvas import path in older clients omits createOnly and sends one file.
+        status, conflict = self.api('/api/agent/skills', 'POST', {**payload, 'files':documents[:1]})
+        self.assertEqual(status, 400)
+        self.assertIn('同名', conflict['message'])
         for bad_path in ('../escape.md', '/absolute.md', 'C:/escape.md', 'scripts/run.py'):
             with self.subTest(path=bad_path):
                 status, _ = self.api('/api/agent/skills', 'POST', {**payload, 'files': [{'path':bad_path,'content':'bad'}]})
@@ -148,11 +375,12 @@ class LocalAppTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.http = server.ThreadingHTTPServer(('127.0.0.1',0),server.Handler)
+        cls.http = server.ThreadingHTTPServer(('127.0.0.1',0),server.Handler,access_key=os.urandom(32))
         server.Handler.log_message = lambda *args: None
         cls.base = 'http://127.0.0.1:'+str(cls.http.server_address[1])
         threading.Thread(target=cls.http.serve_forever,daemon=True).start()
         cls.client = build_opener(ProxyHandler({}))
+        cls.client.addheaders = [('X-CanvasFlow-Session', cls.http.local_access.desktop_token)]
 
     @classmethod
     def tearDownClass(cls):
@@ -216,6 +444,23 @@ class LocalAppTest(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(skill['prompt'], prompt)
         self.assertNotIn('onclick', server.sanitize_rich_text('<p onclick="bad()">' + prompt + '</p>'))
+
+    def test_conflict_copy_can_be_retried_and_saved_without_touching_original(self):
+        _, created = self.api('/api/projects', 'POST', {'projectName': 'original', 'modelPrompt': 'server draft'})
+        original = created['project']
+        copy = {'restoreConflictCopy': True, 'id': 'project-recovery-1', 'projectId': original['id'],
+                'modelPrompt': 'unsynced text', 'projectName': 'recoverable', 'shared': False}
+        status, result = self.api('/api/projects', 'POST', copy)
+        self.assertEqual(status, 201)
+        restored = result['project']
+        self.assertEqual(restored['id'], copy['id'])
+        self.assertEqual(restored['modelPrompt'], 'unsynced text')
+        path = '/api/projects/' + restored['id']
+        self.assertEqual(self.api(path, 'PUT', {'revision': restored['revision'], 'modelPrompt': 'edited copy'})[0], 200)
+        status, retry = self.api('/api/projects', 'POST', copy)
+        self.assertEqual(status, 200)
+        self.assertEqual(retry['project']['modelPrompt'], 'edited copy')
+        self.assertEqual(self.api('/api/projects/' + original['id'])[1]['project']['modelPrompt'], 'server draft')
 
     def test_long_tts_text_and_audio_prompt_options_reach_upstream_intact(self):
         prompt = '用于配音的完整内容。' * 1500 + '最后一句'

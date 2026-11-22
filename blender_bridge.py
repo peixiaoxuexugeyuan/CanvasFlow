@@ -17,10 +17,13 @@ class BlenderUnavailable(ValueError):
 
 
 class BlenderBridge:
-    def __init__(self, root, directory, publish):
+    def __init__(self, root, directory, publish, *, workspace_ids=None, default_workspace=None):
         self.root=Path(root);self.directory=Path(directory)/'blender'
         self.directory.mkdir(exist_ok=True)
         self.publish=publish;self.lock=threading.RLock()
+        self.workspace_ids = workspace_ids
+        self.default_workspace = default_workspace
+        self.pending_job_states = {}
         self.executor=ThreadPoolExecutor(max_workers=1,thread_name_prefix='canvasflow-blender')
         self.cache=None
         for path in self.directory.glob('blend-*/job.json'):
@@ -30,17 +33,46 @@ class BlenderBridge:
                 self._write(path,row)
 
     @staticmethod
-    def _read(path):
-        try:
-            value=json.loads(path.read_text(encoding='utf-8'))
-            return value if isinstance(value,dict) else {}
-        except (FileNotFoundError,ValueError):return {}
+    def _retry_file_access(operation):
+        for delay in (0, .01, .025, .05, .1, .2):
+            if delay:
+                time.sleep(delay)
+            try:
+                return operation()
+            except PermissionError as exc:
+                last_error = exc
+        raise BlenderUnavailable('建模状态文件暂时被占用，请稍后重试') from last_error
 
-    @staticmethod
-    def _write(path,value):
-        temp=path.with_name(path.name+'.'+uuid.uuid4().hex+'.tmp')
-        try:temp.write_text(json.dumps(value,ensure_ascii=False,indent=2),encoding='utf-8');temp.replace(path)
-        finally:temp.unlink(missing_ok=True)
+    def _read(self, path):
+        with self.lock:
+            try:
+                value = json.loads(self._retry_file_access(lambda: path.read_text(encoding='utf-8')))
+                return value if isinstance(value, dict) else {}
+            except (FileNotFoundError, json.JSONDecodeError, UnicodeError):
+                return {}
+
+    def _write(self, path, value):
+        with self.lock:
+            temp = path.with_name(path.name+'.'+uuid.uuid4().hex+'.tmp')
+            try:
+                encoded = json.dumps(value, ensure_ascii=False, indent=2)
+                self._retry_file_access(lambda: temp.write_text(encoded, encoding='utf-8'))
+                self._retry_file_access(lambda: temp.replace(path))
+            finally:
+                if temp.exists():
+                    self._retry_file_access(lambda: temp.unlink(missing_ok=True))
+
+    def _job_state(self, path):
+        with self.lock:
+            pending = self.pending_job_states.get(path)
+            if pending is None:
+                return self._read(path)
+            try:
+                self._write(path, pending)
+            except BlenderUnavailable:
+                return pending
+            self.pending_job_states.pop(path)
+            return pending
 
     def executable(self):
         config=self._read(self.directory/'settings.json')
@@ -75,9 +107,19 @@ class BlenderBridge:
         self._write(self.directory/'settings.json',{'executable':path})
         return self.status(force=True)
 
+    def _workspace_view(self, row, valid):
+        if row and valid is not None and row.get('workspaceId') not in valid:
+            # Keep the on-disk job and any in-flight worker immutable. A deleted
+            # workspace's versions stay available for download and refinement.
+            row = {**row, 'workspaceId': self.default_workspace}
+            if isinstance(row.get('asset'), dict):
+                row['asset'] = {**row['asset'], 'workspaceId': self.default_workspace}
+        return row
+
     def job(self,id,workspace):
         if not isinstance(id,str) or not re.fullmatch(r'blend-[a-f0-9]{32}',id):raise LookupError('建模任务不存在')
-        row=self._read(self.directory/id/'job.json')
+        valid = self.workspace_ids() if self.workspace_ids else None
+        row=self._workspace_view(self._job_state(self.directory/id/'job.json'), valid)
         if not row or row.get('workspaceId')!=workspace:raise LookupError('建模任务不存在')
         return row
 
@@ -86,7 +128,8 @@ class BlenderBridge:
         return {k:v for k,v in row.items() if k not in ('executable','sourceBlend')}
 
     def jobs(self,workspace):
-        rows=[self._read(path) for path in self.directory.glob('blend-*/job.json')]
+        valid = self.workspace_ids() if self.workspace_ids else None
+        rows=[self._workspace_view(self._job_state(path), valid) for path in self.directory.glob('blend-*/job.json')]
         return [self.public(row) for row in sorted(rows,key=lambda row:row.get('createdAt',0),reverse=True) if row.get('workspaceId')==workspace][:100]
 
     def submit(self,raw,workspace):
@@ -94,7 +137,7 @@ class BlenderBridge:
         status=self.status()
         if not status['available']:raise BlenderUnavailable(status.get('error') or 'Blender 不可用')
         with self.lock:
-            active=[self._read(p) for p in self.directory.glob('blend-*/job.json')]
+            active=[self._job_state(p) for p in self.directory.glob('blend-*/job.json')]
             active=[r for r in active if r.get('status') in ('queued','running')]
             if len(active)>=4:raise ValueError('已有四个建模任务，请等待完成后再提交')
             source=''
@@ -108,13 +151,15 @@ class BlenderBridge:
                  'status':'queued','createdAt':time.time(),'plan':plan}
             self._write(directory/'job.json',row)
             self._write(directory/'task.json',{'plan':plan,'sourceBlend':source})
-            self.executor.submit(self._run,id,status['executable'])
+            self.executor.submit(self._run,dict(row),status['executable'])
         return self.public(row)
 
-    def _run(self,id,executable):
-        directory=self.directory/id
-        row=self._read(directory/'job.json');row['status']='running';self._write(directory/'job.json',row)
+    def _run(self,row,executable):
+        directory=self.directory/row['id']
+        path = directory/'job.json'
         try:
+            row['status']='running'
+            self._write(path,row)
             with (directory/'worker.log').open('wb') as log:
                 result=subprocess.run([executable,'--background','--factory-startup','--disable-autoexec',
                     '--python-exit-code','1','--python',str(self.root/'blender_worker.py'),'--',str(directory/'task.json')],
@@ -127,7 +172,11 @@ class BlenderBridge:
             row.update(status='succeeded',asset=asset,result=info,finishedAt=time.time())
         except subprocess.TimeoutExpired:row.update(status='failed',error='建模超过四分钟，任务已停止；请减少对象或细分级别',finishedAt=time.time())
         except Exception as error:row.update(status='failed',error=str(error)[:500],finishedAt=time.time())
-        self._write(directory/'job.json',row)
+        with self.lock:
+            # If an external Windows file handle outlasts the short retries, keep
+            # the actual terminal state available and retry persistence on the next poll.
+            self.pending_job_states[path] = row
+            self._job_state(path)
 
     def artifact(self,id,workspace,kind):
         row=self.job(id,workspace)

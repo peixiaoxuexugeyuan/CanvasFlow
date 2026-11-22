@@ -9,4 +9,6 @@ $env:CANVASFLOW_DATA_DIR = Join-Path $env:TEMP 'canvasflow-local-dev'
 python launch_local.py --port 5181 --no-open
 ```
 
+使用 --no-open 时，请在两分钟内打开终端输出的一次性配对链接。
+
 迁移项目时先退出所有使用原目录的实例，再复制完整数据目录。生成媒体在 `media/`，成片工程在 `films/`。本地服务日志在数据目录的 `local-logs/server.log`。

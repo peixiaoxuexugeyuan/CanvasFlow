@@ -2,6 +2,7 @@ const fs = require('node:fs'), path = require('node:path'), vm = require('node:v
 const test = require('node:test'), assert = require('node:assert/strict');
 const acorn = require('../tools/release/node_modules/acorn');
 const source = fs.readFileSync(path.join(__dirname, '../app.js'), 'utf8');
+const controller = fs.readFileSync(path.join(__dirname, '../generation-studio.js'), 'utf8');
 let mount;
 function visit(n) {
   if (!n || typeof n !== 'object') return;
@@ -10,17 +11,21 @@ function visit(n) {
 }
 visit(acorn.parse(source, {ecmaVersion:'latest'}));
 function fixture() {
-  const element = () => ({value:'', hidden:false, events:{}, addEventListener(k, fn) {this.events[k] = fn;}});
-  const c = {navigationEpoch:0, generationStudioDrafts:new Map(), workspace:'A',
+  const element = () => ({value:'', hidden:false, events:{}, querySelectorAll:()=>[], addEventListener(k, fn) {this.events[k] = fn;}});
+  const data = new Map();
+  const c = {navigationEpoch:0, currentUser:()=>({id:'test'}), workspace:'A',
     workspaceHeader:()=>({'X-Workspace-Id':c.workspace}), api:()=>new Promise(()=>{}), loadModelSpecs:()=>new Promise(()=>{}),
-    window:{addEventListener(){}, removeEventListener(){}}, clearTimeout(){}};
-  vm.createContext(c); vm.runInContext(mount,c);
+    createStudioImageAdapter(){}, createStudioVideoAdapter(){}, uploadMediaFile(){},
+    localStorage:{getItem:key=>data.get(key),setItem:(key,value)=>data.set(key,value)},
+    window:{CanvasFlowStudioUI:{markup:()=>'<form></form>',historyController:()=>({render(){}})},addEventListener(){}, removeEventListener(){}},
+    setTimeout(){},clearTimeout(){}};
+  vm.createContext(c); vm.runInContext(controller,c);vm.runInContext(mount,c);
   function open(kind, workspace=c.workspace) {
     c.unmountGenerationStudio?.(); c.navigationEpoch++; c.workspace=workspace;
     const prompt=element(), model=element(), reference=element(), field=element();
     reference.closest=()=>field;
     const form=element();form.elements={prompt,model,reference};form.querySelector=()=>element();
-    const host={hidden:false, innerHTML:'',querySelector:s=>s==='.studio-form'?form:element()};
+    const host={hidden:false, innerHTML:'',querySelectorAll:()=>[],querySelector:s=>s==='.studio-form'?form:element()};
     c.mountGenerationStudio(host,kind);
     return {prompt, host, type(text){prompt.value=text;prompt.events.input();}};
   }

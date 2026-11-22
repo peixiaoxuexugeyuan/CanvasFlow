@@ -23,7 +23,7 @@ test('SAM reference shoulder flexion/spread/twist use bind-local axes, not world
 });
 test('all twenty shipped preset values match the captured reference controls',()=>{
  const keys=['body.pitch','body.yaw','body.roll','torso.pitch','torso.yaw','torso.roll','head.pitch','head.yaw','head.roll','leftShoulder.pitch','leftShoulder.spread','leftShoulder.twist','rightShoulder.pitch','rightShoulder.spread','rightShoulder.twist','leftElbow.bend','rightElbow.bend','leftHip.pitch','leftHip.spread','leftHip.twist','rightHip.pitch','rightHip.spread','rightHip.twist','leftKnee.bend','rightKnee.bend'];
- const refs=JSON.parse(fs.readFileSync('preview/rig-reference/poses.json','utf8'));
+ const refs=JSON.parse(fs.readFileSync('tests/fixtures/director-pose-reference.json','utf8'));
  for(const p of presets)assert.deepEqual(keys.map(k=>p.controls[k]),refs.find(r=>r.name===p.label).values,p.label);
 });
 test('stand, think, wave and reach retain the reference hand placements',()=>{

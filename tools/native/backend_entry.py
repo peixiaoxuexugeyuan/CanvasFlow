@@ -9,6 +9,9 @@ def main():
     if mode == 'host':
         import desktop_host
         raise SystemExit(desktop_host.main())
+    # Keep the initialization lease through the native entry's module import.
+    import local_access
+    local_access.NATIVE_SERVER_START = True
     import server
     server.main()
 

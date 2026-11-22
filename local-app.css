@@ -3,6 +3,7 @@
 .side-help-actions { display: flex; justify-content: flex-start; }
 .side-help-actions .side-footer { flex: none; width: auto; padding-left: 0; }
 .workspace-card { margin-bottom: 20px; }
+.workspace-popover.open { z-index: 60; }
 .lm-card-meta { color: var(--text-muted, #999); }
 .project-empty-notice { padding: 24px; margin-bottom: 24px; border: 1px dashed var(--border, #393939); border-radius: 14px; background: rgba(128,128,128,.04); }
 .project-empty-notice strong { font-size: 17px; }

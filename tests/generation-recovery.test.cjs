@@ -15,7 +15,7 @@ function fixture() {
   const job = { id: 'job', outputId: 'output', kind: 'image', status: 'completed', prompt: 'test' };
   const scope = {
     state: { projectId: 'original' }, workspaceHeader: () => ({ 'X-Workspace-Id': 'workspace-a' }),
-    isStandaloneFile: () => false, document: { querySelector: () => node }, CSS: { escape: x => x },
+    isStandaloneFile: () => false, document: { querySelector: () => node, querySelectorAll: () => [node] }, CSS: { escape: x => x },
     api: async path => { queries.push(path); return { jobs: [job] }; },
     pollGenerationJob: async () => ({ image: 'image', imageUrl: '/media/file.png', jobId: 'job' }),
     nodeHasUsableImage: () => false, audioNodeTrack: () => null,
@@ -38,6 +38,21 @@ test('queued audio is recovered with its durable file URL', async () => {
   f.scope.pollGenerationJob = async () => ({ audio: 'data', audioUrl: '/media/audio.wav', jobId: 'job' });
   await f.scope.resumeGenerationJobs(); assert.equal(f.applied.length, 1);
   assert.equal(f.applied[0][1].audioUrl, '/media/audio.wav');
+});
+
+test('a recovered project copy reconnects an original pending job without submitting another generation', async () => {
+  const f = fixture();
+  f.scope.state.projectId='recovered-copy';
+  f.node.dataset.generationJobId=f.job.id;
+  f.scope.api=async (path, options) => {
+    assert.equal(options.method,undefined);
+    if(path.startsWith('/api/jobs?projectId=recovered-copy')) return {jobs:[]};
+    assert.equal(path,'/api/jobs/job');
+    return {job:f.job};
+  };
+  await f.scope.resumeGenerationJobs();
+  assert.equal(f.applied.length,1);
+  assert.equal(f.node.dataset.appliedGenerationJobId,'job');
 });
 
 test('recovery does not apply an old result after project switch', async () => {

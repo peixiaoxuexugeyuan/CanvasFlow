@@ -48,6 +48,7 @@ class ExistingProjectAccessTests(unittest.TestCase):
   func=ast.parse('def route(self,user,path):\n pass').body[0];func.body=branch.body;scope={};exec(compile(ast.fix_missing_locations(ast.Module(body=[func],type_ignores=[])),'project-read-guard','exec'),scope)
   class Request:
    project={'id':'p','ownerId':'alice','shared':False}
+   def request_workspace_id(req):return ''
    def find_project(req,id):return req.project
    def send_json(req,data,status=200):return data,status
   request=Request();self.assertEqual(scope['route'](request,{'id':'bob'},'/api/projects/p')[1],403);self.assertEqual(scope['route'](request,{'id':'alice'},'/api/projects/p')[1],200);request.project['shared']=True;self.assertEqual(scope['route'](request,{'id':'bob'},'/api/projects/p')[1],200)

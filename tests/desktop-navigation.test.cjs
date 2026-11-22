@@ -7,13 +7,14 @@ const appDirectory=path.resolve(__dirname,'../tools/desktop/app');
 const source=fs.readFileSync(path.join(appDirectory,'main.cjs'),'utf8');
 async function harness() {
   const opened=[],downloads=[];
+  let prepareHeaders;
   class Window extends EventEmitter {
     constructor(options){super();this.options=options;this.webContents=new EventEmitter();this.webContents.setWindowOpenHandler=fn=>{this.openWindow=fn;};this.webContents.downloadURL=url=>downloads.push(url);}
     isDestroyed(){return false;} isVisible(){return true;} setTitle(){} async loadURL(url){this.loadedURL=url;}
   }
   const electron={BrowserWindow:Window,
     app:{setName(){},setAppUserModelId(){},setPath(){},getPath:()=>'/profile',requestSingleInstanceLock:()=>false,quit(){},getVersion:()=> '1.0.0'},
-    session:{defaultSession:{setPermissionRequestHandler(){},setPermissionCheckHandler(){},on(){}}},
+    session:{defaultSession:{webRequest:{onBeforeSendHeaders(fn){prepareHeaders=fn;}},setPermissionRequestHandler(){},setPermissionCheckHandler(){},on(){}}},
     Menu:{buildFromTemplate:items=>items,setApplicationMenu(){}},
     ipcMain:{handle(){},on(){}},dialog:{showErrorBox(){}},
     shell:{openExternal:async url=>{opened.push(url);}}
@@ -24,7 +25,7 @@ async function harness() {
     if(name.startsWith('./'))return require(path.join(appDirectory,name));
     return require(name);
   },process:{execPath:'/app/CanvasFlow.exe',platform:'win32',arch:'x64'},__dirname:appDirectory,setTimeout,clearTimeout});
-  vm.runInContext(source+'\nglobalThis.createTestWindow=async()=>{origin="http://127.0.0.1:5173";await createWindow();return mainWindow;};',context);
+  vm.runInContext(source+'\nglobalThis.createTestWindow=async()=>{origin="http://127.0.0.1:5173";sessionToken="test-session";await createWindow();return mainWindow;};',context);
   const window=await context.createTestWindow();
   function navigate(eventName,url,isMainFrame,legacy=false){
     let prevented=false;
@@ -33,8 +34,18 @@ async function harness() {
     else window.webContents.emit(eventName,event);
     return prevented;
   }
-  return {window,opened,downloads,navigate};
+  return {window,opened,downloads,navigate,prepareHeaders};
 }
+test('workbench subresources carry the local credential only at the authenticated service origin',async()=>{
+  const {prepareHeaders}=await harness();
+  let previous={Range:'bytes=0-1023'};
+  prepareHeaders({url:'http://127.0.0.1:5173/media/test.webm',requestHeaders:previous},({requestHeaders})=>{previous=requestHeaders;});
+  assert.equal(previous['X-CanvasFlow-Session'],'test-session');
+  prepareHeaders({url:'http://127.0.0.1:62042/open',requestHeaders:previous},({requestHeaders})=>{
+    assert.equal(requestHeaders['X-CanvasFlow-Session'],undefined);
+    assert.equal(requestHeaders.Range,'bytes=0-1023');
+  });
+});
 test('OpenFilm iframe authentication redirects stay embedded without opening a browser',async()=>{
   for(const legacy of [false,true]){
     const h=await harness();

@@ -9,6 +9,8 @@ app.setName(product.name);
 app.setAppUserModelId(product.appId);
 let mainWindow, host, origin = '', rendererReady = false, closing = false, allowClose = false, quitting = false;
 let config = {}, closeResult = null, tray = null, choosingClose = false;
+let ownsHost = false, sessionToken = '';
+const updateHostToken = crypto.randomBytes(32).toString('hex');
 const executableDirectory = path.dirname(process.execPath);
 try {
   const configFile = path.join(executableDirectory, 'desktop-config.json');
@@ -113,6 +115,34 @@ ipcMain.handle('desktop:check-update', async event => {
   if (!installingUpdate) await updater.check();
   return updateNoticeState();
 });
+async function imageUpdateGate(action) {
+  if (!ownsHost) return false; // The desktop does not stop a reused service on exit.
+  const response = await fetch(origin + '/api/local/desktop-update', {
+    method:'POST', redirect:'error', signal:AbortSignal.timeout(5000),
+    headers:{'Content-Type':'application/json','X-CanvasFlow-Desktop':updateHostToken,'X-CanvasFlow-Session':sessionToken},
+    body:JSON.stringify({action})
+  });
+  if (!response.ok) throw Error('无法确认图片任务状态，请稍后再更新');
+  const result = await response.json();
+  if (typeof result.busy !== 'boolean') throw Error('无法确认图片任务状态，请稍后再更新');
+  return result.busy;
+}
+async function waitForImageJobs() {
+  if (!await imageUpdateGate('status')) return true;
+  const controller = new AbortController();
+  let postponed = false;
+  const postpone = dialog.showMessageBox(mainWindow, {type:'info', title:'等待图片任务完成',
+    message:'图片任务完成后将自动安装更新',
+    detail:'CanvasFlow 会继续生成并保存结果。你也可以返回工作台，稍后在设置中继续安装。',
+    buttons:['稍后安装'], cancelId:0, defaultId:0, signal:controller.signal, noLink:true}).then(()=>{postponed = true; return false;});
+  try {
+    for (;;) {
+      const check = await Promise.race([postpone, new Promise(resolve=>setTimeout(()=>resolve(true), 2000))]);
+      if (!check || quitting || !mainWindow || mainWindow.isDestroyed()) return false;
+      if (!await imageUpdateGate('status')) return !postponed;
+    }
+  } finally { controller.abort(); }
+}
 ipcMain.handle('desktop:install-update', async event => {
   requireUpdateSender(event);
   if (installingUpdate || !['available', 'ready'].includes(updater.getState().status)) return updater.getState();
@@ -125,15 +155,25 @@ ipcMain.handle('desktop:install-update', async event => {
       detail:'立即安装会先保存项目并退出 CanvasFlow，然后打开安装向导。安装后重新打开应用即可使用新版本。',
       buttons:['立即安装', '稍后'], defaultId:0, cancelId:1, noLink:true});
     if (choice.response !== 0) return updater.getState();
-    const closed = await prepareClose(async () => {
-      try {
-        const verifiedFile = await updater.verifyInstaller();
-        updater.installing();
-        const error = await shell.openPath(verifiedFile);
-        if (error) throw Error('无法打开更新安装程序：' + error);
-      } catch (error) {updater.fail(error.message); throw error;}
-    });
-    if (!closed && updater.getState().status !== 'error') updater.ready();
+    let busyAtHandoff;
+    do {
+      if (!await waitForImageJobs()) return updater.getState();
+      busyAtHandoff = false;
+      const closed = await prepareClose(async () => {
+        try {
+          const verifiedFile = await updater.verifyInstaller();
+          busyAtHandoff = await imageUpdateGate('reserve');
+          if (busyAtHandoff) return false;
+          updater.installing();
+          const error = await shell.openPath(verifiedFile);
+          if (error) throw Error('无法打开更新安装程序：' + error);
+        } catch (error) {
+          await imageUpdateGate('release').catch(()=>{});
+          updater.fail(error.message); throw error;
+        }
+      });
+      if (!closed && updater.getState().status !== 'error') updater.ready();
+    } while (busyAtHandoff);
   } catch (error) { updater.fail(error.message); }
   finally { installingUpdate = false; }
   return updater.getState();
@@ -191,7 +231,9 @@ ipcMain.on('desktop:ready', event => {
   rendererReady = true;
   void checkStartupUpdate();
 });
-ipcMain.on('desktop:close-result', (event, payload) => { if (validSender(event) && typeof payload?.ok === 'boolean') closeResult?.(payload.ok); });
+ipcMain.on('desktop:close-result', (event, payload) => {
+  if (validSender(event) && typeof payload?.ok === 'boolean') closeResult?.(payload.pendingSkill === true ? 'skill-editor' : payload.ok);
+});
 
 function startHost() {
   return new Promise((resolve, reject) => {
@@ -204,7 +246,7 @@ function startHost() {
     const args = ['--root', backend, '--data', dataDirectory, '--port', String(port)];
     host = spawn(compiled ? native : python, compiled ? ['host', ...args] : ['-u', path.join(backend, 'desktop_host.py'), ...args], {
       cwd:backend, windowsHide:true, stdio:['pipe','pipe','pipe'],
-      env:{...process.env, PYTHONIOENCODING:'utf-8'}
+      env:{...process.env, PYTHONIOENCODING:'utf-8', CANVASFLOW_DESKTOP_UPDATE_TOKEN:updateHostToken}
     });
     let ready = false;
     const timer = setTimeout(() => reject(Error('本地服务启动超时，请查看数据目录的 local-logs。')), 60000);
@@ -214,6 +256,11 @@ function startHost() {
       if (value.event === 'ready') {
         let url; try { url = new URL(value.url); } catch { return; }
         if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.username || url.password || url.pathname !== '/' || url.search || url.hash) return;
+        if (typeof value.sessionToken !== 'string' || !/^[a-f0-9]{64}$/.test(value.sessionToken)) {
+          clearTimeout(timer); reject(Error('本地服务身份校验失败，请使用配套版本的后端。')); return;
+        }
+        sessionToken = value.sessionToken;
+        ownsHost = !value.reused;
         ready = true; clearTimeout(timer); log(`Service ready (${value.reused ? 'reused' : 'owned'}), ${url.origin}`); resolve(url.origin);
       } else if (value.event === 'error') { clearTimeout(timer); reject(Error(value.message)); log(value.message); }
     });
@@ -244,6 +291,13 @@ async function prepareClose(beforeClose) {
         catch { closeResult(false); }
       });
     }
+    if (ok === 'skill-editor') {
+      showWindow();
+      await dialog.showMessageBox(mainWindow, {type:'info', title:'Skill 正在编辑',
+        message:'请先完成 Skill 编辑', detail:'保存 Skill，或在编辑器中确认放弃修改后，再退出或安装更新。',
+        buttons:['返回编辑器'], defaultId:0, noLink:true});
+      return false;
+    }
     if (!ok) {
       const choice = await dialog.showMessageBox(mainWindow, {type:'warning', title:'项目尚未保存完成',
         message:'项目尚未保存到文件，是否仍要退出？', detail:'返回工作台可以重试保存。当前浏览器缓存可能保留编辑内容，但不能替代项目文件。',
@@ -255,7 +309,7 @@ async function prepareClose(beforeClose) {
       fs.mkdirSync(profile, {recursive:true});
       fs.writeFileSync(stateFile, JSON.stringify({bounds:mainWindow.getNormalBounds(), maximized:mainWindow.isMaximized()}));
     } catch {}
-    if (beforeClose) await beforeClose();
+    if (beforeClose) { if (await beforeClose() === false) return false; }
     else await updater.cancel();
     allowClose = true;
     mainWindow.close();
@@ -272,6 +326,16 @@ async function prepareClose(beforeClose) {
 
 function openExternal(value) { const target = externalURL(value); if (target) void shell.openExternal(target).catch(error => log(error.message)); }
 function configureSession() {
+  // Keep the credential in the main process, including for media ranges and downloads.
+  // Strip it on redirects, including redirects into a separate OpenFilm origin.
+  session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
+    const headers = {...details.requestHeaders};
+    for (const name of Object.keys(headers)) {
+      if (name.toLowerCase() === 'x-canvasflow-session') delete headers[name];
+    }
+    if (sameOrigin(details.url, origin)) headers['X-CanvasFlow-Session'] = sessionToken;
+    callback({requestHeaders: headers});
+  });
   const allowed = permission => ['clipboard-sanitized-write', 'fullscreen'].includes(permission);
   session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
     callback(contents === mainWindow?.webContents && sameOrigin(details.requestingUrl || contents.getURL(), origin) && allowed(permission));
@@ -339,6 +403,7 @@ else {
   app.whenReady().then(async () => {
     try {
       origin = await startHost(); await createWindow();
+      if (updateSupported()) void updater.cleanInstalledDownloads().catch(error=>log('Update cache cleanup: ' + error.message));
       try { createTray(); } catch (error) { log('Tray unavailable: ' + error.message); }
       // Optional build acceptance run: exercise the actual preload/IPC/close path.
       if (process.argv.includes('--desktop-self-test')) {

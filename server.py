@@ -20,6 +20,7 @@ import time
 import shutil
 import uuid
 from contextvars import ContextVar
+from functools import lru_cache, wraps
 from concurrent.futures import ThreadPoolExecutor
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, make_msgid
@@ -31,7 +32,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from datetime import datetime, timedelta, timezone
 from http.server import SimpleHTTPRequestHandler
-from bounded_http import ThreadingHTTPServer
+from bounded_http import ThreadingHTTPServer as BoundedHTTPServer
 from pathlib import Path
 from local_app import LOCAL_ID, LOCAL_CONTEXT, LocalStorage, local_content, local_job, retired_route, installation_id
 from workspace_materials import build_catalog, summary_item, category_list, media_kind as material_media_kind
@@ -41,6 +42,8 @@ from film_workbench import FilmWorkbench, FilmUnavailable
 from urllib.parse import parse_qs, quote, unquote, urlparse
 from request_security import RequestBodyError, StorageReadError, request_allowed, public_static_path, byte_range
 from release_security import PublicFiles
+from provider_credentials import protect_rows, unlock_rows
+from local_access import CONNECT_PAGE, NATIVE_SERVER_START, LocalAccess, lock_data_directory, set_service_port, user_secret
 from network_security import open_http_url as guarded_open_http_url, http_origin, validate_provider_access, network_access, private_url, NetworkAccessError
 
 ROOT = Path(__file__).resolve().parent
@@ -59,8 +62,31 @@ mimetypes.add_type('image/svg+xml', '.svg')
 mimetypes.add_type('image/webp', '.webp')
 DATA_DIR = Path(os.environ.get('CANVASFLOW_DATA_DIR') or ROOT / 'server-data').resolve()
 DATA_DIR.mkdir(exist_ok=True)
+# Migrations and Blender recovery below can write during import. Protect those
+# operations before opening any application store, even for embedded servers.
+_STARTUP_DATA_LEASE = lock_data_directory(DATA_DIR)
+
+
+class ThreadingHTTPServer(BoundedHTTPServer):
+    """All application entry points bind the run credential to the actual listening port."""
+    def __init__(self, address, handler, *, access_key=None, data_lease=None):
+        super().__init__(address, handler)
+        self._data_lease = None
+        try:
+            self._data_lease = data_lease or lock_data_directory(DATA_DIR)
+            set_service_port(self._data_lease, self.server_port)
+            self.local_access = LocalAccess(access_key or user_secret(), installation_id(ROOT, DATA_DIR), self.server_port)
+        except BaseException:
+            self.server_close()
+            raise
+
+    def server_close(self):
+        super().server_close()
+        if getattr(self, '_data_lease', None):
+            self._data_lease.close()
+
+
 COMMUNITY_SKILLS = CommunitySkills(DATA_DIR / 'community-skill-catalog.json')
-FILM_WORKBENCH = FilmWorkbench(ROOT, DATA_DIR)
 # 视频/大文件落盘目录。**不走 assets.json** —— 那是内联 base64，已经 150MB+，
 # 而且 read_json 有 8MB 上限，视频塞进去必然爆。这里存独立文件，节点只记文件名。
 MEDIA_DIR = DATA_DIR / 'media'
@@ -855,14 +881,76 @@ def image_parameter_contract(entry):
     return {'type': 'image', 'params': params}
 
 
+def image_reference_limits(entry):
+    """Reference limits from the same upload contract used by the selected model."""
+    doc = upstream_contract(entry)
+    upload = next((p for p in doc.get('params', []) if p.get('type') == 'upload'
+                   and p.get('name') in {'images', 'input_image', 'image_urls', 'reference_images', 'referenceImages'}), None)
+    if not upload and doc.get('params'):
+        return {'min': 0, 'max': 0}
+    maximum = None
+    if upload:
+        maximum = upload.get('max_count')
+        if maximum is None:
+            # Existing catalog entries describe the upper bound in their upload field.
+            match = re.search(r'(?:上传\s*(?:\d+\s*[-~～至到]\s*)?|最多(?:上传)?\s*)(\d+)\s*张',
+                              str(upload.get('description') or ''))
+            if match:
+                maximum = int(match.group(1))
+        if upload.get('name') == 'input_image':
+            maximum = 1
+    if resolve_image_transport(entry) == 'generation-input-image':
+        maximum = 1
+    minimum = int(upload.get('min_count') or 1) if upload and upload.get('required') else 0
+    return {'min': minimum, 'max': int(maximum) if maximum is not None else None}
+
+
 def image_entry_options(entry,incoming):
     options=incoming.get('modelOptions') or (incoming.get('generationSettings') or {}).get('modelOptions') or {}
     if not isinstance(options,dict):raise ValueError('图片模型参数格式错误')
     doc=image_parameter_contract(entry);names={p['name'] for p in doc.get('params',[]) if p.get('type') not in ('upload','textarea') and p['name']!='prompt'}
     unknown = sorted(set(options) - names)
     if unknown: raise ValueError('包含该图片模型未声明的参数：' + '、'.join(unknown))
-    validate_contract_options(doc,options)
-    return {**entry,'mediaParams':{**media_param_overrides(entry),**options}}
+    limits = image_reference_limits(entry)
+    refs = incoming.get('referenceImages') or []
+    ref_count = sum(1 for ref in refs if isinstance(ref, str) and ref.strip()) if isinstance(refs, list) else 0
+    if not ref_count and incoming.get('referenceImage'):
+        ref_count = 1
+    if ref_count < limits['min'] or limits['max'] is not None and ref_count > limits['max']:
+        raise ValueError('参考图数量不符合所选模型的要求。')
+    selected = dict(options)
+    if incoming.get('imageSpec'):
+        spec = incoming['imageSpec']
+        if not isinstance(spec, dict) or set(spec) - {'aspectRatio', 'resolution', 'quality'}:
+            raise ValueError('图片规格格式错误。')
+        rows = {r['key']: r for r in spec_rows_for_entry(entry, 'image') or []}
+        for key, value in spec.items():
+            row = rows.get(key) or {}
+            if not any(str(value) == str(o['value']) for o in row.get('options') or []):
+                raise ValueError('该图片模型不支持所选规格，请重新选择。')
+            selected[row.get('field') or key] = str(value)
+    if selected.get('size') and any(p.get('name') == 'size' and p.get('type') == 'input' for p in doc.get('params', [])):
+        size = str(selected['size']).strip().lower()
+        match = re.fullmatch(r'(\d{1,5})x(\d{1,5})', size)
+        if size != 'auto':
+            if not match:
+                raise ValueError('自定义尺寸必须为像素宽高或 auto。')
+            width, height = map(int, match.groups())
+            if (width % 16 or height % 16 or width > 3 * height or height > 3 * width
+                    or not 655360 <= width * height <= 8294400):
+                raise ValueError('自定义尺寸超出模型支持的像素范围。')
+        selected['size'] = size
+    validate_contract_options(doc, {**selected, 'images': refs if refs else [None] * ref_count})
+    quality = incoming.get('quality')
+    declared_quality = next((p for p in doc.get('params', []) if p.get('name') == 'quality'), {})
+    native_quality = next((str(o['value']) for o in declared_quality.get('options') or []
+                           if str(o['value']) == quality and not o.get('currently_unavailable')), '')
+    if quality and not native_quality and not image_quality_value(entry.get('model'), quality, entry.get('name')):
+        if spec_rows_registered_for_entry(entry, 'image'):
+            row = next((r for r in spec_rows_for_entry(entry, 'image') or [] if r.get('key') == 'quality'), {})
+            native_quality = next((str(o['value']) for o in row.get('options') or [] if str(o['value']) == quality), '')
+    return {**entry,'mediaParams':{**media_param_overrides(entry),**options},
+            '_imageSelectedParams':selected, '_imageNativeQuality':native_quality}
 
 
 def upstream_spec_overlay(specs):
@@ -980,8 +1068,13 @@ def validate_generation_contract(entry, kind, incoming, *, strict=False):
             if available and resolution.lower() not in [str(v).lower() for v in available]:raise ValueError('清晰度不受该模型支持，请重新选择。')
             limit=(provider.get('maxByResolution') or {}).get(resolution)
             if limit and duration>float(limit):raise ValueError(f'该清晰度最多支持 {limit} 秒。')
-            for raw,cap in [('referenceImages','max_image'),('sourceVideos','max_video'),('sourceAudios','max_audio')]:
-                if len(incoming.get(raw) or [])>int(provider.get(cap,0)):raise ValueError('参考素材数量超过该模型限制。')
+        limits = doc.get('referenceLimits') or {}
+        for raw, media_kind, fallback in [('referenceImages','image',2), ('sourceVideos','video',1), ('sourceAudios','audio',1)]:
+            cap = int(provider.get('max_' + media_kind, 0) if provider else limits.get(media_kind, fallback))
+            if media_kind == 'image' and settings.get('referenceMode') in ('singleImage2video','frames2video'):
+                cap = min(cap, 1 if settings['referenceMode'] == 'singleImage2video' else 2)
+            if len(incoming.get(raw) or []) > cap:
+                raise ValueError('参考素材数量超过该模型限制。')
         # Models driven by a source video/audio do not accept an invented duration.
         if doc and not any(p['name']=='duration' for p in doc.get('params',[])) and 'duration' in settings:
             settings.pop('duration',None)
@@ -1199,13 +1292,19 @@ def clone(value):
     return json.loads(json.dumps(value, ensure_ascii=False))
 
 
+CREDENTIAL_FILES = {'ai-models.json', 'ai-providers.json'}
+
+
 def read_file(path: Path, fallback):
     if not path.exists():
-        path.write_text(json.dumps(fallback, ensure_ascii=False, indent=2), encoding='utf-8')
+        write_file(path, fallback)
         return local_content(path, clone(fallback))
     try:
-        return local_content(path, json.loads(path.read_text(encoding='utf-8')))
+        rows = json.loads(path.read_text(encoding='utf-8'))
+        return local_content(path, unlock_rows(rows) if path.name in CREDENTIAL_FILES else rows)
     except (OSError, UnicodeError, json.JSONDecodeError):
+        if path.name in CREDENTIAL_FILES:
+            raise StorageReadError(f'{path.name} 无法读取；请检查原文件或恢复有效备份')
         # Corrupt data must not be silently replaced by defaults: the next write would then
         # overwrite the user's only copy. Keep the broken file side by side for manual recovery.
         try:
@@ -1236,6 +1335,8 @@ def materialize_inline_content(value,owner_id):
 
 
 def write_file(path: Path, value):
+    if path.name in CREDENTIAL_FILES:
+        value = protect_rows(value)
     storage = globals().get('ACCOUNT_STORAGE')
     actor = STORAGE_ACTOR.get()
     content_files = {'projects.json','assets.json','music.json','models.json','previs-assets.json','portfolio.json','agent-sessions.json','agent-shares.json','agent-skills.json','ai-models.json'}
@@ -1343,6 +1444,55 @@ def in_workspace(item, workspace_id, valid_ids=None):
     return bool(workspace_id) and item_workspace_id(item, valid_ids) == workspace_id
 
 
+def read_material_settings(path, workspace):
+    # Material overrides are keyed by workspace, unlike project/asset rows
+    # which already fall back to the default workspace when an owner disappears.
+    with LOCK:
+        saved = read_file(path, {})
+        if workspace != default_workspace_id(LOCAL_ID) or not saved:
+            return saved
+        orphans = sorted(set(saved) - workspace_id_set() - {workspace})
+        if not orphans:
+            return saved
+        if path.name == 'workspace-material-categories.json':
+            target = saved.setdefault(workspace, [])
+            existing = {row['id'] for row in target}
+            names = {row['name'].casefold() for row in category_list(workspace, saved)}
+            for source in orphans:
+                for row in saved.pop(source):
+                    # Deleting/renaming a built-in category in another workspace
+                    # must not remove or rename it for existing default materials.
+                    if not row['id'].startswith('tag-') or row['id'] in existing:
+                        continue
+                    name = row['name']
+                    suffix = 2
+                    while name.casefold() in names:
+                        tail = f' ({suffix})'
+                        name = row['name'][:40-len(tail)] + tail
+                        suffix += 1
+                    target.append({**row, 'name': name})
+                    existing.add(row['id'])
+                    names.add(name.casefold())
+        else:
+            target = saved.setdefault(workspace, {})
+            already_in_default = set(target)
+            if any(fields.get('deleted') for source in orphans for fields in saved[source].values()):
+                # A tombstone from the removed workspace is local to its old
+                # library. Never let it hide a file already visible at home.
+                local_rows = build_catalog(workspace, read_projects(), read_assets(), read_music(),
+                    PREVIS_ASSETS.records() + read_models(), latest_jobs(limit=None),
+                    lambda item, wid: item_workspace_id(item) == wid)
+                already_in_default.update(row['id'] for row in local_rows)
+            for source in orphans:
+                for material_id, fields in saved.pop(source).items():
+                    # A file may already have been customized in the destination.
+                    if fields.get('deleted') and material_id in already_in_default:
+                        fields = {key:value for key, value in fields.items() if key not in ('deleted','deletedAt')}
+                    target[material_id] = {**fields, **target.get(material_id, {})}
+        write_file(path, saved)
+        return saved
+
+
 def read_projects():
     projects = read_file(PROJECTS_FILE, DEFAULT_PROJECTS)
     normalized = []
@@ -1388,6 +1538,7 @@ MEDIA_EXT_BY_MIME = {
     'video/mp4': '.mp4', 'video/webm': '.webm', 'video/quicktime': '.mov',
     'video/x-matroska': '.mkv', 'video/ogg': '.ogv',
     'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp',
+    'image/bmp': '.bmp', 'image/heic': '.heic', 'image/tiff': '.tiff', 'audio/webm': '.weba',
     'image/gif': '.gif', 'audio/mpeg': '.mp3', 'audio/wav': '.wav', 'audio/mp4': '.m4a',
     'audio/ogg': '.ogg', 'audio/flac': '.flac', 'audio/aac': '.aac',
 }
@@ -1641,11 +1792,11 @@ def media_referenced_by(media_id, assets=None, projects=None):
         if contains(project):
             refs.append(f"项目 {project.get('id')}")
     # Background jobs and public snapshots may outlive a removed canvas node.
-    for reader_name in ('read_agent_sessions', 'read_agent_shares'):
+    for reader_name in ('read_agent_sessions', 'read_agent_shares', 'read_agent_skills'):
         reader = globals().get(reader_name)
         if reader:
             for item in reader():
-                if contains(item): refs.append(f"对话/分享 {item.get('id')}")
+                if contains(item): refs.append(f"Agent 记录 {item.get('id')}")
     jobs_file = globals().get('JOBS_FILE')
     if jobs_file and jobs_file.exists():
         with jobs_file.open(encoding='utf-8') as stream:
@@ -1722,7 +1873,7 @@ def persist_media_url(url, mime='', name=''):
             'Accept': '*/*', 'User-Agent': 'CanvasFlow/1.0',
         })
         try:
-            with open_http_url(request, timeout=MEDIA_FETCH_TIMEOUT) as response:
+            with open_media_url(request, timeout=MEDIA_FETCH_TIMEOUT) as response:
                 declared = response.headers.get('Content-Length')
                 if declared and declared.isdigit() and int(declared) > MEDIA_FETCH_MAX_BYTES:
                     raise ValueError(f'远端文件超过 {MEDIA_FETCH_MAX_BYTES // 1_000_000}MB 上限')
@@ -2063,7 +2214,8 @@ def publish_blender_asset(job, directory, info):
                 'transform':{'position':[0,0,0],'rotation':[0,0,0],'scale':[1,1,1]}}})
 
 
-BLENDER_BRIDGE = BlenderBridge(ROOT, DATA_DIR, publish_blender_asset)
+BLENDER_BRIDGE = BlenderBridge(ROOT, DATA_DIR, publish_blender_asset,
+                              workspace_ids=workspace_id_set, default_workspace=default_workspace_id(LOCAL_ID))
 from platform_notifications import NotificationStore, NotificationError
 PLATFORM_NOTIFICATIONS = NotificationStore(DATA_DIR / 'platform-notifications.json', read_file, write_file, LOCK, lambda: now())
 from portfolio import PortfolioStore, PortfolioError
@@ -3126,6 +3278,8 @@ def provider_record(incoming, existing=None):
     normalized = normalize_ai_model(incoming, existing)
     saved = {'id': (existing or {}).get('id') or 'provider-' + uuid.uuid4().hex[:12],
              **{key: normalized[key] for key in AI_PROVIDER_FIELDS if key in normalized}}
+    if normalized.get('protectedApiKey'):
+        saved['protectedApiKey'] = normalized['protectedApiKey']
     group = (existing or {}).get('providerGroup') or incoming.get('providerGroup')
     if group:
         if group != 'canvasflow':
@@ -3189,7 +3343,8 @@ def ai_model_public(item):
         #   前端拿到的永远是 undefined → 开关打开后一刷新又变回关闭（本项目踩过的经典静默丢弃）。
         'generationTimeouts': dict(item['generationTimeouts']) if isinstance(item.get('generationTimeouts'), dict) and item['generationTimeouts'] else None,
         'enabled': bool(item.get('enabled')), 'apiKeySet': bool(key),
-        'apiKeyHint': (f'****{key[-4:]}' if len(key) >= 8 else ('已设置' if key else '')),
+        'apiKeyHint': ('请在当前 Windows 账户重新填写密钥' if item.get('protectedApiKey')
+                       else f'****{key[-4:]}' if len(key) >= 8 else ('已设置' if key else '')),
         # 作用域（r794）：前端据此在模型选择器里标「主供应商 / 我的」
         'ownerId': model_owner_of(item),
         'scope': 'mine' if model_owner_of(item) else 'global',
@@ -3296,16 +3451,36 @@ def normalize_ai_model(incoming, existing=None):
         else:
             item.pop('generationTimeouts', None)
     key = str(incoming.get('apiKey') or '').strip()
-    if existing and existing.get('apiKey') and not key:
+    if existing and (existing.get('apiKey') or existing.get('protectedApiKey')) and not key:
         validate_provider_access('admin', item['baseUrl'])
         if http_origin(item['baseUrl']) != http_origin(existing['baseUrl']):
             raise NetworkAccessError('更换接口主机后必须重新填写 API Key，不能把原密钥转发到其他主机',400)
-    if key: item['apiKey'] = key[:200]
+    if key:
+        if len(key) > 8192:
+            raise ValueError('API Key 超过 8192 字符，请检查输入内容')
+        item['apiKey'] = key
+        item.pop('protectedApiKey', None)
     elif 'apiKey' not in item: item['apiKey'] = ''
     item['enabled'] = bool(incoming.get('enabled', item.get('enabled', False)))
     return item
 
 
+def migrate_provider_credentials():
+    if os.name != 'nt':
+        return
+    for path in (AI_MODELS_FILE, AI_PROVIDERS_FILE):
+        if path.is_file():
+            try:
+                rows = json.loads(path.read_text(encoding='utf-8'))
+            except (UnicodeError, json.JSONDecodeError):
+                # The normal configuration reader reports a damaged file without
+                # overwriting it or copying a potentially unprotected legacy key.
+                continue
+            if isinstance(rows, list) and any(isinstance(row, dict) and row.get('apiKey') for row in rows):
+                write_file(path, rows)
+
+
+migrate_provider_credentials()
 if not AI_MODELS_FILE.exists(): write_ai_models(DEFAULT_AI_MODELS)
 
 
@@ -4268,9 +4443,30 @@ def provider_timeout_value(entry, key, fallback):
 # 一条会话 = 一个 projectId 下的一段对话。messages 直接存模型能吃的原始形态
 # （含 assistant.tool_calls 与 tool 消息），这样「刷新页面 / 重启服务后继续」都不丢上下文。
 
+@lru_cache(maxsize=1)
+def _agent_project_workspaces(projects_path, revision):
+    # Keyed by the atomically replaced project file so chat polling need not
+    # parse large canvas snapshots again until a project changes.
+    return {(row.get('ownerId'), row.get('id')): item_workspace_id(row)
+            for row in read_projects() if row.get('id')}
+
+
 def read_agent_sessions():
-    value = read_file(AGENT_SESSIONS_FILE, [])
-    return value if isinstance(value, list) else []
+    items = read_file(AGENT_SESSIONS_FILE, [])
+    if not isinstance(items, list):
+        return []
+    if any(row.get('projectId') for row in items):
+        try:
+            stat = PROJECTS_FILE.stat()
+            revision = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+        except FileNotFoundError:
+            revision = None
+        workspaces = _agent_project_workspaces(PROJECTS_FILE, revision)
+        for row in items:
+            workspace = workspaces.get((row.get('userId'), row.get('projectId')))
+            if workspace:
+                row['workspaceId'] = workspace
+    return items
 
 
 def write_agent_sessions(items):
@@ -4591,13 +4787,20 @@ def find_agent_session(session_id, user_id):
     return None
 
 
-def save_agent_session(session):
+def save_agent_session(session, *, existing_turn=False, original_title=None):
     with LOCK:
         items = read_agent_sessions()
         index = next((i for i, item in enumerate(items) if item.get('id') == session.get('id')), None)
         if index is None:
+            if existing_turn:
+                # A successful delete while streaming must survive a delayed reply.
+                return None
             items.insert(0, session)
         else:
+            if existing_turn:
+                session['workspaceId'] = items[index].get('workspaceId')
+                if items[index].get('title') != original_title:
+                    session['title'] = items[index].get('title')
             items[index] = session
         # Account quotas control growth; one user's activity must never evict
         # another user's history.
@@ -4700,6 +4903,42 @@ def read_upstream_response(response, limit):
             raise UpstreamResponseTooLarge(f'供应商响应超过 {limit // 1_000_000}MB 上限；未自动重发生成请求，请到供应商任务记录获取结果')
 
 
+def diagnostic_credentials(headers):
+    tokens = []
+    for name, value in headers:
+        if name.lower() in {'authorization', 'proxy-authorization', 'api-key', 'x-api-key', 'cookie'}:
+            tokens.append(value)
+            if name.lower().endswith('authorization') and ' ' in value:
+                tokens.append(value.split(' ', 1)[1])
+    return tokens
+
+
+_DIAGNOSTIC_URL = re.compile(r"""https?://[^\s"'<>]+""", re.I)
+_DIAGNOSTIC_AUTH = re.compile(r'(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=%-]+')
+_DIAGNOSTIC_SECRET = re.compile(
+    r"""(?ix)(\b(?:authorization|api[_-]?key|x-api-key|access[_-]?token|refresh[_-]?token|token|"""
+    r"""secret(?:[_-]?key)?|signature|password|cookie|set-cookie|credential)\b["']?\s*[:=]\s*)"""
+    r"""(?:\[已隐藏\]|"[^"\r\n]*"?|'[^'\r\n]*'?|[^\s,;&}\]]+)""")
+
+
+def safe_provider_diagnostic(value, credentials=(), limit=800):
+    """Sanitize diagnostic text only. Generated media and successful content stay intact."""
+    text = str(value or '').replace('\x00', '')
+    for token in sorted({key for key in credentials if isinstance(key, str) and key}, key=len, reverse=True):
+        text = text.replace(token, '[已隐藏]')
+    text = _DIAGNOSTIC_URL.sub('[链接已隐藏]', text)
+    text = _DIAGNOSTIC_AUTH.sub('[已隐藏]', text)
+    return _DIAGNOSTIC_SECRET.sub(r'\1[已隐藏]', text)[:limit]
+
+
+def read_provider_http_error(exc, headers):
+    # A truncated body could cut through an unlabelled credential before redaction.
+    raw = exc.read(4001)
+    if len(raw) > 4000:
+        return '供应商错误正文过长'
+    return upstream_error_detail(raw.decode('utf-8', errors='replace'), exc.reason, diagnostic_credentials(headers))
+
+
 def send_request(req, timeout=120):
     """统一的上游请求发送 + JSON 解析，返回 (status, data, error)。绝不回传密钥。"""
     # Identify the API client explicitly; urllib's default identity is rejected by
@@ -4719,15 +4958,12 @@ def send_request(req, timeout=120):
         return 0, {}, str(exc)
     except urllib_error.HTTPError as exc:
         try:
-            raw = exc.read(4000).decode('utf-8', errors='replace')
-            detail_payload = json.loads(raw)
-            detail = detail_payload.get('message') or detail_payload.get('error', {}).get('message') if isinstance(detail_payload, dict) else None
-            detail = detail or raw[:500]
+            detail = read_provider_http_error(exc, req.header_items())
         except Exception:
             detail = ''
         return exc.code, {}, f'供应商返回 HTTP {exc.code}：{detail or "请求失败"}'
     except (urllib_error.URLError, TimeoutError, OSError) as exc:
-        return 0, {}, f'无法连接模型服务：{exc}'
+        return 0, {}, '无法连接模型服务：' + safe_provider_diagnostic(exc, diagnostic_credentials(req.header_items()))
 
 
 def http_json_request(url, payload=None, headers=None, method=None, timeout=120):
@@ -5073,30 +5309,55 @@ def request_bytes_candidates(candidates, payload=None, headers=None, timeout=120
                 break
         except urllib_error.HTTPError as exc:
             try:
-                raw = exc.read(4000).decode('utf-8', errors='replace')
+                detail = read_provider_http_error(exc, req.header_items())
             except (IncompleteRead, urllib_error.URLError, TimeoutError, OSError) as read_error:
                 last_error = f'供应商返回 HTTP {exc.code}，错误响应读取中断；未自动重发生成请求'
                 break
-            try:
-                parsed = json.loads(raw)
-                nested = parsed.get('error') if isinstance(parsed, dict) else None
-                detail = (parsed.get('message') or (nested.get('message') if isinstance(nested, dict) else nested)) if isinstance(parsed, dict) else None
-            except (ValueError, TypeError):
-                parsed, detail = {}, None
-            last_error = f'供应商返回 HTTP {exc.code}：{detail or raw[:500] or "请求失败"}'
-            if exc.code != 405 and not is_route_miss(exc.code, parsed, last_error):
+            last_error = f'供应商返回 HTTP {exc.code}：{detail}'
+            if exc.code != 405 and not is_route_miss(exc.code, {}, last_error):
                 break
         except UpstreamResponseError as exc:
             last_error = str(exc)
             break
         except (urllib_error.URLError, TimeoutError, OSError) as exc:
-            last_error = f'无法连接模型服务：{exc}'
+            last_error = '无法连接模型服务：' + safe_provider_diagnostic(exc, diagnostic_credentials(req.header_items()))
             break
     return None, None, last_error or '请求上游失败'
 
 
-def provider_error(message):
-    return str(message or '视频模型未返回可用任务信息').replace('\x00', '')[:800]
+def provider_error(message, entry=None):
+    return safe_provider_diagnostic(message or '视频模型未返回可用任务信息', [(entry or {}).get('apiKey')])
+
+
+JOB_DIAGNOSTIC_FIELDS = ('error', 'pollError', 'videoPersistError', 'imagePersistError', 'audioPersistError')
+
+
+def configured_diagnostic_credentials():
+    keys = set()
+    for path in (AI_MODELS_FILE, AI_PROVIDERS_FILE):
+        if not path.exists():
+            continue
+        try:
+            rows = read_file(path, [])
+        except (OSError, StorageReadError):
+            continue
+        if isinstance(rows, list):
+            keys.update(row['apiKey'] for row in rows if isinstance(row, dict) and isinstance(row.get('apiKey'), str) and row['apiKey'])
+    return keys
+
+
+def scrub_job_diagnostics(job, credentials=()):
+    safe = job
+    for field in JOB_DIAGNOSTIC_FIELDS:
+        value = job.get(field)
+        if not value:
+            continue
+        clean = safe_provider_diagnostic(value, credentials)
+        if value != clean:
+            if safe is job:
+                safe = dict(job)
+            safe[field] = clean
+    return safe
 
 
 def encode_jwt_hs256(access_key, secret_key):
@@ -5460,7 +5721,7 @@ def provider_image_value(images):
     return ''
 
 
-def provider_image_values(images):
+def provider_image_values(images, limit=2):
     """按顺序取出**所有**可用的图片值（最多 2 张）—— 首尾帧要第一张 + 第二张。
     单张版 `provider_image_value` 仍然保留：多数协议只吃一张图。"""
     values = []
@@ -5470,7 +5731,7 @@ def provider_image_values(images):
             values.append(data)
         elif data.startswith('http://') or data.startswith('https://'):
             values.append(data[:4000])
-        if len(values) >= 2:
+        if limit is not None and len(values) >= limit:
             break
     return values
 
@@ -5480,6 +5741,36 @@ def provider_image_values(images):
 #   源视频必须是**可公开访问的 URL**（上游明确写了「视频文件仍需传 URL」，不接受 base64）。
 #   实测（`_upspec/video-enhance.json`）：`video_url` 是 `type=upload` + `required=true`。
 VIDEO_INPUT_VIDEO_MAX_LEN = 4000
+VIDEO_PROVIDER_UPLOAD_LIMIT = 25 * 1024 * 1024
+
+
+def video_job_sources(entry, user_id, values):
+    """Accept a local video only on transports that upload it before generation."""
+    if not isinstance(values, list) or not values:
+        return []
+    sources = []
+    for source in values:
+        if isinstance(source, str) and len(source) <= VIDEO_INPUT_VIDEO_MAX_LEN:
+            if source.startswith(('https://', 'http://')):
+                sources.append(source)
+                continue
+            if entry.get('requestProfile') == 'zhongheng-video' and source.startswith('/media/'):
+                media_id = source.removeprefix('/media/')
+                if not MEDIA_SAFE_NAME.fullmatch(media_id):
+                    raise ValueError('参考视频文件地址无效')
+                validate_new_media(user_id, source)
+                file = resolve_media_file(media_id)
+                if not file:
+                    raise ValueError('参考视频文件不存在')
+                if file.stat().st_size > VIDEO_PROVIDER_UPLOAD_LIMIT:
+                    raise ValueError('参考视频超过上游 25 MB 限制')
+                from file_formats import validate_asset_media
+                validate_asset_media('video', path=file)
+                sources.append(source)
+                continue
+        raise ValueError('源视频需要有效的 HTTP 链接，且不得超过允许的长度')
+    return sources
+
 # 上游对「源视频」这类参数的命名比图片更不统一：单数 `video_url` / 复数 `videos` 都有，
 # 还有 `video` 这种裸名。按优先级依次试（`spec_field_candidates` 里登记表声明的 field 排第一）。
 VIDEO_INPUT_FIELD_CANDIDATES = ('video_url', 'videoUrl', 'video', 'videos', 'video_urls', 'input_video')
@@ -5606,6 +5897,13 @@ def video_payload(job, entry):
     return mode, prompt, image, seconds, aspect, negative, seed, last_frame, source_video
 
 
+def video_param_available(definition, params):
+    conditions = definition.get('available_when') or {}
+    return all(key not in params or not isinstance(allowed, list)
+               or str(params[key]).lower() in [str(value).lower() for value in allowed]
+               for key, allowed in conditions.items())
+
+
 def build_media_video_params(entry, job, schema):
     """Use the registered model fields; keep media inputs out of protocol fields."""
     settings = job.get('generationSettings') or {}
@@ -5624,6 +5922,9 @@ def build_media_video_params(entry, job, schema):
         for name in spec_field_candidates(row):
             if name not in schema or schema[name].get('type') == 'upload':
                 continue
+            if key not in semantic and name in params:
+                # User-selected model options take precedence over registry defaults.
+                break
             allowed = media_param_options(schema, name)
             text = 'true' if value is True else 'false' if value is False else str(value or '')
             if value in (None, '') or (allowed and text not in allowed):
@@ -5639,20 +5940,28 @@ def build_media_video_params(entry, job, schema):
         params.setdefault('script_name', str(job.get('prompt') or '').split('\n')[0][:60])
     reference = str(settings.get('referenceMode') or '')
     if 'mode' in schema:
+        allowed_modes = media_param_options(schema, 'mode')
         wanted = 'cankaosheng' if (job.get('sourceVideos') or job.get('sourceAudios') or reference in
-                 ('mixed2video', 'video2video', 'videoEdit2video', 'audio2video')) else 'shouweizhen'
-        if wanted in media_param_options(schema, 'mode'):
+                 ('image2video', 'mixed2video', 'video2video', 'videoEdit2video', 'videoExtend2video', 'audio2video')) else 'shouweizhen'
+        if reference == 'text2video' and 'wensheng' in allowed_modes:
+            wanted = 'wensheng'
+        if wanted in allowed_modes:
             params['mode'] = wanted
-    images = provider_image_values(job.get('referenceImages'))
-    videos = [provider_video_value(job.get('sourceVideos'))] if provider_video_value(job.get('sourceVideos')) else []
+    if '_quan_neng_mode' in schema and job.get('sourceVideos'):
+        subtype = {'videoEdit2video': 'edit', 'videoExtend2video': 'extend'}.get(reference, 'quan_neng')
+        if subtype in media_param_options(schema, '_quan_neng_mode'):
+            params['_quan_neng_mode'] = subtype
+    else:
+        params.pop('_quan_neng_mode', None)
+    images = provider_image_values(job.get('referenceImages'), limit=None)
+    videos = [url for source in job.get('sourceVideos', []) if (url := provider_video_value(source))]
     audios = [str(x) for x in job.get('sourceAudios', []) if isinstance(x, str) and
-              x.startswith(('https://', 'http://', 'data:audio/'))][:1]
+              x.startswith(('https://', 'http://', 'data:audio/'))]
     for name, definition in schema.items():
-        if definition.get('type') != 'upload':
+        if not video_param_available(definition, params):
+            params.pop(name, None)
             continue
-        conditions = definition.get('available_when') or {}
-        if any(field in params and str(params[field]) not in [str(v) for v in allowed]
-               for field, allowed in conditions.items() if isinstance(allowed, list)):
+        if definition.get('type') != 'upload':
             continue
         if name in ('audio_url', 'audio', 'sound_file', 'audio_file', 'reference_audio'):
             values = audios
@@ -5664,7 +5973,9 @@ def build_media_video_params(entry, job, schema):
         else:
             continue
         if values:
-            params[name] = values if name.endswith('s') and not name.endswith('ss') else values[0]
+            # A reference-generation image_url slot can represent several references.
+            multiple = name.endswith('s') or (len(values) > 1 and params.get('mode') == 'cankaosheng')
+            params[name] = values if multiple else values[0]
     return params
 
 
@@ -5675,7 +5986,8 @@ def submit_video_media_generate(entry, job, trace=None):
         return None, '暂时无法读取该视频模型的参数表，请稍后重试；尚未提交生成任务'
     params = build_media_video_params(entry, job, schema)
     missing = [str(p.get('label') or name) for name, p in schema.items()
-               if p.get('required') and name != 'prompt' and params.get(name) in (None, '', [])]
+               if p.get('required') and name != 'prompt' and video_param_available(p, params)
+               and params.get(name) in (None, '', [])]
     if missing:
         return None, '该模型还缺少必传素材或参数：' + '、'.join(missing)
     payload = {'model': model, 'prompt': str(job.get('prompt') or ''), 'params': params}
@@ -5688,7 +6000,7 @@ def submit_video_media_generate(entry, job, trace=None):
     if error:
         return None, provider_error(error)
     if not isinstance(result, dict) or str(result.get('code')) != '200':
-        return None, '供应商拒绝了本次请求：' + media_error_text(result)
+        return None, '供应商拒绝了本次请求：' + media_error_text(result, entry)
     task_id = extract_task_id(result)
     if not task_id:
         return None, '供应商未返回视频任务号'
@@ -5714,12 +6026,12 @@ def provider_inline_reference(value, media_kind):
     if not value.startswith(('https://', 'http://')):
         raise ValueError('参考素材必须是有效的文件或链接')
     request = urllib_request.Request(value, headers={'Accept': media_kind + '/*'})
-    with open_http_url(request, timeout=60) as response:
+    with open_media_url(request, timeout=60) as response:
         mime = response.headers.get_content_type()
         if not mime.startswith(media_kind + '/'):
             raise ValueError('参考素材类型不正确')
-        raw = response.read(25 * 1024 * 1024 + 1)
-    if len(raw) > 25 * 1024 * 1024:
+        raw = response.read(VIDEO_PROVIDER_UPLOAD_LIMIT + 1)
+    if len(raw) > VIDEO_PROVIDER_UPLOAD_LIMIT:
         raise ValueError('参考素材超过 25MB')
     return 'data:' + mime + ';base64,' + base64.b64encode(raw).decode()
 
@@ -5730,7 +6042,7 @@ def zhongheng_reference(entry, value, media_kind):
     inline = provider_inline_reference(value, media_kind)
     header, encoded = inline.split(',', 1);mime = header[5:].split(';')[0]
     raw = base64.b64decode(encoded, validate=True)
-    if len(raw) > 25 * 1024 * 1024:
+    if len(raw) > VIDEO_PROVIDER_UPLOAD_LIMIT:
         raise ValueError('参考素材超过上游 25MB 限制')
     boundary = 'CanvasFlow' + uuid.uuid4().hex
     ext = mimetypes.guess_extension(mime) or '.bin'
@@ -5738,7 +6050,8 @@ def zhongheng_reference(entry, value, media_kind):
     status, result, error = http_body_request(provider_base_url(entry) + '/v1/media', body,
         headers=auth_headers(entry, None, {'Content-Type': 'multipart/form-data; boundary=' + boundary}), timeout=90)
     if error or not isinstance(result, dict) or not result.get('success'):
-        raise ValueError('参考素材上传失败：' + str(error or result.get('message') or '上游没有返回文件地址'))
+        message = result.get('message') if isinstance(result, dict) else ''
+        raise ValueError('参考素材上传失败：' + str(error or message or '上游没有返回文件地址'))
     rows = result.get('data') or []
     url = str(rows[0].get('url') or '') if rows and isinstance(rows[0], dict) else ''
     if not url.startswith('https://'):
@@ -5752,8 +6065,9 @@ def provider_video_payload(entry, job):
     duration = parse_video_seconds(settings.get('duration'))
     if duration < float(contract.get('minDuration') or 1) or duration > float(contract.get('maxDuration') or 30) or (contract.get('durationOptions') and duration not in contract['durationOptions']):
         raise ValueError('所选视频时长超过该模型上限')
-    images = provider_image_values(job.get('referenceImages'))
-    videos = [provider_video_value(job.get('sourceVideos'))] if provider_video_value(job.get('sourceVideos')) else []
+    images = provider_image_values(job.get('referenceImages'), limit=None)
+    sources = job.get('sourceVideos') or []
+    videos = sources if profile == 'zhongheng-video' else [url for source in sources if (url := provider_video_value(source))]
     audios = job.get('sourceAudios') or []
     limits = [('image', images), ('video', videos), ('audio', audios)]
     for kind, values in limits:
@@ -5808,7 +6122,7 @@ def submit_provider_video(entry, job, trace=None):
     if trace is not None:trace['endpoint'] = url
     if error:return None, provider_error(error)
     if not isinstance(result, dict) or result.get('ok') is False or result.get('success') is False:
-        return None, provider_error(str((result or {}).get('error') or (result or {}).get('message') or '上游拒绝任务'))
+        return None, provider_error(str((result or {}).get('error') or (result or {}).get('message') or '上游拒绝任务'), entry)
     task_id = result.get('event_id') if entry.get('requestProfile') == 'sanyuan-video' else result.get('task_id')
     if not task_id:return None, '上游没有返回任务号'
     return {'providerJobId':str(task_id),'providerProtocol':'openai','submittedAt':now(),'progress':0}, None
@@ -5829,7 +6143,7 @@ def provider_video_status(entry, job):
         if not path.startswith('/v1/video/file/'):
             return {}, '任务完成但上游没有返回有效的下载地址', ''
         request = urllib_request.Request(base + path, headers=auth_headers(entry))
-        with open_http_url(request, timeout=MEDIA_FETCH_TIMEOUT) as response:
+        with open_media_url(request, timeout=MEDIA_FETCH_TIMEOUT) as response:
             chunks = [];total = 0
             while True:
                 chunk = response.read(1024 * 1024)
@@ -6019,7 +6333,7 @@ def call_video_submit(entry, job, trace=None):
     if str(entry.get('videoTaskMode') or '').strip() == 'sync' and not video_url:
         return None, '已按「同步」任务模式提交，但供应商没有直接返回成片地址；请把任务模式改成「异步」，或确认该供应商支持同步返回'
     if not provider_id and not video_url:
-        return None, provider_error(response_value(result, 'message', 'error') or '供应商未返回 task_id 或视频地址')
+        return None, provider_error(response_value(result, 'message', 'error') or '供应商未返回 task_id 或视频地址', entry)
     submitted = {'provider': entry.get('provider') or protocol, 'providerProtocol': protocol, 'providerJobId': provider_id, 'videoUrl': video_url, 'submittedAt': now(), 'progress': 100 if video_url else 0}
     # 少数供应商是同步返回成片的（提交即有地址）。这条路同样要落盘，
     # 否则「同步返回」这一支会绕过 refresh_video_job 的落盘逻辑，留下会过期的链接。
@@ -6112,13 +6426,37 @@ def provider_status_request(entry, job):
                                 timeout=provider_timeout_value(entry, 'statusPoll', 60))
         if not error:
             if media_generate_entry(entry):
-                failure = media_status_payload_error(result)
+                failure = media_status_payload_error(result, entry)
                 if failure: return {}, failure, ''
             return result, None, url.replace(safe_id, '{task_id}')
         last_error = error
         if status in (401, 403):
             break
     return {}, last_error or '无法查询任务状态', ''
+
+
+def defer_overdue_poll(job, entry, setting, default_minutes, start_key):
+    """A local wait limit cannot establish the result of an upstream task."""
+    try:
+        stamp = datetime.fromisoformat(job.get(start_key) or '')
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return False
+    minutes = provider_timeout_value(entry, setting, default_minutes) if entry else default_minutes
+    elapsed = (datetime.now(timezone.utc) - stamp).total_seconds()
+    if not minutes or elapsed <= minutes * 60:
+        return False
+    if not job.get('providerJobId'):
+        job.update(status='failed', stage='failed', error=f'等待超过 {minutes} 分钟仍未完成，已停止跟踪')
+        return True
+    # Check immediately on reopen, then reduce automatic polling to once a minute.
+    current_time = int(time.time())
+    last = job.get('overduePollAt', 0)
+    if isinstance(last, (int, float)) and 0 <= current_time - last < 60:
+        return True
+    job['overduePollAt'] = current_time
+    return False
 
 
 def refresh_video_job(job):
@@ -6147,26 +6485,13 @@ def refresh_video_job(job):
     if current.get('videoUrl'):
         current.update({'status': 'completed', 'progress': 100, 'simulated': False})
         return current
-    # 视频总等待：超过上限仍未完成的任务直接判定失败，避免永远挂在「生成中」。
-    # ★ 用 provider_timeout_value(entry, ...)：entry 在上一行才定义，所以取值必须放在这里，
-    #   挪到 entry 之前会 NameError（这个函数开头还有一段 completed/failed 的早退分支用不到它）。
-    limit_minutes = provider_timeout_value(entry, 'videoTotalWait', 20)
-    submitted = str(current.get('submittedAt') or '')
-    if limit_minutes and submitted:
-        try:
-            stamp = datetime.fromisoformat(submitted)
-            if stamp.tzinfo is None: stamp = stamp.replace(tzinfo=timezone.utc)
-            elapsed = (datetime.now(timezone.utc) - stamp).total_seconds()
-        except (TypeError, ValueError):
-            elapsed = 0
-        if elapsed > limit_minutes * 60:
-            current.update({'status': 'failed', 'progress': 0, 'simulated': False, 'error': f'等待超过 {limit_minutes} 分钟仍未完成，已停止跟踪'})
-            return current
+    if defer_overdue_poll(current, entry, 'videoTotalWait', 20, 'submittedAt'):
+        return current
     result, error, status_path_hit = provider_status_request(entry, current)
     if error:
         # A query failure says nothing about whether the upstream task succeeded.
         # Keep polling until its business status or the total-wait deadline is known.
-        current.update({'pollError': provider_error(error), 'lastPollErrorAt': now(),
+        current.update({'pollError': provider_error(error, entry), 'lastPollErrorAt': now(),
                         'pollErrorCount': int(current.get('pollErrorCount') or 0) + 1, 'simulated': False})
         return current
     for key in ('pollError', 'lastPollErrorAt', 'pollErrorCount'):
@@ -6187,7 +6512,7 @@ def refresh_video_job(job):
         # 而且这里已经处在「正在等视频生成」的用户可接受延迟里，多花几秒下载不会更糟。
         # 失败不影响任务成功（视频确实生成好了），只留一笔 videoPersistError。
         persist_job_video(current)
-    if current['status'] == 'failed': current['error'] = provider_error(str(result.get('error') or '') or extract_failure_reason(result) or '供应商生成失败')
+    if current['status'] == 'failed': current['error'] = provider_error(str(result.get('error') or '') or extract_failure_reason(result) or '供应商生成失败', entry)
     current['simulated'] = False
     return current
 
@@ -6205,7 +6530,14 @@ def completed_media_update(previous, incoming):
         url_key = kind + 'Url'
         source = str(previous.get(kind + 'Data') or previous.get(url_key) or '')
         target = str(incoming.get(url_key) or '')
-        if not source or (source.startswith('/media/') and resolve_media_file(source.rsplit('/', 1)[-1])):
+        recovered = (kind == 'video' and previous.get('providerJobId')
+                     and previous.get('providerJobId') == incoming.get('providerJobId'))
+        if (not source and not recovered) or (source.startswith('/media/') and resolve_media_file(source.rsplit('/', 1)[-1])):
+            continue
+        if not source and recovered and incoming.get('_studioLookup') and target.startswith(('https://', 'http://')):
+            merged[url_key] = target
+            if incoming.get('videoPersistError'):
+                merged['videoPersistError'] = incoming['videoPersistError']
             continue
         if not target.startswith('/media/') or not resolve_media_file(target.removeprefix('/media/')):
             continue
@@ -6216,42 +6548,218 @@ def completed_media_update(previous, incoming):
     return merged
 
 
+# The JSONL format remains compatible with older installations and backups.
+# The latest immutable snapshot is indexed in memory; direct rewrites by
+# history deletion or restore invalidate the index through its file signature.
+_JOB_INDEX = {}
+_JOB_SIGNATURE = None
+_JOB_EXTRA_ROWS = 0
+_JOB_NEEDS_COMPACTION = False
+_JOB_NEEDS_NEWLINE = False
+
+
+def job_log_signature():
+    try:
+        stat = JOBS_FILE.stat()
+        return (JOBS_FILE, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+    except FileNotFoundError:
+        return (JOBS_FILE, None, 0, 0)
+
+
+def index_jobs():
+    global _JOB_INDEX, _JOB_SIGNATURE, _JOB_EXTRA_ROWS, _JOB_NEEDS_COMPACTION, _JOB_NEEDS_NEWLINE
+    signature = job_log_signature()
+    if signature == _JOB_SIGNATURE:
+        return _JOB_INDEX
+    snapshots = {}
+    count = 0
+    changed = False
+    trailing = False
+    credentials = None
+    if signature[2]:
+        with JOBS_FILE.open(encoding='utf-8') as stream:
+            for line in stream:
+                trailing = not line.endswith('\n')
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue  # A partial final append never supersedes a valid snapshot.
+                if not isinstance(row, dict) or not row.get('id'):
+                    continue
+                if credentials is None and any(row.get(field) for field in JOB_DIAGNOSTIC_FIELDS):
+                    credentials = configured_diagnostic_credentials()
+                clean = scrub_job_diagnostics(row, credentials or ())
+                # Historical clients marked a locally expired wait as a provider failure.
+                if (clean.get('status') == 'failed' and clean.get('providerJobId') and not clean.get('upstreamCancelled')
+                        and re.fullmatch(r'等待超过 [0-9.]+ 分钟仍未完成，已停止跟踪', str(clean.get('error') or ''))):
+                    clean = {**clean, 'status':'running', 'stage':'running'}
+                    clean.pop('error', None)
+                changed |= clean != row
+                snapshots[row['id']] = clean
+                count += 1
+    _JOB_INDEX, _JOB_SIGNATURE = snapshots, signature
+    _JOB_EXTRA_ROWS = count - len(snapshots)
+    _JOB_NEEDS_COMPACTION = changed or (_JOB_EXTRA_ROWS > 0 and signature[2] > 4 * 1024 * 1024)
+    _JOB_NEEDS_NEWLINE = trailing
+    return snapshots
+
+
 def append_job(job):
-    """Append a latest job snapshot while keeping the append-only log bounded."""
+    """Persist a single changed snapshot; periodically compact atomically."""
+    global _JOB_SIGNATURE, _JOB_EXTRA_ROWS, _JOB_NEEDS_COMPACTION, _JOB_NEEDS_NEWLINE
+    # A live task restored from an older journal may still carry inline references.
+    # Migrate those as it progresses; a malformed legacy reference must not hide the result.
+    for field, kind in (('referenceImages', 'image'), ('sourceAudios', 'audio')):
+        values = job.get(field)
+        if not isinstance(values, list) or not any(isinstance(v, str) and v.startswith('data:') for v in values):
+            continue
+        durable = list(values)
+        for index, value in enumerate(values):
+            if isinstance(value, str) and value.startswith('data:'):
+                try:
+                    durable[index], _ = video_reference_values(job.get('userId') or LOCAL_ID, value, kind)
+                except ValueError:
+                    pass
+        job[field] = durable
     with LOCK:
-        lines = JOBS_FILE.read_text(encoding='utf-8').splitlines() if JOBS_FILE.exists() else []
-        # A delayed poll/background worker must not undo a completed or cancelled task.
-        for line in reversed(lines):
-            try:
-                previous = json.loads(line)
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(previous, dict) or previous.get('id') != job.get('id'):
-                continue
-            if previous.get('status') in {'completed', 'failed'}:
-                merged = completed_media_update(previous, job)
-                job.clear()
-                job.update(merged)
-                if merged == previous:
-                    return
-                break
-            if previous == job:
-                return
-            break
+        snapshots = index_jobs()
+        previous = snapshots.get(job['id'])
+        job.update(scrub_job_diagnostics(job))
+        if previous and previous.get('status') in {'completed', 'failed'}:
+            merged = completed_media_update(previous, job)
+            job.clear()
+            job.update(merged)
+        if previous == job and not _JOB_NEEDS_COMPACTION:
+            return
         if job.get('charge') and job.get('status') in {'completed', 'failed'}:
             settle_job_charge(job)
-        if globals().get('ACCOUNT_STORAGE') and (job.get('userId') or job.get('ownerId')):
-            ACCOUNT_STORAGE.ensure(job.get('userId') or job.get('ownerId'),len(json.dumps(job,ensure_ascii=False).encode('utf-8'))+1)
-        lines.append(json.dumps(job, ensure_ascii=False))
-        temp = JOBS_FILE.with_name(JOBS_FILE.name + '.' + uuid.uuid4().hex + '.tmp')
-        try:
-            temp.write_text('\n'.join(lines) + '\n', encoding='utf-8')
-            temp.replace(JOBS_FILE)
-        finally:
-            temp.unlink(missing_ok=True)
+        encoded = json.dumps(job, ensure_ascii=False)
+        owner = job.get('userId') or job.get('ownerId')
+        if globals().get('ACCOUNT_STORAGE') and owner:
+            ACCOUNT_STORAGE.ensure(owner, len(encoded.encode('utf-8')) + 1)
+        # Complete the durable write before making the new snapshot visible.
+        if _JOB_NEEDS_COMPACTION or _JOB_EXTRA_ROWS >= max(32, len(snapshots)):
+            temp = JOBS_FILE.with_name(JOBS_FILE.name + '.' + uuid.uuid4().hex + '.tmp')
+            try:
+                with temp.open('w', encoding='utf-8') as stream:
+                    for key, row in snapshots.items():
+                        if key != job['id']:
+                            stream.write(json.dumps(row, ensure_ascii=False) + '\n')
+                    stream.write(encoded + '\n')
+                temp.replace(JOBS_FILE)
+            finally:
+                temp.unlink(missing_ok=True)
+            _JOB_EXTRA_ROWS = 0
+            _JOB_NEEDS_COMPACTION = False
+        else:
+            with JOBS_FILE.open('a', encoding='utf-8') as stream:
+                stream.write(('\n' if _JOB_NEEDS_NEWLINE else '') + encoded + '\n')
+            _JOB_EXTRA_ROWS += int(previous is not None)
+        _JOB_NEEDS_NEWLINE = False
+        snapshots[job['id']] = json.loads(encoded)
+        _JOB_SIGNATURE = job_log_signature()
     scope = GENERATION_REQUEST_CHARGE.get()
     if scope and job.get('charge') and job['charge'].get('holdId') == scope['charge'].get('holdId') and job.get('status') not in {'completed','failed'}:
         scope['deferred'] = True
+
+
+def attach_studio_draft(job, incoming):
+    """Keep editable inputs with this workspace job, separate from the provider request."""
+    draft = incoming.get('studioDraft')
+    if not isinstance(draft, dict):
+        return
+    settings, refs = {}, {}
+    def valid_key(value):
+        return (isinstance(value, str) and re.fullmatch(r'[\w.:-]{1,100}', value)
+                and value not in {'__proto__', 'constructor', 'prototype'})
+    raw_settings = draft.get('settings')
+    raw_refs = draft.get('refs')
+    for key, value in (raw_settings.items() if isinstance(raw_settings, dict) else ()):
+        if valid_key(key) and len(settings) < 128:
+            if isinstance(value, str):
+                settings[key] = value
+            elif ((isinstance(value, int) and value.bit_length() <= 64)
+                  or (isinstance(value, float) and math.isfinite(value))):
+                settings[key] = value
+    for key, values in (raw_refs.items() if isinstance(raw_refs, dict) else ()):
+        if not valid_key(key) or not isinstance(values, list) or len(refs) >= 16:
+            continue
+        items = []
+        for item in values:
+            if not isinstance(item, dict) or item.get('kind') not in ('image', 'video', 'audio'):
+                continue
+            url = item.get('url')
+            if not isinstance(url, str) or len(url) > 4000:
+                continue
+            if not re.fullmatch(r'/media/[\w.-]+', url):
+                try:
+                    parsed = urlparse(url)
+                    if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password:
+                        continue
+                except ValueError:
+                    continue
+            items.append({'kind': item['kind'], 'url': url, 'name': str(item.get('name') or '')[:160]})
+        refs[key] = items
+    snapshot = {'prompt': str(draft.get('prompt') or ''), 'settings': settings, 'refs': refs}
+    if len(json.dumps(snapshot, ensure_ascii=False).encode('utf-8')) <= 512000:
+        job['studioDraft'] = snapshot
+        if settings != raw_settings or refs != raw_refs:
+            job['studioDraftPartial'] = True
+
+
+# Additional reference formats accepted by video providers. These are staging
+# inputs, so keep the stricter public gallery upload rules separate.
+_VIDEO_REF_EXT = {'image/gif':'.gif', 'image/bmp':'.bmp', 'image/heic':'.heic',
+                  'image/tiff':'.tiff', 'audio/ogg':'.ogg', 'audio/flac':'.flac',
+                  'audio/aac':'.aac', 'audio/webm':'.weba'}
+
+
+def extended_reference_mime(raw):
+    mime = sniff_media_mime(raw)
+    if mime in _VIDEO_REF_EXT:
+        return mime
+    if raw.startswith((b'II*\0', b'MM\0*')):
+        return 'image/tiff'
+    if len(raw) >= 7 and raw[0] == 0xff and (raw[1] & 0xf6) == 0xf0:
+        return 'audio/aac'
+    if mime == 'video/webm' and b'A_OPUS' in raw[:65536] and b'V_VP' not in raw[:65536]:
+        return 'audio/webm'
+    return ''
+
+
+def video_reference_values(user_id, value, kind):
+    """Keep a reusable local handle in history; inline bytes only on the provider request."""
+    if not isinstance(value, str) or len(value) > VIDEO_MAX_IMAGE:
+        raise ValueError('参考素材格式无效或文件过大')
+    if value.startswith(('https://', 'http://')):
+        return value, value
+    from file_formats import validate_asset_media
+    if value.startswith('/media/'):
+        validate_new_media(user_id, value)
+        media_id = urlparse(value).path.removeprefix('/media/')
+        file = resolve_media_file(media_id)
+        if not file or ((file.stat().st_size + 2) // 3) * 4 + 64 > VIDEO_MAX_IMAGE:
+            raise ValueError('参考素材文件不存在或过大')
+        if file.suffix in _VIDEO_REF_EXT.values():
+            raw = file.read_bytes()
+            mime = extended_reference_mime(raw)
+            if not mime.startswith(kind + '/') or _VIDEO_REF_EXT[mime] != file.suffix:
+                raise ValueError('参考素材类型不正确')
+            return '/media/' + media_id, 'data:' + mime + ';base64,' + base64.b64encode(raw).decode()
+        validate_asset_media(kind, path=file)
+        return '/media/' + media_id, media_data_uri(media_id)
+    if not value.startswith('data:' + kind + '/'):
+        raise ValueError('参考素材需要有效文件或链接')
+    mime, raw = decode_data_uri(value)
+    if not raw:
+        raise ValueError('参考素材内容无效')
+    extended = extended_reference_mime(raw)
+    if extended and extended.startswith(kind + '/'):
+        mime = extended
+    else:
+        validate_asset_media(kind, data=value)
+    saved = save_media_blob(raw, mime, owner_id=user_id)
+    return saved['url'], value
 
 
 def create_video_job(user, incoming, workspace_id='', *, retry_of=None):
@@ -6268,8 +6776,6 @@ def create_video_job(user, incoming, workspace_id='', *, retry_of=None):
     preset_text = preset_prompt_text(preset_scene) if preset_scene else ''
     user_text = str(incoming.get('prompt') or '').strip()
     prompt = '\n'.join([part for part in (preset_text, user_text) if part]).strip()
-    if not prompt:
-        return None, {'error': 'missing_prompt', 'message': '请输入视频提示词', 'status': 400}
     settings = incoming.get('generationSettings') if isinstance(incoming.get('generationSettings'), dict) else {}
     model_id = str(settings.get('modelId') or incoming.get('modelId') or '').strip()
     # 必须按「真的能提交」来筛：光看 enabled 会把没填 API Key 的占位模型也算进来，
@@ -6295,6 +6801,8 @@ def create_video_job(user, incoming, workspace_id='', *, retry_of=None):
         else:
             message = '指定的视频模型不可用或没配全，请重新选一个（可以先用 list_models 看看有哪些可用）'
         return None, {'error': 'video_model_not_configured', 'message': message, 'status': 400}
+    if not prompt and not upstream_contract(entry).get('promptOptional'):
+        return None, {'error': 'missing_prompt', 'message': '请输入视频提示词', 'status': 400}
     try:validate_generation_contract(entry,'video',incoming,strict=True)
     except ValueError as error:return None,{'error':'invalid_model_parameters','message':str(error),'status':400}
     job = {
@@ -6310,37 +6818,27 @@ def create_video_job(user, incoming, workspace_id='', *, retry_of=None):
     #    videoEdit2video / audio2video / mixed2video / videoExtend2video / longVideo2video）。
     #   漏了它就等于前端选了个模式、服务端完全不知道（旧版就是这个状态：模式只是标签）。
     job['generationSettings'] = {key: settings.get(key) for key in ('modelId', 'videoMode', 'referenceMode', 'aspectRatio', 'resolution', 'duration', 'cameraMove', 'generateAudio', 'generateCount', 'modelOptions') if settings.get(key) is not None}
+    attach_studio_draft(job, incoming)
     if isinstance(incoming.get('advancedSettings'), dict):
         job['advancedSettings'] = {key: incoming['advancedSettings'].get(key) for key in ('seed', 'motion', 'negativePrompt') if incoming['advancedSettings'].get(key) is not None}
     if isinstance(incoming.get('upstreamInputs'), list): job['upstreamInputs'] = [str(item)[:120] for item in incoming['upstreamInputs'] if str(item).strip()][:8]
     images = incoming.get('referenceImages') if isinstance(incoming.get('referenceImages'), list) else []
-    job['referenceImages']=[]
-    for item in images[:2]:
-        if not isinstance(item,str):return None,{'error':'invalid_reference','message':'参考图片格式无效','status':400}
-        if item.startswith('/media/'):
-            validate_new_media(user['id'],item)
-            media_id=urlparse(item).path.rsplit('/',1)[-1];file=resolve_media_file(media_id)
-            if not file:return None,{'error':'invalid_reference','message':'参考图片文件不存在','status':400}
-            if ((file.stat().st_size+2)//3)*4+64>VIDEO_MAX_IMAGE:
-                return None,{'error':'reference_too_large','message':'参考图片过大，请压缩后再生成','status':400}
-            from file_formats import validate_asset_media
-            try:validate_asset_media('image',path=file)
-            except ValueError as error:return None,{'error':'invalid_reference','message':str(error),'status':400}
-            item=media_data_uri(media_id)
-        if len(item)>VIDEO_MAX_IMAGE:return None,{'error':'reference_too_large','message':'参考图片过大，请压缩后再生成','status':400}
-        if not (item.startswith('data:image/') or item.startswith(('http://','https://'))):
-            return None,{'error':'invalid_reference','message':'参考图片格式无效','status':400}
-        job['referenceImages'].append(item)
-    # ★★★ r873：源视频（超分 / 视频编辑这类模型的必传素材）。与参考图**严格分开**：
-    #   只收 http(s) 直链（上游不收 base64 视频），最多 1 个（上游声明"仅支持 1 个"）。
-    source_videos = incoming.get('sourceVideos') if isinstance(incoming.get('sourceVideos'), list) else []
-    if any(not isinstance(item,str) or len(item)>VIDEO_INPUT_VIDEO_MAX_LEN or not item.startswith(('http://','https://')) for item in source_videos[:1]):
-        return None,{'error':'invalid_source_video','message':'源视频需要有效的 HTTP 链接，且不得超过允许的长度','status':400}
-    job['sourceVideos'] = source_videos[:1]
-    source_audios = incoming.get('sourceAudios') if isinstance(incoming.get('sourceAudios'), list) else []
-    if any(not isinstance(value, str) or len(value) > VIDEO_MAX_IMAGE or not value.startswith(('https://', 'http://', 'data:audio/')) for value in source_audios[:1]):
-        return None, {'error': 'invalid_source_audio', 'message': '参考音频需要有效的音频链接或音频文件', 'status': 400}
-    job['sourceAudios'] = source_audios[:1]
+    try:
+        job['sourceVideos'] = video_job_sources(entry, user['id'], incoming.get('sourceVideos'))
+        source_audios = incoming.get('sourceAudios') or []
+        if not isinstance(source_audios, list):
+            raise ValueError('参考音频列表格式无效')
+        stored_refs = {}
+        wire_refs = {}
+        for key, kind, values in [('referenceImages', 'image', images), ('sourceAudios', 'audio', source_audios)]:
+            stored_refs[key], wire_refs[key] = [], []
+            for value in values:
+                stored, wire = video_reference_values(user['id'], value, kind)
+                stored_refs[key].append(stored)
+                wire_refs[key].append(wire)
+        job.update(stored_refs)
+    except ValueError as error:
+        return None, {'error':'invalid_reference', 'message':str(error), 'status':400}
     # ★★ r884：视频在**提交时预扣**（按次 = perCall；按秒 = 请求时长 × perSecond）。
     #   真正的「多退少补」在任务走到终态时由 `settle_job_charge()` 收口 ——
     #   上游回报的实际时长可能和请求的不一样，而且失败必须全额退回。
@@ -6350,13 +6848,13 @@ def create_video_job(user, incoming, workspace_id='', *, retry_of=None):
         user, entry, prompt_text=prompt, seconds=parse_video_seconds(job['generationSettings'].get('duration')),
         label=entry.get('name'))
     trace = {}
-    submitted, error = call_video_submit(entry, job, trace=trace)
+    submitted, error = call_video_submit(entry, {**job, **wire_refs}, trace=trace)
     if error:
         # 提交失败 → 预扣全额退回（用户不该为一次没发出去的请求买单）。
         if job.get('charge'):
             job['charge']['settled'] = False
             settle_generation_charge(job['charge'], failed=True, label=entry.get('name'))
-        return None, {'error': 'video_submit_failed', 'message': provider_error(error), 'provider': entry.get('provider') or entry.get('protocol'), 'status': 502}
+        return None, {'error': 'video_submit_failed', 'message': provider_error(error, entry), 'provider': entry.get('provider') or entry.get('protocol'), 'status': 502}
     if trace.get('usage') is not None:
         job['upstreamUsage'] = trace['usage']
     job.update(submitted)
@@ -6369,30 +6867,20 @@ def create_video_job(user, incoming, workspace_id='', *, retry_of=None):
 
 def latest_jobs(user_id=None, limit=100, project_id=None, workspace_id=None, valid_ids=None):
     """Read one latest snapshot per job, scoped to the signed-in user（以及所在工作区）。"""
-    snapshots = {}
-    if not JOBS_FILE.exists(): return []
-    try:
-        lines = JOBS_FILE.read_text(encoding='utf-8').splitlines()
-    except OSError:
-        return []
-    for line in lines:
-        try:
-            job = json.loads(line)
-        except (json.JSONDecodeError, TypeError):
-            continue
-        if not isinstance(job, dict) or not job.get('id'):
-            continue
-        local_job(job)
+    with LOCK:
+        rows = list(index_jobs().values())
+    jobs = []
+    for snapshot in rows:
+        job = local_job(dict(snapshot))
         if user_id and job.get('userId') != user_id:
             continue
         if workspace_id and not in_workspace(job, workspace_id, valid_ids):
             continue
         if project_id and str(job.get('projectId') or '') != project_id:
             continue
-        snapshots[str(job['id'])] = job
-    jobs = list(snapshots.values())
+        jobs.append(job)
     jobs.sort(key=lambda item: str(item.get('createdAt') or ''), reverse=True)
-    return jobs if limit is None else jobs[:max(1, min(int(limit or 100), 200))]
+    return clone(jobs if limit is None else jobs[:max(1, min(int(limit or 100), 200))])
 
 
 # ---------------------------------------------------------------- 图片生成任务（轮询式）
@@ -6405,6 +6893,36 @@ def latest_jobs(user_id=None, limit=100, project_id=None, workspace_id=None, val
 #   进程重启会丢，那种情况下任务本就无法继续，由总等待超时保护判失败。
 IMAGE_JOB_PAYLOADS = {}
 IMAGE_JOB_LOCK = threading.Lock()
+IMAGE_CALLS_ACTIVE = 0
+IMAGE_UPDATE_LEASE_UNTIL = 0.0
+
+
+def desktop_image_update_gate(action):
+    """The desktop reserves an idle host immediately before opening its installer."""
+    global IMAGE_UPDATE_LEASE_UNTIL
+    with IMAGE_JOB_LOCK:
+        busy = bool(IMAGE_CALLS_ACTIVE or IMAGE_JOB_PAYLOADS)
+        if action == 'reserve' and not busy:
+            IMAGE_UPDATE_LEASE_UNTIL = time.monotonic() + 60
+        elif action == 'release':
+            IMAGE_UPDATE_LEASE_UNTIL = 0
+        return {'busy': busy}
+
+
+def track_image_call(function):
+    @wraps(function)
+    def tracked(*args, **kwargs):
+        global IMAGE_CALLS_ACTIVE
+        with IMAGE_JOB_LOCK:
+            if IMAGE_UPDATE_LEASE_UNTIL > time.monotonic():
+                raise ValueError('CanvasFlow 正在安装更新，请在重新打开应用后提交图片任务')
+            IMAGE_CALLS_ACTIVE += 1
+        try:
+            return function(*args, **kwargs)
+        finally:
+            with IMAGE_JOB_LOCK:
+                IMAGE_CALLS_ACTIVE -= 1
+    return tracked
 # 异步查询路径的探测结果缓存：baseUrl -> 查询路径（'' = 确认不支持）。避免每次生成都探测。
 IMAGE_TASK_PATH_CACHE = {}
 # 「异步图片任务是否已启用」的探测缓存：baseUrl -> bool。
@@ -6537,9 +7055,17 @@ def detect_image_task_path(entry):
 def run_image_job_in_background(job_id):
     """同步协议图片任务：后台线程里跑完整生成，完成后把结果写回 job 快照。"""
     with IMAGE_JOB_LOCK:
-        payload = IMAGE_JOB_PAYLOADS.pop(job_id, None)
+        payload = IMAGE_JOB_PAYLOADS.get(job_id)
     if not payload:
         return
+    try:
+        finish_background_image(payload)
+    finally:
+        with IMAGE_JOB_LOCK:
+            IMAGE_JOB_PAYLOADS.pop(job_id, None)
+
+
+def finish_background_image(payload):
     job = dict(payload.get('job') or {})
     STORAGE_ACTOR.set(job.get('userId') or job.get('ownerId') or '')
     entry = payload.get('entry') or {}
@@ -6564,6 +7090,7 @@ def run_image_job_in_background(job_id):
         pass
 
 
+@track_image_call
 def create_image_job(user, incoming, workspace_id=''):
     """提交一个图片生成任务。返回 (public_job, failure)。
 
@@ -6593,8 +7120,9 @@ def create_image_job(user, incoming, workspace_id=''):
         'status': 'queued', 'stage': 'submitted', 'progress': None,
         'simulated': False, 'createdAt': now(), 'workspaceId': workspace_id,
     }
+    attach_studio_draft(job, incoming)
     job['inputSummary'] = {'referenceCount': len(references) if references else int(bool(reference_image)),
-                           'size': size, 'quality': image_quality_value(entry.get('model'), quality, entry.get('name')),
+                           'size': size, 'quality': entry.get('_imageNativeQuality') or image_quality_value(entry.get('model'), quality, entry.get('name')),
                            'modelOptions': incoming.get('modelOptions') or {}}
     job['charge'] = open_generation_charge(user, entry, prompt_text=prompt_text or '', calls=1, label=entry.get('name'))
     # ★ 异步能力判定：显式 `imageTaskMode=async` 优先；没配时**自动探测**
@@ -6663,8 +7191,13 @@ def create_image_job(user, incoming, workspace_id=''):
             'referenceImage': reference_image, 'referenceImages': references, 'quality': quality,
         }
     job.update({'status': 'running', 'stage': 'running'})
-    append_job(job)
-    threading.Thread(target=run_image_job_in_background, args=(job['id'],), daemon=True).start()
+    try:
+        append_job(job)
+        threading.Thread(target=run_image_job_in_background, args=(job['id'],), daemon=True).start()
+    except Exception:
+        with IMAGE_JOB_LOCK:
+            IMAGE_JOB_PAYLOADS.pop(job['id'], None)
+        raise
     return job, None
 
 
@@ -6680,19 +7213,8 @@ def refresh_image_job(job):
         return current
     entry = next((item for item in read_ai_models() if item.get('id') == current.get('modelId')), None)
     entry = with_user_timeouts(entry, current.get('userId'))
-    limit_minutes = provider_timeout_value(entry, 'imageTotalWait', 3) if entry else 3
-    submitted = str(current.get('createdAt') or '')
-    if limit_minutes and submitted:
-        try:
-            stamp = datetime.fromisoformat(submitted)
-            if stamp.tzinfo is None: stamp = stamp.replace(tzinfo=timezone.utc)
-            elapsed = (datetime.now(timezone.utc) - stamp).total_seconds()
-        except (TypeError, ValueError):
-            elapsed = 0
-        if elapsed > limit_minutes * 60:
-            current.update({'status': 'failed', 'stage': 'failed',
-                            'error': f'等待超过 {limit_minutes} 分钟仍未完成，已停止跟踪'})
-            return current
+    if defer_overdue_poll(current, entry, 'imageTotalWait', 3, 'createdAt'):
+        return current
     provider_id = str(current.get('providerJobId') or '').strip()
     if not provider_id:
         # 后台线程模式：进度不可知，保持 progress=None；线程完成后会写新的 job 快照。
@@ -6721,7 +7243,7 @@ def refresh_image_job(job):
     # ★ 统一媒体端点的查询接口**出错时**会回 `{code,msg}` 信封（成功时是顶层裸字段、没有 code）。
     #   不识别它 → 状态被判成 queued → 任务一直"排队中"到总超时。这里就地收敛并写明原因。
     if media_generate_entry(entry):
-        status_error = media_status_payload_error(payload)
+        status_error = media_status_payload_error(payload, entry)
         if status_error:
             current.update({'status': 'failed', 'stage': 'failed',
                             'error': f'查询任务状态失败：{status_error}'})
@@ -6744,7 +7266,7 @@ def refresh_image_job(job):
     provider_status = normalize_provider_status(payload)
     if provider_status == 'failed':
         current.update({'status': 'failed', 'stage': 'failed',
-                        'error': provider_error(response_value(payload, 'message', 'error') or '供应商生成失败')})
+                        'error': provider_error(response_value(payload, 'message', 'error') or '供应商生成失败', entry)})
         return current
     # ★ 上游已报完成、却没给可用地址：别再干等到总超时，立刻判失败并写明原因
     #   （视频那边同款处理：「已完成，但供应商未返回视频地址」）。
@@ -6916,19 +7438,8 @@ def refresh_audio_job(job):
         return current
     entry = next((item for item in read_ai_models() if item.get('id') == current.get('modelId')), None)
     entry = with_user_timeouts(entry, current.get('userId'))
-    limit_minutes = provider_timeout_value(entry, 'imageTotalWait', 3) if entry else 3
-    submitted = str(current.get('createdAt') or '')
-    if limit_minutes and submitted:
-        try:
-            stamp = datetime.fromisoformat(submitted)
-            if stamp.tzinfo is None: stamp = stamp.replace(tzinfo=timezone.utc)
-            elapsed = (datetime.now(timezone.utc) - stamp).total_seconds()
-        except (TypeError, ValueError):
-            elapsed = 0
-        if elapsed > limit_minutes * 60:
-            current.update({'status': 'failed', 'stage': 'failed',
-                            'error': f'等待超过 {limit_minutes} 分钟仍未完成，已停止跟踪'})
-            return current
+    if defer_overdue_poll(current, entry, 'imageTotalWait', 3, 'createdAt'):
+        return current
     # ---- 异步分支（有任务号）：与图片的 refresh_image_job 同一套判据 ----
     provider_id = str(current.get('providerJobId') or '').strip()
     if not provider_id:
@@ -6956,7 +7467,7 @@ def refresh_audio_job(job):
     # ★ 统一媒体端点的查询接口**出错时**回 `{code,msg}` 信封（成功时是顶层裸字段、没有 code）。
     #   不识别它 → 状态被判成 queued → 任务一直"排队中"到总超时。
     if media_generate_entry(entry):
-        status_error = media_status_payload_error(payload)
+        status_error = media_status_payload_error(payload, entry)
         if status_error:
             current.update({'status': 'failed', 'stage': 'failed',
                             'error': f'查询任务状态失败：{status_error}'})
@@ -6978,7 +7489,7 @@ def refresh_audio_job(job):
     provider_status = normalize_provider_status(payload)
     if provider_status == 'failed':
         current.update({'status': 'failed', 'stage': 'failed',
-                        'error': provider_error(response_value(payload, 'message', 'error') or '供应商生成失败')})
+                        'error': provider_error(response_value(payload, 'message', 'error') or '供应商生成失败', entry)})
         return current
     # ★ 上游已报完成、却没给可用地址：别再干等到总超时，立刻判失败并写明原因。
     if provider_status == 'completed':
@@ -7059,6 +7570,44 @@ def _coarse_progress_view(view):
     view['coarseProgress'] = True
     view['progressLevels'] = levels
     return True
+
+
+def recover_studio_video(job):
+    """Re-query the existing provider task without re-submitting generation."""
+    if (job.get('kind', 'video') != 'video' or job.get('status') != 'completed'
+            or job.get('videoUrl') or not job.get('providerJobId')):
+        return job
+    # Only the status lookup uses this copy. The original terminal state is authoritative.
+    result = refresh_video_job({**job, 'status': 'running', 'submittedAt': ''})
+    target = result.get('videoUrl') or ''
+    if (target.startswith('/media/') and resolve_media_file(target.removeprefix('/media/'))
+            or target.startswith(('https://', 'http://'))):
+        current = {**job, 'videoUrl': target, '_studioLookup': True}
+        if result.get('videoPersistError'):
+            current['videoPersistError'] = result['videoPersistError']
+        append_job(current)
+        current.pop('_studioLookup', None)
+        return current
+    return job
+
+
+def studio_job_view(job):
+    fields = ('id', 'kind', 'status', 'stage', 'progress', 'modelId', 'prompt', 'error',
+              'upstreamCancelled', 'createdAt', 'imageUrl', 'videoUrl', 'providerJobId',
+              'generationSettings', 'studioDraft', 'studioDraftPartial', 'size', 'inputSummary', 'advancedSettings')
+    view = {k: job[k] for k in fields if k in job}
+    if job.get('kind') == 'image' and not view.get('imageUrl') and job.get('imageData'):
+        view['imageData'] = job['imageData']
+    if not job.get('studioDraft'):
+        for key in ('referenceImages', 'sourceVideos', 'sourceAudios'):
+            values = job.get(key)
+            if not isinstance(values, list):
+                continue
+            urls = [value if isinstance(value, str) and len(value) <= 4000
+                    and value.startswith(('/media/', 'https://', 'http://')) else '' for value in values]
+            if any(urls):
+                view[key] = urls  # Preserve frame positions when a legacy inline frame cannot be restored.
+    return view
 
 
 def job_view(job, sync=True):
@@ -8347,7 +8896,8 @@ def image_extra_params(entry):
                 'reference_images', 'image_urls', 'input_image', 'aspect_ratio', 'aspectRatio', 'resolution'}
     allowed = {p['name'] for p in image_parameter_contract(entry).get('params', [])
                if p.get('name') and p.get('type') not in ('upload', 'textarea') and p['name'] not in reserved}
-    return {k: v for k, v in media_param_overrides(entry).items() if k in allowed}
+    selected = {**media_param_overrides(entry), **(entry.get('_imageSelectedParams') or {})}
+    return {k: v for k, v in selected.items() if k in allowed and v not in (None, '')}
 
 
 def build_image_reference_body(body_kind, model, prompt, size, reference_images, quality='', extra_params=None):
@@ -8428,7 +8978,7 @@ def finish_image_result(result, deadline):
     if remaining <= 1:
         return None, '图片生成超过总等待上限，已中止下载'
     try:
-        with open_http_url(urllib_request.Request(target), timeout=max(5, min(60, int(remaining)))) as image_response:
+        with open_media_url(urllib_request.Request(target), timeout=max(5, min(60, int(remaining)))) as image_response:
             image_bytes = image_response.read(MEDIA_MAX_BYTES+1)
             if len(image_bytes)>MEDIA_MAX_BYTES:return None,'生成图片超过文件大小上限'
     except (urllib_error.URLError, TimeoutError) as exc:
@@ -8494,7 +9044,7 @@ def poll_image_task(entry, submitted, base_url, api_key, deadline, trace=None):
         if prefer_media_files(extract_generation_urls(polled)):
             return polled, None
         if normalize_provider_status(polled) == 'failed':
-            return None, provider_error(response_value(polled, 'message', 'error') or '供应商任务失败')
+            return None, provider_error(response_value(polled, 'message', 'error') or '供应商任务失败', entry)
         last = '任务仍在进行'
     return None, f'异步图片任务超时（{last or "任务仍在进行"}）'
 
@@ -8532,6 +9082,7 @@ def call_image_generation_chat(entry, prompt, size='1024x1024', reference_images
     return finish_image_result(result, deadline)
 
 
+@track_image_call
 def call_image_generation(entry, prompt, size='1024x1024', reference_image=None, reference_images=None, quality=None, timeout=None, trace=None):
     """OpenAI Images 协议，按「图片传输合同」决定参考图怎么发。
 
@@ -8556,7 +9107,7 @@ def call_image_generation(entry, prompt, size='1024x1024', reference_image=None,
     text_prompt = str(prompt or '')
     # 画质只在该模型族认识时才发（GPT Image 2.5 → 5 档，gpt-image → 3 档，DALL·E → standard/hd，其余不发）
     # ★ 必须把**显示名**一起传进去：上游 id 可能是 `tt-image-2.5-sunburst` 这种供应商私有前缀。
-    quality_value = image_quality_value(model, quality, entry.get('name'))
+    quality_value = entry.get('_imageNativeQuality') or image_quality_value(model, quality, entry.get('name'))
     references = [item.strip() for item in (reference_images or []) if isinstance(item, str) and item.strip()]
     if not references and isinstance(reference_image, str) and reference_image.strip():
         references = [reference_image.strip()]
@@ -8839,7 +9390,7 @@ def media_param_overrides(entry):
 
 
 def build_media_generate_params(schema, size='', quality_candidates=None, references=None, overrides=None,
-                                spec_rows=None, source_videos=None):
+                                spec_rows=None, source_videos=None, selected=None):
     """按模型**自己声明的** params 定义组装参数。
 
     ★★★ 四条纪律（平台文档明确要求，违反任一条都会 400）：
@@ -8973,6 +9524,21 @@ def build_media_generate_params(schema, size='', quality_candidates=None, refere
         # ④ 画质：候选值由调用方给（已做「界面档 → 上游取值」的映射），只认 options 里有的
         put('quality', quality_candidates)
 
+    # Explicit per-request controls take precedence over dimensions inferred from
+    # pixels and registry defaults, including a deliberate "auto" selection.
+    for name, value in (selected or {}).items():
+        if value in (None, ''):
+            params.pop(name, None)
+            continue
+        row = next((r for r in (spec_rows or []) if (r.get('field') or r.get('key')) == name), {})
+        names = spec_field_candidates(row) if row else [name]
+        text = 'true' if value is True else 'false' if value is False else str(value)
+        if not any(put(candidate, [text]) for candidate in names):
+            raise ValueError('上游图片模型不支持所选参数：' + str(name))
+    if (selected or {}).get('size') and declared_type('size') == 'input':
+        for name in ('aspectRatio', 'aspect_ratio', 'imageSize', 'resolution'):
+            params.pop(name, None)
+
     # ⑤ 参考图
     if references:
         for name in ('images', 'image_urls', 'reference_images', 'referenceImages'):
@@ -9015,10 +9581,10 @@ def build_media_generate_params(schema, size='', quality_candidates=None, refere
     return params
 
 
-def media_error_text(payload):
+def media_error_text(payload, entry=None):
     """从 `{code, msg, data}` 信封里取出人能看懂的错误。"""
     if not isinstance(payload, dict):
-        return str(payload)[:200]
+        return provider_error(payload, entry)[:200]
     message = str(payload.get('msg') or '').strip()
     data = payload.get('data')
     detail = ''
@@ -9026,10 +9592,10 @@ def media_error_text(payload):
         detail = str(data.get('详情') or data.get('message') or data.get('error') or '').strip()
     elif isinstance(data, str):
         detail = data.strip()
-    return '：'.join(part for part in (message, detail) if part) or str(payload)[:200]
+    return provider_error('：'.join(part for part in (message, detail) if part) or payload, entry)
 
 
-def media_status_payload_error(payload):
+def media_status_payload_error(payload, entry=None):
     """统一媒体端点的**查询**接口出错时返回错误文本；正常时返回 `''`。
 
     ★ 实测这个平台的两种出错形态（都在 `_probe_lk888_contract_final.py` 里取证过）：
@@ -9052,12 +9618,12 @@ def media_status_payload_error(payload):
     if 'is_final' in payload:
         return ''
     if 'code' in payload:
-        return '' if str(payload.get('code')) == '200' else media_error_text(payload)
+        return '' if str(payload.get('code')) == '200' else media_error_text(payload, entry)
     error = payload.get('error')
     if isinstance(error, dict) and error.get('message'):
-        return str(error['message']).strip()
+        return provider_error(error['message'].strip(), entry)
     if isinstance(error, str) and error.strip():
-        return error.strip()
+        return provider_error(error.strip(), entry)
     return ''
 
 
@@ -9089,15 +9655,25 @@ def submit_media_generate(entry, prompt, size='1024x1024', reference_image=None,
     # ★ 登记表优先：这个模型在「模型管理 · 图片规格」里登记过 → 字段名/取值以登记表为准；
     #   没登记（返回 None）→ 回落升级前的启发式（行为逐字不变，保证不突变）。
     rows = spec_rows_for_entry(entry, 'image') if spec_rows is None else spec_rows
-    params = build_media_generate_params(
-        schema, size=size,
-        quality_candidates=[mapped, quality_text, {'standard': 'medium'}.get(quality_text, '')],
-        references=references, overrides=media_param_overrides(entry),
-        spec_rows=rows, source_videos=source_videos)
+    try:
+        params = build_media_generate_params(
+            schema, size=size,
+            quality_candidates=[mapped, quality_text, {'standard': 'medium'}.get(quality_text, '')],
+            references=references, overrides=media_param_overrides(entry),
+            spec_rows=rows, source_videos=source_videos, selected=entry.get('_imageSelectedParams'))
+        # Image jobs store one output each. Multi-image runs submit independent jobs.
+        for name in ('n', 'count'):
+            if name in schema:
+                allowed = media_param_options(schema, name)
+                if allowed and '1' not in allowed:
+                    return None, '此模型无法按单张任务提交，请选择支持生成 1 张的模型。'
+                params[name] = '1' if allowed else 1
+        validate_contract_options(upstream_contract(entry), params)
+    except ValueError as exc:
+        return None, str(exc)
     payload = {'model': model, 'prompt': str(prompt or '')}
     if params:
         payload['params'] = params
-    validate_contract_options(upstream_contract(entry),params)
     urls = endpoint_candidates(base_url, MEDIA_GENERATE_PATH)
     result, hit_url, error = request_json_candidates(
         urls, payload, headers=auth_headers(entry, api_key, {'Content-Type': 'application/json'}),
@@ -9111,7 +9687,7 @@ def submit_media_generate(entry, prompt, size='1024x1024', reference_image=None,
     if error:
         return None, error
     if isinstance(result, dict) and result.get('code') is not None and str(result.get('code')) != '200':
-        return None, f'供应商拒绝了本次请求（code={result.get("code")}）：{media_error_text(result)}'
+        return None, provider_error(f'供应商拒绝了本次请求（code={result.get("code")}）：{media_error_text(result, entry)}', entry)
     if not extract_task_id(result):
         return None, f'供应商未返回任务号：{str(result)[:200]}'
     return result, None
@@ -9248,7 +9824,7 @@ def submit_audio_media_generate(entry, text, voice='', spec=None, timeout=None, 
     if error:
         return None, error
     if isinstance(result, dict) and result.get('code') is not None and str(result.get('code')) != '200':
-        return None, f'供应商拒绝了本次请求（code={result.get("code")}）：{media_error_text(result)}'
+        return None, provider_error(f'供应商拒绝了本次请求（code={result.get("code")}）：{media_error_text(result, entry)}', entry)
     if not extract_task_id(result):
         return None, f'供应商未返回任务号：{str(result)[:200]}'
     return result, None
@@ -9268,7 +9844,7 @@ def finish_audio_result(result, deadline):
     if remaining <= 1:
         return None, '音频生成超过总等待上限，已中止下载'
     try:
-        with open_http_url(urllib_request.Request(target), timeout=max(5, min(60, int(remaining)))) as audio_response:
+        with open_media_url(urllib_request.Request(target), timeout=max(5, min(60, int(remaining)))) as audio_response:
             audio_bytes = audio_response.read(MEDIA_MAX_BYTES+1)
             if len(audio_bytes)>MEDIA_MAX_BYTES:return None,'生成音频超过文件大小上限'
     except (urllib_error.URLError, TimeoutError) as exc:
@@ -9304,13 +9880,13 @@ def poll_audio_task(entry, submitted, base_url, api_key, deadline, trace=None):
                 return None, error
             continue
         if media_generate_entry(entry):
-            status_error = media_status_payload_error(polled)
+            status_error = media_status_payload_error(polled, entry)
             if status_error:
                 return None, status_error
         if prefer_media_files(extract_generation_urls(polled)):
             return polled, None
         if normalize_provider_status(polled) == 'failed':
-            return None, provider_error(response_value(polled, 'message', 'error') or '供应商任务失败')
+            return None, provider_error(response_value(polled, 'message', 'error') or '供应商任务失败', entry)
         last = '任务仍在进行'
     return None, f'音频生成超时（{last or "任务仍在进行"}）'
 
@@ -9339,7 +9915,7 @@ def submit_image_generation(entry, prompt, size='1024x1024', reference_image=Non
     if str(entry.get('requestProfile') or '').strip() == 'chat-image':
         return None, '该模型走 chat-image 形态，没有异步任务号'
     text_prompt = str(prompt or '')
-    quality_value = image_quality_value(model, quality, entry.get('name'))
+    quality_value = entry.get('_imageNativeQuality') or image_quality_value(model, quality, entry.get('name'))
     references = [item.strip() for item in (reference_images or []) if isinstance(item, str) and item.strip()]
     if not references and isinstance(reference_image, str) and reference_image.strip():
         references = [reference_image.strip()]
@@ -9479,7 +10055,7 @@ def agent_anthropic_tools(tools):
     ]
 
 
-def upstream_error_detail(body, reason=''):
+def upstream_error_detail(body, reason='', credentials=()):
     """把上游的错误响应压成一句人话。
 
     各家格式五花八门（{error:{message}} / {message} / {msg} / {detail} / 纯文本），
@@ -9507,9 +10083,9 @@ def upstream_error_detail(body, reason=''):
                     message = item.strip()
                     code = payload.get('code')
                     if isinstance(code, str) and code.strip() and code.strip() != message:
-                        return f'{message}（{code.strip()}）'
-                    return message
-    return text[:200] or str(reason or '请求失败')
+                        message = f'{message}（{code.strip()}）'
+                    return safe_provider_diagnostic(message, credentials)
+    return safe_provider_diagnostic(text or reason or '请求失败', credentials, 500)
 
 
 def agent_open_stream(entry, messages, tools, timeout, include_usage=True):
@@ -9540,17 +10116,17 @@ def agent_open_stream(entry, messages, tools, timeout, include_usage=True):
         except urllib_error.HTTPError as exc:
             detail = ''
             try:
-                detail = exc.read(4000).decode('utf-8', 'replace')[:300]
+                detail = read_provider_http_error(exc, request.header_items())
             except Exception:
                 pass
-            last_error = f'HTTP {exc.code}：{upstream_error_detail(detail, exc.reason)}'
+            last_error = f'HTTP {exc.code}：{detail or "请求失败"}'
             if exc.code == 400 and include_usage and 'stream_options' in detail:
                 return agent_open_stream(entry,messages,tools,timeout,include_usage=False)
             if exc.code not in (404, 405) or (exc.code==404 and not is_route_miss(exc.code,{},detail)):
                 break
             continue
         except Exception as exc:
-            last_error = f'{type(exc).__name__}：{exc}'
+            last_error = type(exc).__name__ + '：' + safe_provider_diagnostic(exc, [api_key])
             break  # A timeout may follow successful submission; never resubmit.
     return None, '', last_error or '没有可用的上游端点'
 
@@ -9577,7 +10153,7 @@ def agent_chat_stream(entry, messages, tools, trace=None):
         # 有些网关不认 tools 字段：去掉工具再试一次，至少还能对话。
         response, hit_url, error = agent_open_stream(entry, messages, None, timeout)
     if error or response is None:
-        yield ('error', f'调用语言模型失败（{hit_url or entry.get("baseUrl")}）：{error}')
+        yield ('error', '调用语言模型失败：' + provider_error(error, entry))
         return
     accumulator = agent.ToolCallAccumulator()
     try:
@@ -9599,7 +10175,7 @@ def agent_chat_stream(entry, messages, tools, trace=None):
             if deltas:
                 accumulator.feed(deltas)
     except Exception as exc:
-        yield ('error', f'读取模型流式响应中断：{type(exc).__name__}：{exc}')
+        yield ('error', f'读取模型流式响应中断：{type(exc).__name__}：' + provider_error(exc, entry))
         return
     finally:
         try:
@@ -9707,6 +10283,68 @@ def resolve_film_scope(user, workspace, valid, incoming):
     raise ValueError('成片对应项目不存在，请重新打开当前画布')
 
 
+class FilmVersionChoice(FilmUnavailable):
+    def __init__(self, versions):
+        super().__init__('检测到多个已编辑的成片版本，请在成片工作台选择要继续剪辑的版本')
+        self.versions = versions
+
+
+def project_film_storage(project, workspace):
+    """Keep OpenFilm's absolute registry/media paths stable across canvas moves."""
+    if project.get('filmStorageWorkspaceId'):
+        return project['filmStorageWorkspaceId']
+    # Older builds moved only the canvas row. Check the owner's known workspaces,
+    # including a deleted workspace whose canvases fell back to the default.
+    names = {w['id']:w.get('name') for w in workspaces_for_user(project['ownerId'])}
+    candidates = set(names)
+    candidates.update(filter(None, (workspace, project.get('workspaceId'))))
+    found = [key for key in candidates if FILM_WORKBENCH.has_project_files(key, project['id'])]
+    if len(found) > 1:
+        edited = [key for key in found if not FILM_WORKBENCH.is_pristine_project(key, project['id'])]
+        if len(edited) > 1:
+            project_hash = hashlib.sha256(project['id'].encode()).hexdigest()[:24]
+            versions = []
+            for key in sorted(edited):
+                folder = FILM_WORKBENCH.workspace_home(key) / 'projects' / project_hash
+                timestamps = [f.stat().st_mtime for f in folder.glob('*/film.html') if f.is_file()]
+                versions.append({'workspaceId':key, 'name':names.get(key) or key, 'directory':str(folder),
+                                 'timelineModifiedAt':max(timestamps, default=0)})
+            raise FilmVersionChoice(versions)
+        return edited[0] if edited else (workspace if workspace in found else sorted(found)[0])
+    return found[0] if found else workspace
+
+
+def resolve_film_storage(workspace, project_key):
+    project = next((p for p in read_projects() if p.get('id') == project_key), None)
+    if not project:
+        return workspace  # Older clients may open a workspace-local unsaved draft.
+    if not in_workspace(project, workspace, workspace_id_set()):
+        raise FilmUnavailable('画布已移动到其他工作区，请从对应工作区重新打开')
+    return project_film_storage(project, workspace)
+
+
+FILM_WORKBENCH = FilmWorkbench(ROOT, DATA_DIR, storage_scope=resolve_film_storage)
+
+
+def choose_film_storage(user, workspace, project_key, selected):
+    with LOCK, FILM_WORKBENCH.lock:
+        projects = read_projects()
+        project = next((p for p in projects if p.get('id') == project_key), None)
+        if not project or project.get('ownerId') != user['id'] or not in_workspace(project, workspace, workspace_id_set()):
+            raise ValueError('请从当前工作区重新打开画布')
+        if project.get('filmStorageWorkspaceId') == selected and isinstance(selected, str):
+            return
+        try:
+            project_film_storage(project, workspace)
+        except FilmVersionChoice as choice:
+            if not any(v['workspaceId'] == selected for v in choice.versions):
+                raise ValueError('所选版本已不可用，请重新打开成片工作台')
+            project['filmStorageWorkspaceId'] = selected
+            write_file(PROJECTS_FILE, projects)
+            return
+        raise ValueError('成片版本已确定，请重新打开工作台读取当前版本')
+
+
 def film_material_in_project(row, project_id):
     return any(p.get('id') == project_id for p in row.get('projects', []) if isinstance(p, dict))
 
@@ -9717,7 +10355,7 @@ def import_film_workspace_materials(workspace, valid, project_key, project_name,
     with LOCK:
         catalog = build_catalog(workspace, read_projects(), read_assets(), read_music(),
             PREVIS_ASSETS.records() + read_models(), latest_jobs(limit=None),
-            lambda item, wid: in_workspace(item, wid, valid), read_file(DATA_DIR / 'workspace-materials.json', {}))
+            lambda item, wid: in_workspace(item, wid, valid), read_material_settings(DATA_DIR / 'workspace-materials.json', workspace))
         rows = {row['id']: row for row in catalog if film_material_in_project(row, project_key)}
     sync_rows = [{'id':r['id'],'name':r.get('name') or '素材','category':r.get('category',''),'rating':r.get('rating',0),'favorite':r.get('favorite',False)}
                  for r in rows.values() if r['id'] in ids]
@@ -9876,7 +10514,7 @@ def bind_film_agent(ctx, user, workspace, valid, film):
             with LOCK:
                 rows = build_catalog(workspace, read_projects(), read_assets(), read_music(),
                     PREVIS_ASSETS.records() + read_models(), latest_jobs(limit=None),
-                    lambda item,wid: in_workspace(item,wid,valid),read_file(DATA_DIR / 'workspace-materials.json',{}))
+                    lambda item,wid: in_workspace(item,wid,valid),read_material_settings(DATA_DIR / 'workspace-materials.json',workspace))
             rows = [r for r in rows if film_material_in_project(r,key) and r.get('kind') in ('image','video','audio') and query in str(r.get('name') or '').lower()]
             return {'ok':True,'total':len(rows),'offset':offset,'pageSize':20,'materials':[
                 {'id':r['id'],'name':str(r.get('name') or '')[:200],'kind':r['kind'],
@@ -10087,21 +10725,25 @@ def _remove_storage_record_locked(kind,item_id,owner_id):
 ACCOUNT_STORAGE = LocalStorage(MEDIA_DIR, auth_db, storage_records, remove_storage_record, AUTH_SECRET, USER_STORAGE_QUOTA_BYTES, expire_record=lambda kind,id,owner,stamp:remove_storage_record(kind,id,owner,expired_before=stamp))
 
 
+def open_media_url(request, timeout=None):
+    # A result or reference URL is supplied by a third party, even when the
+    # local administrator initiated the original generation request.
+    token = NETWORK_ROLE.set('media')
+    try:
+        return open_http_url(request, timeout=timeout)
+    finally:
+        NETWORK_ROLE.reset(token)
+
+
 def open_http_url(request,timeout=None):
-    with auth_db() as db:
-        administrators={row[0] for row in db.execute("SELECT id FROM users WHERE role='admin' AND status='active'")}
     trusted=set()
-    for model in read_ai_models():
+    for model in [*read_ai_models(), *read_ai_providers()]:
         # Local installation trusts its configured provider origins.
         try:trusted.add(http_origin(model.get('baseUrl') or ''))
         except urllib_error.URLError:pass
     if os.environ.get('OPENAI_BASE_URL'):
         try:trusted.add(http_origin(os.environ['OPENAI_BASE_URL']))
         except urllib_error.URLError:pass
-    for name in ('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy'):
-        if os.environ.get(name):
-            try:trusted.add(http_origin(os.environ[name]))
-            except urllib_error.URLError:pass
     with network_access(NETWORK_ROLE.get(),trusted):return guarded_open_http_url(request,timeout)
 
 
@@ -10149,6 +10791,49 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json({'error': 'request_origin_denied', 'message': '请求来源不受信任'}, 403)
             return False
         path = unquote(urlparse(self.path).path).rstrip('/')
+        access = getattr(self.server, 'local_access', None)
+        if access is None:
+            self.close_connection = True
+            self.send_json({'error': 'local_auth_unavailable'}, 503)
+            return False
+        if path == '/api/local/identify' and self.command == 'GET':
+            nonce = self.headers.get('X-CanvasFlow-Challenge', '')
+            if re.fullmatch(r'[a-f0-9]{64}', nonce):
+                self.send_json(access.challenge(nonce))
+            else:
+                self.send_json({'error': 'invalid_challenge'}, 400)
+            return False
+        if path == '/api/local/pair' and self.command == 'POST':
+            self.close_connection = True
+            if self.headers.get('Transfer-Encoding') or not re.fullmatch(r'[0-9]{1,3}', self.headers.get('Content-Length', '')):
+                self.send_json({'error': 'invalid_ticket'}, 400)
+                return False
+            body = self.read_json()
+            if isinstance(body, dict) and access.redeem(body.get('ticket')):
+                self.send_json({'password': access.browser_token}, headers={'Cache-Control':'no-store'})
+            else:
+                self.send_json({'error': 'invalid_ticket'}, 403)
+            return False
+        if self.command == 'GET' and (path == '/local-connect' or path == '' and not access.accepts(self.headers)):
+            page = CONNECT_PAGE.encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Content-Length', str(len(page)))
+            self.end_headers()
+            self.wfile.write(page)
+            return False
+        if not access.accepts(self.headers):
+            self.close_connection = True
+            if path == '/local-session' and self.command == 'GET':
+                self.send_json({'error':'local_auth_required'}, 401,
+                               headers={'WWW-Authenticate':f'Basic realm="CanvasFlow-{access.instance}"'})
+            else:
+                self.send_json({'error':'local_auth_required','message':'请从 CanvasFlow 启动器打开工作台'}, 403)
+            return False
+        if path == '/local-session' and self.command == 'GET':
+            self.send_json({'connected': True}, headers={'Cache-Control':'no-store'})
+            return False
         if retired_route(path):
             self.close_connection = True
             self.send_json({'error': 'not_found', 'message': '本地版不提供此功能'}, 404)
@@ -10325,8 +11010,16 @@ class Handler(SimpleHTTPRequestHandler):
         # 这样各处调用点不必逐个改造，也不会出现「在新工作区里翻到旧空间的任务」。
         if workspace_id is None and user_id:
             workspace_id, valid_ids = self.workspace_scope({'id': user_id})
-        jobs = latest_jobs(user_id=user_id, limit=None, workspace_id=workspace_id, valid_ids=valid_ids)
-        return next((job for job in jobs if job.get('id') == job_id), None)
+        with LOCK:
+            row = index_jobs().get(job_id)
+            if not row:
+                return None
+            job = local_job(clone(row))
+        if user_id and job.get('userId') != user_id:
+            return None
+        if workspace_id and not in_workspace(job, workspace_id, valid_ids):
+            return None
+        return job
 
     # ----- 工作区：本次请求作用在哪个空间 -----
     def request_workspace_id(self):
@@ -10410,7 +11103,11 @@ class Handler(SimpleHTTPRequestHandler):
     def agent_create_session(self, user, incoming):
         project_id = str(incoming.get('projectId') or '')[:100]
         stamp = now()
-        workspace_id, _ = self.workspace_scope(user)
+        workspace_id, valid = self.workspace_scope(user)
+        if project_id:
+            project = next((row for row in read_projects() if row.get('id') == project_id), None)
+            if project and (project.get('ownerId') != user['id'] or not in_workspace(project, workspace_id, valid)):
+                return self.send_json({'error':'project_not_found','message':'当前工作区没有该画布'}, 404)
         session = {
             'id': agent.new_session_id(), 'userId': user['id'], 'workspaceId': workspace_id,
             'projectId': project_id, 'title': '新对话', 'messages': [], 'pendingAsk': None,
@@ -10733,6 +11430,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_sse({'type': 'done', 'sessionId': session['id']})
             return
 
+        original_title = session.get('title')
         messages = json.loads(json.dumps(session.get('messages') or []))
         if not resume:
             messages.append({'role': 'user', 'content': message})
@@ -10781,7 +11479,7 @@ class Handler(SimpleHTTPRequestHandler):
             session['pendingAsk'] = ({'toolCallId': pending_event['toolCallId'], 'name': 'ask_user',
                                       **({'generationApproval': pending_event['generationApproval']} if pending_event.get('generationApproval') else {})} if pending_event else None)
             session['updatedAt'] = now()
-            save_agent_session(session)
+            save_agent_session(session, existing_turn=bool(session_id), original_title=original_title)
             return
         except Exception as exc:
             try:
@@ -10794,7 +11492,7 @@ class Handler(SimpleHTTPRequestHandler):
             session['pendingAsk'] = ({'toolCallId':pending_event['toolCallId'],'name':'ask_user',
                                       **({'generationApproval':pending_event['generationApproval']} if pending_event.get('generationApproval') else {})} if pending_event else None)
             session['updatedAt'] = now()
-            save_agent_session(session)
+            save_agent_session(session, existing_turn=bool(session_id), original_title=original_title)
             return
 
         # 中断时记住在等哪个 toolCallId 的答案，刷新页面后前端才知道该渲染哪个卡片
@@ -10811,7 +11509,7 @@ class Handler(SimpleHTTPRequestHandler):
         session['messages'] = messages
         session['pendingAsk'] = pending
         session['updatedAt'] = now()
-        save_agent_session(session)
+        save_agent_session(session, existing_turn=bool(session_id), original_title=original_title)
         try:
             self.send_sse({'type': 'done', 'sessionId': session['id'], 'title': session['title'],
                            'awaiting': bool(pending),
@@ -10884,7 +11582,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self.wfile.write(body)
                 return
             request = urllib_request.Request(video_url, headers={'Accept': 'video/*,*/*;q=0.8', 'User-Agent': 'CanvasFlow/1.0'})
-            with open_http_url(request, timeout=120) as response:
+            with open_media_url(request, timeout=120) as response:
                 content_type = response.headers.get_content_type() or content_type
                 # Validate the bounded body before promising a successful attachment.
                 # The fallback must not reintroduce the truncated-file bug after persistence fails.
@@ -11230,13 +11928,16 @@ class Handler(SimpleHTTPRequestHandler):
 
     def workspace_materials_api(self, path, method):
         user = self.authenticated_user()
-        workspace_id, valid = self.workspace_scope(user)
         metadata_file = DATA_DIR / 'workspace-materials.json'
         with LOCK:
+            workspace_id, valid = self.workspace_scope(user)
+            requested = self.request_workspace_id()
+            if requested and requested != workspace_id:
+                return self.send_json({'error':'workspace_not_found','message':'工作区已不存在，请刷新后重试'}, 404)
             categories_file = DATA_DIR / 'workspace-material-categories.json'
-            saved_categories = read_file(categories_file,{})
+            saved_categories = read_material_settings(categories_file, workspace_id)
             categories = category_list(workspace_id,saved_categories)
-            metadata = read_file(metadata_file, {})
+            metadata = read_material_settings(metadata_file, workspace_id)
             def material_catalog(include_deleted=False):
                 result=build_catalog(workspace_id, read_projects(), read_assets(), read_music(),
                     PREVIS_ASSETS.records() + read_models(), latest_jobs(limit=None),
@@ -11390,6 +12091,8 @@ class Handler(SimpleHTTPRequestHandler):
         FILM_WORKBENCH.callbacks[workspace] = service_handler(globals(),user,workspace)
         try:
             if path == '/api/film/open':
+                if 'storageWorkspaceId' in incoming:
+                    choose_film_storage(user, workspace, project_key, incoming['storageWorkspaceId'])
                 return self.send_json(FILM_WORKBENCH.call(workspace, 'open', projectKey=project_key, projectName=project_name))
             if path == '/api/film/action':
                 args = incoming.get('args')
@@ -11410,6 +12113,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json(result)
         except (ValueError, OSError) as exc:
             return self.send_json({'error': 'film_import_failed', 'message': str(exc)}, 400)
+        except FilmVersionChoice as exc:
+            return self.send_json({'error':'film_version_choice','message':str(exc),'versions':exc.versions},409)
         except FilmUnavailable as exc:
             return self.send_json({'error': 'film_unavailable', 'message': str(exc)}, 503)
 
@@ -11526,6 +12231,12 @@ class Handler(SimpleHTTPRequestHandler):
                 qualities = supported_image_qualities(item.get('model'), item.get('name'))
                 if qualities is not None:
                     payload['qualities'] = qualities
+                if model_has_usage(item, 't2i'):
+                    payload['imageReferences'] = image_reference_limits(item)
+                    payload['chatImage'] = item.get('requestProfile') == 'chat-image'
+                if model_has_usage(item, 'video'):
+                    payload['videoProfile'] = item.get('requestProfile') or ''
+                    payload['videoProtocol'] = 'openai-video' if item.get('requestProfile') == 'async-video-task' else (item.get('protocol') or 'openai-video')
                 return payload
 
             grouped = {kind: [model_payload(item)
@@ -11669,6 +12380,10 @@ class Handler(SimpleHTTPRequestHandler):
             project = self.find_project(path.split('/')[-1])
             if project and project.get('ownerId')!=user['id'] and not project.get('shared'):
                 return self.send_json({'error':'project_forbidden','message':'此项目仅所有者可见'},403)
+            if project and project.get('ownerId') == user['id'] and self.request_workspace_id():
+                workspace_id, valid = self.workspace_scope(user)
+                if not in_workspace(project, workspace_id, valid):
+                    return self.send_json({'error':'workspace_mismatch','message':'这个项目属于另一个工作区，请切换过去后打开'},403)
             return self.send_json({'project':project} if project else {'error':'project_not_found'},200 if project else 404)
         if path.startswith('/api/assets/'):
             asset_id = path.split('/')[-1]
@@ -11782,11 +12497,16 @@ class Handler(SimpleHTTPRequestHandler):
                 except (TypeError, ValueError): offset = 0
                 workspace_id, valid = self.workspace_scope(user)
                 jobs = latest_jobs(user_id=user['id'], limit=None, project_id=project_id or None, workspace_id=workspace_id, valid_ids=valid)
-                if status_filter in {'queued', 'running', 'completed', 'failed'}:
+                if status_filter == 'active':
+                    jobs = [job for job in jobs if job.get('status') in {'queued', 'running'}]
+                elif status_filter in {'queued', 'running', 'completed', 'failed'}:
                     jobs = [job for job in jobs if job.get('status') == status_filter]
                 if kind_filter in {'image', 'video', 'audio'}:
                     jobs = [job for job in jobs if (job.get('kind') or 'video') == kind_filter]
-                return self.send_json({'jobs': [job_view(job, sync=False) for job in jobs[offset:offset+limit]], 'total': len(jobs), 'activeCount': sum(1 for job in jobs if job.get('status') in {'queued', 'running'})})
+                page = [job_view(job, sync=False) for job in jobs[offset:offset+limit]]
+                if query.get('view') == ['studio']:
+                    page = [studio_job_view(job) for job in page]
+                return self.send_json({'jobs': page, 'total': len(jobs), 'activeCount': sum(1 for job in jobs if job.get('status') in {'queued', 'running'})})
             if path.endswith('/download'):
                 job_id = path.split('/')[-2]
                 job = self.find_job(job_id, user['id'])
@@ -11796,7 +12516,16 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_video_download(current)
             job_id = path.split('/')[-1]
             job = self.find_job(job_id, user['id'])
-            return self.send_json({'job': job_view(job)} if job else {'error': 'job_not_found'}, 200 if job else 404)
+            if not job:
+                return self.send_json({'error': 'job_not_found'}, 404)
+            query = parse_qs(urlparse(self.path).query)
+            if query.get('recoverMedia') == ['1']:
+                current = recover_studio_video(job)
+                if not current.get('videoUrl'):
+                    return self.send_json({'error': 'video_not_available', 'message': '暂未取回视频文件，可稍后再次查询。'}, 409)
+                return self.send_json({'job': studio_job_view(current)})
+            current = job_view(job)
+            return self.send_json({'job': studio_job_view(current) if query.get('view') == ['studio'] else current})
         if path == '/api/agent/community-skills' or path.startswith('/api/agent/community-skills/'):
             user = self.authenticated_user()
             if not user: return self.send_json({'error': 'unauthenticated'}, 401)
@@ -12337,6 +13066,16 @@ class Handler(SimpleHTTPRequestHandler):
             project['revision'] = current_revision + 1
             # 移动项目是工作区之间唯一的受控出口（只能移到自己名下的空间）。
             target = str(incoming.get('workspaceId') or '').strip()
+            previous = projects[index]
+            if previous.get('filmStorageWorkspaceId'):
+                project['filmStorageWorkspaceId'] = previous['filmStorageWorkspaceId']
+            elif previous.get('workspaceId') and previous['workspaceId'] not in valid:
+                # After removal, the first ordinary canvas save normalizes workspaceId.
+                # Keep its original film directory reachable through that save.
+                try:
+                    project['filmStorageWorkspaceId'] = project_film_storage(previous, workspace_id)
+                except FilmUnavailable as exc:
+                    return self.send_json({'error':'film_storage_conflict','message':str(exc)},409)
             if target and target != workspace_id:
                 allowed = {str(item.get('id')) for item in workspaces_for_user(user['id'])}
                 if target not in allowed:
@@ -12344,9 +13083,25 @@ class Handler(SimpleHTTPRequestHandler):
                 project['workspaceId'] = target
             else:
                 project['workspaceId'] = workspace_id
-            projects[index] = project
             validate_new_media(user['id'],project,previous_media)
-            write_file(PROJECTS_FILE, projects)
+            projects[index] = project
+            if target and target != workspace_id:
+                # A late editor call must see either the old live worker or the committed new owner.
+                with FILM_WORKBENCH.lock:
+                    try:
+                        project['filmStorageWorkspaceId'] = project_film_storage(previous, workspace_id)
+                        FILM_WORKBENCH.release_project(workspace_id, project_id)
+                    except (FilmUnavailable, OSError) as exc:
+                        return self.send_json({'error':'film_move_blocked','message':str(exc)},409)
+                    sessions = read_agent_sessions()
+                    linked = [row for row in sessions if row.get('projectId') == project_id and row.get('userId') == user['id']]
+                    if linked:
+                        for row in linked:
+                            row['workspaceId'] = target
+                        write_agent_sessions(sessions)
+                    write_file(PROJECTS_FILE, projects)
+            else:
+                write_file(PROJECTS_FILE, projects)
         return self.send_json({'project': project})
     def do_POST(self):
         billing_token = GENERATION_REQUEST_CHARGE.set(None)
@@ -12368,6 +13123,15 @@ class Handler(SimpleHTTPRequestHandler):
             GENERATION_REQUEST_CHARGE.reset(billing_token)
     def _route_post(self):
         path = unquote(urlparse(self.path).path).rstrip('/')
+        if path == '/api/local/desktop-update':
+            secret = os.environ.get('CANVASFLOW_DESKTOP_UPDATE_TOKEN', '')
+            supplied = self.headers.get('X-CanvasFlow-Desktop', '')
+            if not secret or not supplied.isascii() or not hmac.compare_digest(secret, supplied):
+                return self.send_json({'error': 'not_found'}, 404)
+            action = self.read_json().get('action')
+            if action not in ('status', 'reserve', 'release'):
+                return self.send_json({'error': 'invalid_action'}, 400)
+            return self.send_json(desktop_image_update_gate(action))
         if path in ('/api/film/open', '/api/film/import', '/api/film/action'):
             return self.film_workbench_api(path)
         if path == '/api/blender/jobs':return self.blender_api(path, 'POST')
@@ -13211,6 +13975,12 @@ class Handler(SimpleHTTPRequestHandler):
             project['workspaceId'] = self.workspace_scope(user)[0]
             with LOCK:
                 projects = read_projects()
+                if incoming.get('restoreConflictCopy') is True:
+                    original = next((item for item in projects if item['id'] == project['id']), None)
+                    if original:
+                        if original.get('ownerId') != user['id'] or original.get('workspaceId') != project['workspaceId']:
+                            return self.send_json({'error': 'project_id_unavailable'}, 409)
+                        return self.send_json({'project': original})
                 existing = {item.get('id') for item in projects}
                 while project['id'] in existing: project['id'] = f'project-{uuid.uuid4().hex[:8]}'
                 # New projects should be visible immediately at the top of the project space.
@@ -13337,7 +14107,7 @@ class Handler(SimpleHTTPRequestHandler):
                 user['id'], name, str(incoming.get('description') or ''),
                 prompt, icon=str(incoming.get('icon') or 'wand'),
                 source=str(incoming.get('source') or 'user'), files=incoming.get('files'),
-                primary_path=str(incoming.get('primarySkillFilePath') or ''), create_only=bool(incoming.get('createOnly')), metadata=incoming.get('metadata'))
+                primary_path=str(incoming.get('primarySkillFilePath') or ''), create_only=True, metadata=incoming.get('metadata'))
             if error: return self.send_json({'error': 'invalid_skill', 'message': error}, 400)
             return self.send_json({'skill': skill})
         return self.send_json({'error': 'not_found'}, 404)
@@ -13411,7 +14181,14 @@ class Handler(SimpleHTTPRequestHandler):
                 if len([item for item in items if item.get('userId') == user['id']]) <= 1:
                     return self.send_json({'error': 'last_workspace', 'message': '至少需要保留一个工作区'}, 400)
                 remaining = [item for item in items if item.get('id') != target_id]
-                write_workspaces(remaining)
+                with FILM_WORKBENCH.lock:
+                    try:
+                        for workspace, project_id in list(FILM_WORKBENCH.workers):
+                            if workspace == target_id:
+                                FILM_WORKBENCH.release_project(workspace, project_id)
+                    except (FilmUnavailable, OSError) as exc:
+                        return self.send_json({'error':'film_move_blocked','message':str(exc)},409)
+                    write_workspaces(remaining)
             # 空间里的内容不会被连带删除：它们的 workspaceId 指向一个已不存在的工作区，
             # item_workspace_id() 会把它们退回主人自己的默认工作区，所以这里不必重写数据文件。
             return self.send_json({'deleted': True, 'id': target_id})
@@ -13598,9 +14375,13 @@ def main():
     except (TypeError, ValueError):
         print(f'无效端口「{raw_port}」，使用默认端口 5173')
         port = 5173
-    server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
+    server = ThreadingHTTPServer(('127.0.0.1', port), Handler, data_lease=_STARTUP_DATA_LEASE if not _STARTUP_DATA_LEASE.closed else None)
     ACCOUNT_STORAGE.sync(force=True)
-    print(f'CanvasFlow local server running at http://127.0.0.1:{port}')
+    origin = f'http://127.0.0.1:{server.server_port}'
+    if sys.stdout.isatty():
+        print('CanvasFlow 本机访问链接（两分钟内有效）：', server.local_access.browser_url(origin))
+    else:
+        print(f'CanvasFlow local server running at {origin}')
     try: server.serve_forever()
     except KeyboardInterrupt: pass
     finally:
@@ -13610,3 +14391,7 @@ def main():
 
 if __name__ == '__main__':
     main()
+elif not NATIVE_SERVER_START:
+    # A library import does not own a running server. Server instances reacquire
+    # the same lock before serving and keep it until server_close().
+    _STARTUP_DATA_LEASE.close()

@@ -10,6 +10,9 @@ import tempfile
 import time
 from urllib.error import HTTPError
 from urllib.request import build_opener, ProxyHandler
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from local_app import installation_id
+from local_access import identify, user_secret
 
 release = Path(sys.argv[1]).resolve()
 runtime = release / '.runtime' / 'python' / 'python.exe'
@@ -17,6 +20,7 @@ native = release / 'CanvasFlowBackend.exe'
 with tempfile.TemporaryDirectory(prefix='canvasflow-release-test-') as temporary:
     with socket.socket() as probe:
         probe.bind(('127.0.0.1', 0));port=probe.getsockname()[1]
+    os.environ['LOCALAPPDATA'] = temporary
     environment = dict(os.environ, CANVASFLOW_DATA_DIR=temporary)
     with open(Path(temporary)/'server.log','wb') as output:
         command = [str(native),'serve',str(port)] if native.is_file() else [str(runtime),str(release/'server.py'),str(port)]
@@ -24,15 +28,15 @@ with tempfile.TemporaryDirectory(prefix='canvasflow-release-test-') as temporary
                                  creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
     client=build_opener(ProxyHandler({}));base=f'http://127.0.0.1:{port}'
     try:
+        key = user_secret()
         for _ in range(100):
-            try:
-                with client.open(base+'/api/local/bootstrap',timeout=1) as response:
-                    assert json.load(response)['mode']=='local'
+            access = identify(client, base, installation_id(release, temporary), key)
+            if access:
+                client.addheaders = [('X-CanvasFlow-Session', access.desktop_token)]
                 break
-            except OSError:
-                if process.poll() is not None:
-                    raise RuntimeError((Path(temporary)/'server.log').read_text(errors='replace'))
-                time.sleep(.1)
+            if process.poll() is not None:
+                raise RuntimeError((Path(temporary)/'server.log').read_text(errors='replace'))
+            time.sleep(.1)
         else:raise RuntimeError('Release failed to start')
         with client.open(base+'/') as response:html=response.read().decode()
         resources=re.findall(r'(?:src|href)=["\']([^"\']+\.(?:js|mjs|css)(?:\?[^"\']*)?)["\']',html)

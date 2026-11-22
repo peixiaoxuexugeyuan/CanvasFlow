@@ -48,3 +48,8 @@
 .film-material-card label span{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.5}
 
 .film-generation-field{display:flex;flex-direction:column;gap:7px;margin:12px 0;color:var(--muted,#a4aab3);font-size:12px}.film-generation-field input,.film-generation-field select{min-height:34px;width:100%;box-sizing:border-box}.film-generation-field input[type=checkbox]{width:18px;height:18px;min-height:18px;align-self:flex-start}.film-generation-field select[multiple]{min-height:100px}.film-generation-field[hidden]{display:none}.film-controls-body>textarea{display:block;width:100%;min-height:100px;margin:12px 0;box-sizing:border-box;resize:vertical}.film-controls-body>select{margin:0 8px 8px 0;min-width:130px}.film-controls-body audio{max-width:100%}
+.film-materials.film-version-choice { bottom: auto; max-height: calc(100% - 80px); }
+.film-version-choice .film-materials-list { display: flex; flex: 0 1 auto; }
+.film-version-choice label > span { display: grid; gap: 4px; min-width: 0; }
+.film-version-choice small { overflow-wrap: anywhere; }
+.film-version-choice > button { align-self: flex-end; }

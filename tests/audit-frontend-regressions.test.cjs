@@ -118,7 +118,7 @@ for (const kind of [undefined, 'video']) test(`unbound video job (${kind || 'leg
   const f = videoFixture(); f.output.dataset.generationJobId = 'pending';
   let watched = 0;
   Object.assign(f.scope, {
-    isStandaloneFile: () => false, CSS: { escape: x => x }, document: { querySelector: () => f.output },
+    isStandaloneFile: () => false, CSS: { escape: x => x }, document: { querySelector: () => f.output, querySelectorAll:()=>[] },
     api: async () => ({ jobs: [{ id: 'lost-job', ...(kind ? { kind } : {}), outputId: 'output-A', status: 'running' }] }),
     watchPendingJobs: () => watched++,
   });
@@ -144,6 +144,80 @@ test('video polling does not overlap and ignores a pending response after projec
   result.resolve({ job: { id: 'job-A', status: 'completed' } }); await pending;
   assert.equal(f.renders.length, 0); assert.equal(f.scope.state.jobTimer, 456);
   assert.equal(f.scope.state.jobBindings[0].jobId, 'job-B');
+});
+
+test('temporary video polling failures keep the binding and recover, repeated 404s stop tracking', async () => {
+  for (const missing of [false, true]) {
+    const f = videoFixture();
+    let callback, now = 100, polls = 0;
+    Object.assign(f.scope, {
+      CSS:{escape:x=>x}, document:{querySelector:()=>f.output}, Date:{now:()=>now},
+      setInterval:fn=>{callback=fn;return 1;}, clearInterval(){},
+      api:async (url, opts)=>{
+        assert.equal(opts.throwOnError,true);
+        if (++polls <= 3) throw Object.assign(Error('test status'),{status:missing?404:503});
+        return {job:{id:'video-job',status:'completed'}};
+      },
+      renderJobProgress:(_node,job)=>{f.renders.push(job);return true;}, refreshUsage(){},
+    });
+    load(f.scope,['stopJobPolling','watchPendingJobs']);
+    f.scope.state.jobBindings=[{jobId:'video-job',outputId:'output-A'}];
+    f.scope.watchPendingJobs();
+    for(let i=0;i<3;i++){await callback();now+=40000;}
+    if(missing){
+      assert.equal(f.renders[0].status,'failed'); assert.equal(f.scope.state.jobBindings.length,0);
+    }else{
+      assert.equal(f.renders.length,0); assert.equal(f.scope.state.jobBindings.length,1);
+      // Even a very long interruption must not silently drop the paid job.
+      now+=3600000;await callback();assert.equal(f.renders[0].status,'completed');
+      assert.equal(f.scope.state.jobBindings.length,0);
+    }
+  }
+});
+
+test('canvas preserves first/last order across storage types and keeps video links out of image references', async () => {
+  const first='data:image/png;base64,AAAA',last='data:image/png;base64,BBBB';
+  const nodes=[
+    {dataset:{nodeId:'start',node:'image'},handles:{previewMedia:'/media/start.png'}},
+    {dataset:{nodeId:'end',node:'image'},handles:{previewData:last}},
+    {dataset:{nodeId:'clip',node:'output'}},
+  ];
+  const scope={
+    window:{CanvasFlowConnections:{getEdges:()=>nodes.map(node=>({source:node.dataset.nodeId,target:'out'}))}},
+    $$:()=>nodes, nodeImageHandles:node=>node.handles, fetchMediaUrlAsDataUrl:async()=>first,
+    activeReferences:()=>[{linked:true,video:true,data:'https://media.example/clip.mp4'}, {linked:true,data:last}],
+  };
+  load(scope,['collectVideoReferenceImages']);
+  const target={dataset:{nodeId:'out'}};
+  assert.deepEqual(Array.from(await scope.collectVideoReferenceImages(target,'frames2video')),['/media/start.png',last]);
+  nodes[1].handles={previewMedia:'/media/start.png'};
+  assert.deepEqual(Array.from(await scope.collectVideoReferenceImages(target,'frames2video')),['/media/start.png','/media/start.png']);
+  nodes[0].handles={};
+  await assert.rejects(scope.collectVideoReferenceImages(target,'frames2video'),/第 1 张参考图无法读取/);
+  nodes.splice(0,2);
+  assert.deepEqual(Array.from(await scope.collectVideoReferenceImages(target)),[]);
+});
+
+test('storyboard and group video batches stop charging when switching canvases between shots', async () => {
+  for(const grouped of [false,true]){
+    const first=deferred(),calls=[],state={projectId:'A',generationSettings:{modelId:'video'}};
+    const rows=[1,2].map(i=>({number:i,seconds:5,shot:{id:String(i),prompt:'scene '+i}}));
+    const members=rows.map(r=>({dataset:{nodeId:r.shot.id,node:'output'}}));
+    const script={matches:()=>true,style:{},dataset:{nodeId:'script'}};
+    const scope={state,workspaceHeader:()=>({'X-Workspace-Id':'workspace-A'}),scriptPanelNode:()=>script,
+      scriptBatchGroup:()=>null,scriptShotSeconds:()=>5,videoDurationSeconds:()=>5,nodeLabel:()=>'script',
+      groupMembers:()=>members,scriptGeneratorContext:()=>({shots:new Map(rows.map(r=>[r.shot.id,r.shot]))}),
+      addNode:()=>members.shift(),graphSnapshot:()=>({nodes:[state.projectId]}),saveProject:async()=>true,
+      trackBatchVideoJob:()=>assert.fail('late response must not be bound to the other canvas'),
+      showToast(){},api:async(_url,opt)=>{calls.push(opt);return first.promise;}};
+    load(scope,[...contexts,grouped?'batchExecuteGroup':'scriptBatchVideo']);
+    const run=grouped?scope.batchExecuteGroup('group'):scope.scriptBatchVideo(rows);
+    await tick();assert.equal(calls.length,1);
+    state.projectId='B';first.resolve({job:{id:'job-A'}});await run;
+    assert.equal(calls.length,1);
+    assert.equal(JSON.parse(calls[0].body).projectId,'A');
+    assert.equal(calls[0].headers['X-Workspace-Id'],'workspace-A');
+  }
 });
 
 function agentFixture() {
@@ -340,11 +414,11 @@ function navigationFixture() {
   load(scope, ['openProject']); return { scope, requests, applied, saved };
 }
 
-test('opening A then B with reversed responses leaves B open and saves only B', async () => {
+test('opening A then B with reversed responses leaves B open without writing either project', async () => {
   const f = navigationFixture(); const a = f.scope.openProject('A'), b = f.scope.openProject('B');
   f.requests.get('B').resolve({ project: { id: 'B' } }); await b;
   f.requests.get('A').resolve({ project: { id: 'A' } }); await a;
-  assert.deepEqual(f.applied, ['B']); assert.deepEqual(f.saved, ['B']);
+  assert.deepEqual(f.applied, ['B']); assert.deepEqual(f.saved, []);
 });
 
 test('new canvas cannot override a newer view change while waiting for an existing project save', async () => {

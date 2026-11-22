@@ -16,20 +16,22 @@ class FilmUnavailable(RuntimeError):
 
 
 class FilmWorkbench:
-    def __init__(self, root, data_dir):
+    def __init__(self, root, data_dir, storage_scope=None):
         self.root, self.data_dir = Path(root), Path(data_dir)
+        self.storage_scope = storage_scope
         self.lock = threading.RLock()
         self.workers = {}
         self.callbacks = {}
         atexit.register(self.close)
 
     def _start(self, workspace, project_key):
+        storage_workspace = self.storage_scope(workspace, project_key) if self.storage_scope else workspace
         node = self.root / '.runtime/node/node.exe'
         script = self.root / 'tools/openfilm/bridge.mjs'
         package = self.root / 'tools/openfilm/node_modules/openfilm/package.json'
         if not all(p.is_file() for p in (node, script, package)):
             raise FilmUnavailable('成片编辑器运行组件尚未安装，请按 FILM_WORKBENCH.md 准备运行环境。')
-        workspace_home = self.data_dir / 'films' / hashlib.sha256(workspace.encode()).hexdigest()[:24]
+        workspace_home = self.workspace_home(storage_workspace)
         project_hash = hashlib.sha256(project_key.encode()).hexdigest()[:24]
         directory = workspace_home / 'scopes' / project_hash
         # Keep existing film/media files in place. Only the editor's registry,
@@ -143,33 +145,80 @@ class FilmWorkbench:
             if result.get('error'): raise FilmUnavailable(result['error'])
             return result
 
+    def workspace_home(self, workspace):
+        return self.data_dir / 'films' / hashlib.sha256(workspace.encode()).hexdigest()[:24]
+
+    def has_project_files(self, workspace, project_key):
+        base = self.workspace_home(workspace)
+        key = hashlib.sha256(project_key.encode()).hexdigest()[:24]
+        return any((base / folder / key).exists() for folder in ('projects', 'scopes'))
+
+    def is_pristine_project(self, workspace, project_key):
+        """Recognize only a newly opened, unedited OpenFilm 0.3.2 placeholder."""
+        key = hashlib.sha256(project_key.encode()).hexdigest()[:24]
+        base = self.workspace_home(workspace)
+        root = base / 'projects' / key
+        if not root.is_dir() or root.is_symlink():
+            return False
+        folders = list(root.iterdir())
+        if len(folders) != 1 or not folders[0].is_dir() or folders[0].is_symlink():
+            return False
+        project = folders[0]
+        if {item.name for item in project.iterdir()} != {'.film', 'film.html'}:
+            return False
+        metadata = project / '.film'
+        if not metadata.is_dir() or metadata.is_symlink() or any(p.name not in {'id', '.gitignore'} for p in metadata.iterdir()):
+            return False
+        scope = base / 'scopes' / key
+        if scope.is_dir() and any(p.name not in {'settings', 'editor-cache', 'runtime.log', 'canvas-links.json'} for p in scope.iterdir()):
+            return False
+        film = project / 'film.html'
+        if film.is_symlink() or film.stat().st_size > 200:
+            return False
+        # Use the untouched native template, not just a clip count: a custom stage,
+        # project assets, edit history, exports and saved layouts must all survive.
+        return film.read_bytes().replace(b'\r\n', b'\n').strip() == (
+            b'<!doctype html>\n<html>\n<head>\n<meta charset="utf-8">\n'
+            b'<meta name="viewport" content="width=1920, height=1080">\n</head>\n<body>\n</body>\n</html>')
+
+    def release_project(self, workspace, project_key):
+        """Close only an idle editor before changing the project's workspace or deleting it."""
+        with self.lock:
+            worker = self.workers.get((workspace, project_key))
+            if not worker:
+                return
+            proc, replies, _ = worker
+            call_lock = getattr(proc, 'film_call_lock', self.lock)
+            if not call_lock.acquire(blocking=False):
+                raise FilmUnavailable('成片正在处理任务，请完成后重试')
+            try:
+                if proc.poll() is None:
+                    with proc.film_input_lock:
+                        proc.stdin.write(json.dumps({'op':'archive_check','projectKey':project_key})+'\n')
+                        proc.stdin.flush()
+                    try:
+                        result = replies.get(timeout=5)
+                    except queue.Empty:
+                        self.workers.pop((workspace,project_key),None)
+                        self._stop(worker)
+                        raise FilmUnavailable('无法确认成片任务状态，请重试；文件已保留')
+                    if not result.get('safe'):
+                        raise FilmUnavailable(result.get('error') or '成片正在生成、导出或由 Agent 编辑，请完成后重试')
+                self.workers.pop((workspace,project_key),None)
+                self._stop(worker)
+            finally:
+                call_lock.release()
+
     def archive_project(self, workspace, project_key, title=''):
         """Move the linked film to a recoverable, workspace-local recycle area."""
-        base=(self.data_dir/'films'/hashlib.sha256(workspace.encode()).hexdigest()[:24]).resolve()
+        storage_workspace = self.storage_scope(workspace, project_key) if self.storage_scope else workspace
+        base = self.workspace_home(storage_workspace).resolve()
         key=hashlib.sha256(project_key.encode()).hexdigest()[:24]
         targets=[base/'projects'/key,base/'scopes'/key]
         for target in targets:
             if target.exists() and (target.is_symlink() or not target.resolve().is_relative_to(base)):
                 raise FilmUnavailable('成片目录路径异常，项目未删除')
-        with self.lock:
-            worker=self.workers.get((workspace,project_key))
-            if worker:
-                proc,replies,_=worker
-                call_lock=getattr(proc,'film_call_lock',self.lock)
-                if not call_lock.acquire(blocking=False):
-                    raise FilmUnavailable('成片正在处理任务，请完成后再删除项目')
-                try:
-                    if proc.poll() is None:
-                        with proc.film_input_lock:
-                            proc.stdin.write(json.dumps({'op':'archive_check','projectKey':project_key})+'\n');proc.stdin.flush()
-                        try:result=replies.get(timeout=5)
-                        except queue.Empty:
-                            self.workers.pop((workspace,project_key),None);self._stop(worker)
-                            raise FilmUnavailable('无法确认成片任务状态，请重试；文件已保留')
-                        if not result.get('safe'):raise FilmUnavailable(result.get('error') or '成片正在生成、导出或由 Agent 编辑，请完成后再删除项目')
-                    self.workers.pop((workspace,project_key),None)
-                    self._stop(worker)
-                finally:call_lock.release()
+        self.release_project(workspace, project_key)
         if not any(p.exists() for p in targets):return None
         recycle=base/'recycle'
         if recycle.is_symlink() or not recycle.resolve().is_relative_to(base):raise FilmUnavailable('成片回收区路径异常，项目未删除')

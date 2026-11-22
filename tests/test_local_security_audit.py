@@ -85,7 +85,7 @@ class LocalSecurityAuditTests(unittest.TestCase):
         with patch.object(self.app.BLENDER_BRIDGE,'artifact',return_value=file):
             path='/api/blender/jobs/blend-'+'a'*32+'/download?format=blend&workspace='+workspace
             with socket.create_connection(('127.0.0.1',self.http.server_port),timeout=5) as raw:
-                raw.sendall(f'HEAD {path} HTTP/1.0\r\nHost: 127.0.0.1:{self.http.server_port}\r\n\r\n'.encode())
+                raw.sendall(f'HEAD {path} HTTP/1.0\r\nHost: 127.0.0.1:{self.http.server_port}\r\nX-CanvasFlow-Session: {self.http.local_access.desktop_token}\r\n\r\n'.encode())
                 chunks=[]
                 while chunk:=raw.recv(65536):chunks.append(chunk)
             headers,body=b''.join(chunks).split(b'\r\n\r\n',1)

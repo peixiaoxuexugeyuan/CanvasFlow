@@ -308,6 +308,7 @@ file_formats.py
 index.html
 model_specs_defaults.py
 network_security.py
+provider_credentials.py
 platform_notifications.py
 portfolio.py
 previs_assets.py
@@ -337,6 +338,7 @@ vendor/three/LICENSE
 vendor/three/three.module.js
 local-app.css
 local_app.py
+local_access.py
 launch_local.py
 desktop_host.py
 workspace-materials.js
@@ -386,6 +388,10 @@ agent-public-skills.js
 agent-community-skills.js
 community_skills.py
 desktop-update-notice.js
+generation-studio-ui.js
+generation-studio.js
+assets/generation-studio/image.webp
+assets/generation-studio/video.webp
 desktop-update-notice.css
 assets/agent-skills/libtv/manifest.json
 assets/agent-skills/libtv/5dca3eeed31d4836949c95cf8d45444b/bundle.bin

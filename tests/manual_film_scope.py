@@ -45,7 +45,7 @@ with tempfile.TemporaryDirectory(prefix='canvasflow-film-scope-ui-') as folder:
     try:
         # Avoid overlapping the engine and UI browser cold starts on low-memory machines.
         app.FILM_WORKBENCH.call(workspace, 'open', projectKey='film-scope-a', projectName='隔离验收 A')
-        print('http://127.0.0.1:5199/?project=film-scope-a',flush=True)
+        print(http.local_access.browser_url('http://127.0.0.1:5199').replace('/local-connect#', '/local-connect?project=film-scope-a#'),flush=True)
         input('Press Enter to stop the isolated fixture.\n')
     finally:
         http.shutdown(); http.server_close(); app.FILM_WORKBENCH.close()

@@ -2,14 +2,17 @@
 import ast
 import pathlib
 import threading
+import time
 import types
 import unittest
 from contextvars import ContextVar
+from functools import wraps
 import uuid
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TREE = ast.parse((ROOT / 'server.py').read_text(encoding='utf-8-sig'))
-NAMES = {'read_preset_prompts', 'preset_prompt_text', 'create_image_job', 'run_image_job_in_background'}
+NAMES = {'read_preset_prompts', 'preset_prompt_text', 'create_image_job', 'attach_studio_draft',
+         'track_image_call', 'run_image_job_in_background', 'finish_background_image'}
 MODULE = ast.Module(body=[n for n in TREE.body if isinstance(n, ast.FunctionDef) and n.name in NAMES], type_ignores=[])
 DEFAULTS = ast.literal_eval(next(n.value for n in TREE.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'PRESET_PROMPT_DEFAULTS' for t in n.targets)))
 
@@ -36,7 +39,8 @@ class PanoramaPromptTest(unittest.TestCase):
             visible_ai_models=lambda _: [entry], model_has_usage=lambda m, usage: usage == 't2i',
             media_generate_entry=lambda _: asynchronous, MEDIA_STATUS_PATH='/task-status',
             submit_image_generation=submit, extract_provider_job_id=lambda data: data['task_id'],
-            IMAGE_JOB_PAYLOADS={}, IMAGE_JOB_LOCK=threading.Lock(),
+            IMAGE_JOB_PAYLOADS={}, IMAGE_JOB_LOCK=threading.Lock(), IMAGE_CALLS_ACTIVE=0,
+            IMAGE_UPDATE_LEASE_UNTIL=0.0, time=time, wraps=wraps,
             image_quality_value=lambda _model, value, _name=None: value,
             image_entry_options=lambda entry,incoming:entry, open_generation_charge=lambda *a,**k:{'enabled':False}, call_image_generation=generate, append_job=lambda job: jobs.append(dict(job)),
         )

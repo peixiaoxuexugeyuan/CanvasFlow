@@ -10,3 +10,5 @@
 ## Skill 及演示素材来源
 
 `assets/agent-skills/libtv` 保存 2026-11-14 获取的公开 Skill 快照（844 个包、2,460 个 Markdown 文件），作者、来源、版本及 SHA-256 见同目录 manifest.json。原始正文按数据读取；它们不是 CanvasFlow 原创代码，不适用本项目非商用源码许可。公开可访问不等同于取得再分发许可，当前未完成逐项许可核实。3D-BOX 展示素材参考来源为 LibTV。社区新增 Skill 的作者信息由社区目录提供。
+
+图片和视频生成台中的两张横幅（assets/generation-studio）使用为 CanvasFlow 生成的香水静物与雪山列车示例图。

@@ -1,0 +1,11 @@
+diff --git a/templates/nsis/installSection.nsh b/templates/nsis/installSection.nsh
+--- a/templates/nsis/installSection.nsh
++++ b/templates/nsis/installSection.nsh
+@@ -33,4 +33,7 @@
+   !insertmacro CHECK_APP_RUNNING
++!else ifdef CANVASFLOW_REQUIRE_UPGRADE_PREFLIGHT
++  !define CANVASFLOW_HAS_UPGRADE_PREFLIGHT
++  !insertmacro CHECK_APP_RUNNING
+ !else
+   ${ifNot} ${UAC_IsInnerInstance}
+     !insertmacro CHECK_APP_RUNNING
