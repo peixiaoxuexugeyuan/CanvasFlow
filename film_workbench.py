@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import shutil
 import subprocess
 import threading
 import time
@@ -24,9 +25,17 @@ class FilmWorkbench:
         self.callbacks = {}
         atexit.register(self.close)
 
+    def _node(self):
+        if os.name == 'nt': return self.root / '.runtime/node/node.exe'
+        bundled = self.root / '.runtime/node/bin/node'
+        if bundled.is_file(): return bundled
+        # A Finder-launched app has a minimal PATH, so the usual install folders are checked too.
+        found = shutil.which('node') or next((p for p in ('/opt/homebrew/bin/node', '/usr/local/bin/node') if Path(p).is_file()), None)
+        return Path(found) if found else bundled
+
     def _start(self, workspace, project_key):
         storage_workspace = self.storage_scope(workspace, project_key) if self.storage_scope else workspace
-        node = self.root / '.runtime/node/node.exe'
+        node = self._node()
         script = self.root / 'tools/openfilm/bridge.mjs'
         package = self.root / 'tools/openfilm/node_modules/openfilm/package.json'
         if not all(p.is_file() for p in (node, script, package)):
@@ -40,12 +49,17 @@ class FilmWorkbench:
         directory.mkdir(parents=True, exist_ok=True)
         # Only OS/runtime variables: never inherit model keys or another OpenFilm profile.
         keep = {'systemroot', 'windir', 'temp', 'tmp', 'comspec', 'pathext', 'localappdata', 'appdata', 'userprofile', 'programfiles', 'programfiles(x86)', 'programdata', 'path'}
+        if os.name != 'nt':
+            # macOS/Linux: the same idea as the Windows list above, OS/runtime variables only.
+            keep |= {'home', 'tmpdir', 'lang', 'lc_all', 'lc_ctype', 'user', 'logname', 'shell'}
         env = {k: v for k, v in os.environ.items() if k.lower() in keep}
         ffmpeg = list((self.root / '.runtime/openfilm-ffmpeg').glob('*/bin'))
         env['PATH'] = os.pathsep.join([str(node.parent), *(str(p) for p in ffmpeg), env.get('PATH', '')])
         git = self.root / '.runtime/openfilm-git/cmd'
         if git.is_dir(): env['PATH'] = str(git) + os.pathsep + env['PATH']
-        env['PLAYWRIGHT_BROWSERS_PATH'] = str(self.root / '.runtime/openfilm-browser')
+        browsers = self.root / '.runtime/openfilm-browser'
+        # Windows always uses the bundled browser. Elsewhere a source checkout without it falls back to Playwright's own cache.
+        if os.name == 'nt' or browsers.is_dir(): env['PLAYWRIGHT_BROWSERS_PATH'] = str(browsers)
         for key, folder in [('OPENFILM_HOME', 'settings'), ('OPENFILM_SHARED_HOME', 'settings'),
                             ('OPENFILM_LIBRARY', 'projects'), ('OPENFILM_SAVED', 'saved'), ('OPENFILM_EXPORTS', 'exports')]:
             env[key] = str(directory / folder)
