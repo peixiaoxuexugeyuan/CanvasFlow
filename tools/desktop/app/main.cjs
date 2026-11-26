@@ -235,6 +235,15 @@ ipcMain.on('desktop:close-result', (event, payload) => {
   if (validSender(event) && typeof payload?.ok === 'boolean') closeResult?.(payload.pendingSkill === true ? 'skill-editor' : payload.ok);
 });
 
+// Apps opened from Finder or the Dock on macOS get a minimal PATH, so tools installed with Homebrew
+// (ffmpeg, ffprobe, git) would not be found by the backend. Add the usual locations.
+function hostPathEnv() {
+  if (process.platform !== 'darwin') return {};
+  const extra = ['/opt/homebrew/bin', '/usr/local/bin', path.join(app.getPath('home'), '.local', 'bin')];
+  const current = (process.env.PATH || '').split(':').filter(Boolean);
+  return {PATH: [...current, ...extra.filter(dir => !current.includes(dir))].join(':')};
+}
+
 function startHost() {
   return new Promise((resolve, reject) => {
     const backend = path.resolve(executableDirectory, config.backendDirectory || path.join(process.resourcesPath, 'backend'));
@@ -246,7 +255,7 @@ function startHost() {
     const args = ['--root', backend, '--data', dataDirectory, '--port', String(port)];
     host = spawn(compiled ? native : python, compiled ? ['host', ...args] : ['-u', path.join(backend, 'desktop_host.py'), ...args], {
       cwd:backend, windowsHide:true, stdio:['pipe','pipe','pipe'],
-      env:{...process.env, PYTHONIOENCODING:'utf-8', CANVASFLOW_DESKTOP_UPDATE_TOKEN:updateHostToken}
+      env:{...process.env, ...hostPathEnv(), PYTHONIOENCODING:'utf-8', CANVASFLOW_DESKTOP_UPDATE_TOKEN:updateHostToken}
     });
     let ready = false;
     const timer = setTimeout(() => reject(Error('本地服务启动超时，请查看数据目录的 local-logs。')), 60000);

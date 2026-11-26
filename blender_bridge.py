@@ -1,5 +1,6 @@
 """Local Blender job service. Immutable revisions, bounded queue, no AI calls."""
 import json
+import sys
 import os
 from pathlib import Path
 import re
@@ -81,6 +82,10 @@ class BlenderBridge:
             runtime=parent/'.runtime'/'blender'
             candidates.extend(str(p) for p in sorted(runtime.glob('blender-*/blender.exe'),reverse=True))
             candidates.extend(str(p) for p in runtime.glob('blender-*/blender'))
+        if sys.platform=='darwin':
+            # Blender.app keeps its executable inside the bundle and is not on PATH.
+            for apps in (Path('/Applications'),Path.home()/'Applications'):
+                candidates.extend(str(p) for p in sorted(apps.glob('Blender*.app/Contents/MacOS/Blender'),reverse=True))
         if os.name=='nt':
             for key in ('ProgramFiles','ProgramFiles(x86)'):
                 candidates.extend(str(p) for p in (Path(os.environ.get(key,'C:/Program Files'))/'Blender Foundation').glob('Blender */blender.exe'))

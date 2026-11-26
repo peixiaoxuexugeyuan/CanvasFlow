@@ -29,3 +29,14 @@ CANVASFLOW_PYTHON_RUNTIME=/path/to/python node tools/desktop/build-mac.cjs
 - 没有随包 Blender 和成片编辑器（OpenFilm）的运行环境：这两样需要各自的 macOS 版本放进 `.runtime/`，脚本发现有就会带上。
 - 没有自动更新（`updater.cjs` 目前只认 Windows x64）。
 - Intel（x64）没有实机验证；脚本支持 `--x64`，需要配一份 x64 的 Python。
+
+## 这一版顺带修的 macOS 问题
+
+- `blender_bridge.py`：能找到 `/Applications/Blender.app` 里的 Blender（原来只找 PATH 和 Windows 的安装位置）。
+- `tools/desktop/app/main.cjs`：从访达启动时 PATH 很短，后端找不到 Homebrew 装的 ffmpeg / ffprobe / git；启动后端时补上常见目录。
+- `release_security.py`：macOS 的临时目录本身是链接（`/var` → `/private/var`），同一个发布目录的两种写法现在都认。
+
+## 自带测试在 macOS 上的结果（arm64，Python 3.12，Node 24）
+
+- Python：46 个文件里 45 个通过（共 365 个用例，其中 32 个是原本就标记跳过的）；`test_local_release.py` 需要传发布目录，没单独跑。要带 `PYTHONPATH=tests` 运行。
+- Node：69 个文件里 65 个通过。没过的 4 个：3 个是成片编辑器的测试，缺 `tools/openfilm` 的依赖；1 个是 `agent-public-skills` 里按字节数断言，换行符不同导致差 68 字节。

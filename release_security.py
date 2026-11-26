@@ -1,4 +1,5 @@
 """Constrain a production release to verified public artifacts, never source files."""
+import os
 import hashlib
 import json
 from pathlib import Path
@@ -11,6 +12,9 @@ class PublicFiles:
         candidate = Path(configured_root) if configured_root else self.application_root / 'public'
         if candidate.is_symlink() or (hasattr(candidate, 'is_junction') and candidate.is_junction()):
             raise RuntimeError('发布目录不能是文件系统链接')
+        # On macOS a folder such as /var or /tmp is itself a link, so callers may hold the same
+        # public directory under an unresolved name. Remember that name so both spellings are accepted.
+        self._root_alias = Path(os.path.abspath(configured_root)) if configured_root else Path(os.path.abspath(application_root)) / 'public'
         candidate = candidate.resolve()
         self.release = bool(configured_root) or candidate.is_dir() or (self.application_root / 'release-manifest.json').is_file()
         self.root = candidate if self.release else self.application_root
@@ -35,8 +39,20 @@ class PublicFiles:
         if 'index.html' not in self.files:
             raise RuntimeError('发布入口缺失')
 
-    def _inside(self, target):
+    def _normalize(self, target):
         raw = Path(target)
+        try:
+            raw.relative_to(self.root)
+            return raw
+        except ValueError:
+            pass
+        try:
+            return self.root / raw.relative_to(self._root_alias)
+        except ValueError:
+            return raw
+
+    def _inside(self, target):
+        raw = self._normalize(target)
         try:
             relative = raw.relative_to(self.root)
             resolved = raw.resolve().relative_to(self.root.resolve())
@@ -52,6 +68,7 @@ class PublicFiles:
         return True
 
     def allowed(self, target):
+        target = self._normalize(target)
         if not public_static_path(target, self.root):
             return False
         if not self.release:
