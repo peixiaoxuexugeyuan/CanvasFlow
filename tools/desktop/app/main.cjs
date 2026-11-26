@@ -185,7 +185,7 @@ function showWindow() {
   mainWindow.focus();
 }
 function createTray() {
-  tray = new Tray(path.join(__dirname, 'icon.ico'));
+  tray = new Tray(process.platform === 'darwin' ? require('electron').nativeImage.createFromPath(path.join(__dirname, 'icon.png')).resize({width:18, height:18}) : path.join(__dirname, 'icon.ico'));
   tray.setToolTip('CanvasFlow');
   tray.setContextMenu(Menu.buildFromTemplate([
     {label:'打开 CanvasFlow', click:showWindow},
@@ -238,7 +238,7 @@ ipcMain.on('desktop:close-result', (event, payload) => {
 function startHost() {
   return new Promise((resolve, reject) => {
     const backend = path.resolve(executableDirectory, config.backendDirectory || path.join(process.resourcesPath, 'backend'));
-    const python = path.join(process.resourcesPath, 'python', 'python.exe');
+    const python = process.platform === 'win32' ? path.join(process.resourcesPath, 'python', 'python.exe') : path.join(process.resourcesPath, 'python', 'bin', 'python3');
     const native = path.join(backend, 'CanvasFlowBackend.exe');
     const compiled = fs.existsSync(native);
     if (!compiled && (!fs.existsSync(python) || !fs.existsSync(path.join(backend, 'desktop_host.py')))) return reject(Error('桌面运行文件缺失，请解压完整应用目录，不能单独移动 CanvasFlow.exe。'));
@@ -383,7 +383,7 @@ async function createWindow() {
   const menu = Menu.buildFromTemplate([
     {label:'CanvasFlow', submenu:[{label:'打开数据文件夹', click:() => {void shell.openPath(dataDirectory);}},
       {label:'打开日志文件夹', click:() => {void shell.openPath(path.join(dataDirectory,'local-logs'));}}, {type:'separator'},
-      {label:'退出', accelerator:'Alt+F4', click:() => {showWindow(); void prepareClose();}}]},
+      {label:'退出', accelerator:process.platform === 'darwin' ? 'Command+Q' : 'Alt+F4', click:() => {showWindow(); void prepareClose();}}]},
     {label:'编辑', submenu:[{role:'undo'},{role:'redo'},{type:'separator'},{role:'cut'},{role:'copy'},{role:'paste'},{role:'selectAll'}]},
     {label:'窗口', submenu:[{role:'togglefullscreen'},{role:'minimize'},{role:'zoom'}]},
     {label:'帮助', submenu:[{label:'关于 CanvasFlow', click:() => dialog.showMessageBox(mainWindow, {title:'CanvasFlow', message:'CanvasFlow', detail:'本地项目 · 无限画布 · Blender 建模\n版本 ' + app.getVersion()})}]}
