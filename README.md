@@ -8,7 +8,7 @@
   <strong>连接无限画布、AI 生成、3D 预演与 AI 剪辑的本地创作工作台。</strong>
 </p>
 
-<h3 align="center"><a href="https://video.zzzapi.xyz/">前往官网，下载 Windows 版 →</a></h3>
+<h3 align="center"><a href="https://video.zzzapi.xyz/">前往官网，下载 Windows 或 macOS 版 →</a></h3>
 
 <p align="center">在本地，把创意、分镜和素材剪成一部片。</p>
 
@@ -38,15 +38,9 @@
 | 平台 | 获取方式 | 说明 |
 | --- | --- | --- |
 | Windows x64 | [前往官方网站下载](https://video.zzzapi.xyz/) | 下载安装程序，按向导选择安装位置并完成安装 |
-| macOS | 适配中 | 暂未提供经过实机验证的安装版本，后续进展会在本仓库同步 |
+| macOS 13 及以上（Apple Silicon） | [前往官方网站下载](https://video.zzzapi.xyz/) | 解压 ZIP，将 CanvasFlow.app 拖入「应用程序」后打开 |
 
 安装版可直接启动桌面应用。在线生成需要自行配置模型服务；源码运行方法见下方「本地运行与开发」。
-
-### 关于 macOS 适配的致歉说明
-
-向使用苹果电脑的朋友们说声抱歉：目前我们还没有苹果设备，暂时无法完成 CanvasFlow 在 macOS 上的适配与实机验证，因此当前尚未提供经过验证的 macOS 安装版本。
-
-我们会尽快补充苹果设备的适配与测试，完成后及时发布 macOS 版本及使用说明。感谢大家的理解与耐心等待。
 
 <a id="sponsors"></a>
 
