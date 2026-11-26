@@ -84,7 +84,7 @@ function makeIcon(target) {
   const skipped = [];
   if (fs.existsSync(runtimeBlender)) { console.log('Copying bundled Blender…'); copyRuntime(runtimeBlender, path.join(backend, '.runtime/blender')); }
   else skipped.push('Blender (install Blender.app separately, or provide .runtime/blender-mac)');
-  const filmRuntimes = ['node', 'openfilm-browser', 'openfilm-ffmpeg', 'openfilm-git'];
+  const filmRuntimes = ['node', 'openfilm-browser', 'openfilm-ffmpeg']; // system git is used on macOS
   if (filmRuntimes.every(folder => fs.existsSync(path.join(root, '.runtime', folder)))) {
     console.log('Copying OpenFilm editor, Agent adapters and rendering runtimes…');
     require('../openfilm/package-runtime.cjs').prepareRuntime(backend, {protect: false});
