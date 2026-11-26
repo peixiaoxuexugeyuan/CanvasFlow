@@ -23,6 +23,9 @@ class SceneGenerationTest(unittest.TestCase):
             'default_text_model_entry':lambda: self.entry,
             'visible_ai_models':lambda user: [self.entry],
             'model_has_usage':lambda *args: True,
+            'VISION_INPUT_TOKEN_ALLOWANCE':1100,
+            'model_supports_vision':lambda entry: True,
+            'video_reference_values':lambda user, value, kind: (value, 'inline:' + value),
             'open_generation_charge':lambda user, entry, **kw: (self.charges.append(kw) or {'id':'charge'}),
             'settle_generation_charge':lambda *args, **kw: {},
             'billing_payload':lambda *args: {},
@@ -34,12 +37,43 @@ class SceneGenerationTest(unittest.TestCase):
         self.response = (body, status)
         return self.response
 
+    def test_script_reference_images_are_sent_in_order_to_the_selected_vision_model(self):
+        payload = {'prompt':'看两张人物参考图', 'modelId':'test', 'referenceImages':['/media/a.png','/media/b.png']}
+        self.scope['route'](self, payload, {'id':'local-test'})
+        self.assertEqual(self.response[1], 200)
+        content = self.calls[0][0]
+        self.assertEqual([part['image_url']['url'] for part in content[1:]], ['inline:/media/a.png', 'inline:/media/b.png'])
+        self.assertEqual(self.charges[0]['extra_input_tokens'], 2200)
+        self.scope['model_supports_vision'] = lambda entry: False
+        self.scope['route'](self, payload, {'id':'local-test'})
+        self.assertEqual(self.response[1], 400)
+        self.assertEqual(len(self.calls), 1)
+
     def test_scene_tools_use_json_instructions_and_bounded_output_budget(self):
         self.scope['generate_text_with_model']('搭建街道', self.entry, purpose='scene_agent')
         content, options = self.calls[0]
         self.assertIn('完整合法JSON', content[0]['text'])
         self.assertEqual(options['max_tokens'], 12000)
         self.assertEqual(options['timeout'], 180)
+
+    def test_video_prompt_submits_30_frames_and_preserves_the_normal_reference_limit(self):
+        # A 16 x 16 JPEG. The same visual frame can legitimately occur at many timestamps.
+        frame = ('data:image/jpeg;base64,/9j/4AAQSkZJRgABAgAAAQABAAD//gAPTGF2YzYzLjEuMTAyAP/bAEMACAQEBAQEBQUF'
+                 'BQUFBgYGBgYGBgYGBgYGBgcHBwgICAcHBwYGBwcICAgICQkJCAgICAkJCgoKDAwLCw4ODhERFP/EAEwAAQEAAAAAAAAA'
+                 'AAAAAAAAAAAGAQEBAAAAAAAAAAAAAAAAAAAGBxABAAAAAAAAAAAAAAAAAAAAABEBAAAAAAAAAAAAAAAAAAAAAP/AABEIABAAEAMB'
+                 'IgACEQADEQD/2gAMAwEAAhEDEQA/AIsATX9//9k=')
+        payload = {'modelId': 'test', 'prompt': '分析动作', 'referenceImages': [frame] * 30, 'purpose': 'video_prompt_frames'}
+        user = {'id': 'local-test'}
+        self.scope['route'](self, payload, user)
+        self.assertEqual(self.response[1], 200, self.response)
+        content = self.calls[0][0]
+        self.assertEqual([part['image_url']['url'] for part in content[1:]], payload['referenceImages'])
+        self.assertEqual(self.charges[0]['extra_input_tokens'], 30 * 1100)
+        for changes in ({'purpose':'text'}, {'referenceImages':[frame] * 31}, {'referenceImages':[]},
+                        {'referenceImages':['/media/test.jpg']}, {'referenceImages':['data:image/jpeg;base64,AAAA']}):
+            self.scope['route'](self, {**payload, **changes}, user)
+            self.assertEqual(self.response[1], 400, changes)
+        self.assertEqual(len(self.calls), 1)
 
     def test_normal_text_generation_keeps_its_existing_budget_and_hint(self):
         self.scope['generate_text_with_model']('写文案', self.entry)

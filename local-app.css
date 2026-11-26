@@ -8,3 +8,14 @@
 .project-empty-notice { padding: 24px; margin-bottom: 24px; border: 1px dashed var(--border, #393939); border-radius: 14px; background: rgba(128,128,128,.04); }
 .project-empty-notice strong { font-size: 17px; }
 .project-empty-notice p { margin: 10px 0 0; color: var(--text-muted, #999); font-size: 13px; line-height: 1.7; }
+#nodeProfileControls:not([hidden]) {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--text, inherit);
+  font-size: 12px;
+}
+#nodeProfileSummary { white-space: normal; }
+#promptDock.has-source-profile :is(#modelSelectBtn, #referenceModeSelectBtn, #videoSpecSelectBtn,
+  #t2iModelSelectBtn, #imageAspectSelectBtn, #textModelSelectBtn, .dock-divider.video-only-control) { display: none !important; }

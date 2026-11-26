@@ -24,6 +24,41 @@ class StudioVideoParamsTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.temp.cleanup()
 
+    def test_temporary_delivery_keeps_original_local_reference(self):
+        url = '/media/selected.mp4'
+        entry = {'requestProfile': 'media-generate', 'model': 'test'}
+        job = {'userId': 'alice', 'sourceVideos': [url], 'generationSettings': {}}
+        file = self.app.MEDIA_DIR / 'selected.mp4'
+        schema = {'video_url': {'name': 'video_url', 'type': 'upload'}}
+        with patch.object(self.app, 'media_model_schema', return_value=schema), \
+                patch.object(self.app, 'resolve_media_file', return_value=file), \
+                patch.object(self.app.video_reference_store, 'publish', return_value='https://store.invalid/file') as upload:
+            self.assertEqual(self.app.deliver_video_sources(entry, job), ['https://store.invalid/file'])
+            upload.assert_called_once_with(file, 'alice')
+            self.assertEqual(job['sourceVideos'], [url])
+            schema.clear()
+            with self.assertRaisesRegex(ValueError, '未提供参考视频'):
+                self.app.deliver_video_sources(entry, job)
+            upload.assert_called_once()
+
+    def test_depth_original_reuse_requires_matching_owner_and_fresh_link(self):
+        url = '/media/depth.mp4'
+        job = {'userId': 'alice', 'sourceVideos': [url]}
+        entry = {'id': 'test', 'requestProfile': 'async-video-task'}
+        original = 'https://upstream.invalid/depth.mp4'
+        row = {'userId': 'alice', 'videoUrl': url, 'depthOriginalUrl': original, 'depthExpiresAt': 100000}
+        with patch.dict(os.environ, CF_VIDEO_HEVC_MODEL_IDS='test'), \
+                patch.object(self.app.time, 'time', return_value=100), \
+                patch.object(self.app, 'index_jobs', return_value={'x': row}), \
+                patch.object(self.app, 'resolve_media_file', return_value=Path('owned.mp4')), \
+                patch.object(self.app.video_reference_store, 'publish', return_value='signed') as upload:
+            self.assertEqual(self.app.deliver_video_sources(entry, job), [original])
+            upload.assert_not_called()
+            row['userId'] = 'bob'
+            self.assertEqual(self.app.deliver_video_sources(entry, job), ['signed'])
+            row.update(userId='alice', depthExpiresAt=80)
+            self.assertEqual(self.app.deliver_video_sources(entry, job), ['signed'])
+
     def params(self, model, reference, *, options=None, images=(), videos=(), audios=()):
         fields = {field['name']: field for field in self.catalog[model]['params']}
         entry = {'id': 'newapi-lk888-test', 'model': model}

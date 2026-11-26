@@ -1,0 +1,52 @@
+const assert = require('node:assert/strict');
+
+module.exports = async function checkRoleEditing({page, modal, openLibrary}) {
+  const entry=page.locator('#roleLibraryMain [data-role-style]');
+  const cards=page.locator('[data-role-select]');
+  const original=await entry.getAttribute('data-role-style');
+  const next=await cards.nth(1).getAttribute('data-role-select');
+  assert.notEqual(original,next);
+  await entry.click();
+  await modal.waitFor();
+  await modal.locator('[data-mode=features]').click();
+  const bytes=await page.evaluate(()=>{
+    const canvas=document.createElement('canvas');
+    canvas.width=32;canvas.height=24;
+    const ctx=canvas.getContext('2d');
+    ctx.fillStyle='#d82687';ctx.fillRect(0,0,32,24);
+    return canvas.toDataURL().split(',')[1];
+  });
+  await modal.locator('.rs-mark-file').setInputFiles({name:'cross-role.png',mimeType:'image/png',buffer:Buffer.from(bytes,'base64')});
+  const gallery=modal.getByRole('group',{name:'我的贴图'});
+  await gallery.getByRole('button',{name:'cross-role.png'}).waitFor().catch(async error=>{
+    throw Error(error.message+' '+await modal.locator('.rs-status').innerText()+' '+await modal.locator('[data-custom-mark]').allTextContents());
+  });
+  await modal.locator('.rs-projected-mark').waitFor();
+  await page.mouse.click(2,2);
+  const prompt=page.getByRole('alertdialog');
+  await prompt.getByRole('button',{name:'取消',exact:true}).click();
+  assert.equal(await modal.locator('.rs-mark').count(),1);
+  await page.mouse.click(2,2);
+  await prompt.getByRole('button',{name:'放弃并关闭'}).click();
+  await modal.waitFor({state:'detached'});
+  await openLibrary();
+  await page.locator('[data-role-select="'+next+'"]').click();
+  await entry.click();
+  await modal.waitFor();
+  await modal.locator('[data-mode=features]').click();
+  assert.equal(await modal.locator('.rs-mark').count(),0);
+  await gallery.getByRole('button',{name:'cross-role.png'}).click();
+  await modal.locator('.rs-mark').waitFor();
+  await modal.locator('[data-action=undo]').click();
+  assert.equal(await modal.locator('.rs-mark').count(),0);
+  await page.mouse.click(2,2);
+  await modal.waitFor({state:'detached'});
+  await openLibrary();
+  await page.locator('[data-role-select="'+original+'"]').click();
+  await entry.click();
+  await modal.waitFor();
+  await modal.locator('[data-mode=features]').click();
+  assert.equal(await modal.locator('.rs-mark').count(),0,'discarded mark is not restored as a draft');
+  await modal.locator('[data-action=back]').click();
+  await modal.waitFor({state:'detached'});
+};

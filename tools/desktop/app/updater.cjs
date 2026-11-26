@@ -6,6 +6,7 @@ const UPDATE_ORIGIN = 'https://video.zzzapi.xyz';
 const FEED_URL = UPDATE_ORIGIN + '/updates/latest.json';
 const MAX_INSTALLER_SIZE = 8 * 1024 ** 3;
 const INSTALLER_NAME = 'CanvasFlow-Setup.exe';
+const PART_NAME = 'installer.part';
 const CACHE_RECEIPT = 'release.json';
 
 function versionParts(value) {
@@ -32,7 +33,7 @@ function validateManifest(value) {
   return {version:value.version, buildNumber:validBuild(value.buildNumber), url:url.href, sha256:value.sha256.toLowerCase(), size:value.size};
 }
 
-function createUpdater({version, buildNumber = 0, directory, fetchImpl = fetch, onChange = () => {}}) {
+function createUpdater({version, buildNumber = 0, directory, fetchImpl = fetch, downloadIdleMs = 120000, onChange = () => {}}) {
   versionParts(version);
   validBuild(buildNumber);
   let state = {status:'idle', currentVersion:version, currentBuildNumber:buildNumber, version:'', buildNumber:0, progress:0, message:''};
@@ -42,10 +43,12 @@ function createUpdater({version, buildNumber = 0, directory, fetchImpl = fetch, 
     state = {...state, status, ...patch};
     try { onChange(getState()); } catch { /* renderer may be navigating */ }
   }
-  async function request(url, signal) {
+  async function request(url, signal, offset = 0) {
     const original = new URL(url);
     for (let redirect = 0; redirect <= 3; redirect++) {
-      const response = await fetchImpl(url, {redirect:'manual', signal, cache:'no-store', headers:{'Accept-Encoding':'identity'}});
+      const headers = {'Accept-Encoding':'identity'};
+      if (offset) headers.Range = 'bytes=' + offset + '-';
+      const response = await fetchImpl(url, {redirect:'manual', signal, cache:'no-store', headers});
       if (response.status >= 300 && response.status < 400) {
         const target = new URL(response.headers.get('location') || '', url);
         await response.body?.cancel();
@@ -53,7 +56,11 @@ function createUpdater({version, buildNumber = 0, directory, fetchImpl = fetch, 
         url = target.href;
         continue;
       }
-      if (response.status !== 200) {
+      if (offset && response.status === 416) {
+        await response.body?.cancel();
+        return request(original.href, signal);
+      }
+      if (response.status !== 200 && !(offset && response.status === 206)) {
         await response.body?.cancel();
         throw Error(response.status === 404 && original.href === FEED_URL ? '官网尚未发布更新清单，请稍后重试' : `更新服务返回 HTTP ${response.status}`);
       }
@@ -66,7 +73,14 @@ function createUpdater({version, buildNumber = 0, directory, fetchImpl = fetch, 
     const stat = await fs.promises.lstat(file);
     if (!stat.isFile() || stat.size !== target.size) return false;
     const hash = crypto.createHash('sha256');
-    for await (const bytes of fs.createReadStream(file, {signal})) hash.update(bytes);
+    let signature = Buffer.alloc(0);
+    for await (const bytes of fs.createReadStream(file, {signal})) {
+      if (signature.length < 2) {
+        signature = Buffer.concat([signature, bytes.subarray(0, 2 - signature.length)]);
+        if (signature.length === 2 && !signature.equals(Buffer.from('MZ'))) return false;
+      }
+      hash.update(bytes);
+    }
     return hash.digest('hex') === target.sha256;
   }
   async function* cachedInstallers() {
@@ -80,7 +94,7 @@ function createUpdater({version, buildNumber = 0, directory, fetchImpl = fetch, 
       const folder = path.join(directory, entry.name);
       try {
         const members = await fs.promises.readdir(folder, {withFileTypes:true});
-        if (members.some(member => !member.isFile() || ![INSTALLER_NAME, CACHE_RECEIPT].includes(member.name))) continue;
+        if (members.some(member => !member.isFile() || ![INSTALLER_NAME, CACHE_RECEIPT, PART_NAME].includes(member.name))) continue;
         if (!members.length) continue;
         const receiptPath = path.join(folder, CACHE_RECEIPT);
         let target = null;
@@ -89,7 +103,8 @@ function createUpdater({version, buildNumber = 0, directory, fetchImpl = fetch, 
           target = validateManifest(JSON.parse(await fs.promises.readFile(receiptPath, 'utf8')));
         }
         const hasFile = members.some(member => member.name === INSTALLER_NAME);
-        yield {folder, file:hasFile ? path.join(folder, INSTALLER_NAME) : null, receiptPath, target};
+        const part = members.some(member => member.name === PART_NAME) ? path.join(folder, PART_NAME) : null;
+        yield {folder, part, file:hasFile ? path.join(folder, INSTALLER_NAME) : null, receiptPath, target};
       } catch { /* Ignore incomplete or unreadable receipts. */ }
     }
   }
@@ -103,6 +118,7 @@ function createUpdater({version, buildNumber = 0, directory, fetchImpl = fetch, 
           if (!await validInstaller(cache.file, target)) continue;
           await fs.promises.unlink(cache.file);
         }
+        if (cache.part && cache.target) await fs.promises.unlink(cache.part);
         if (cache.target) await fs.promises.unlink(cache.receiptPath);
         await fs.promises.rmdir(cache.folder);
       } catch { /* A running installer can still hold its file open. Try next launch. */ }
@@ -145,10 +161,15 @@ function createUpdater({version, buildNumber = 0, directory, fetchImpl = fetch, 
     if (operation || state.status === 'installing') return Promise.resolve(null);
     if (!release) return Promise.resolve(null);
     return run('downloading', async signal => {
+      let partial;
       for await (const cache of cachedInstallers()) {
         signal.throwIfAborted();
-        if (!cache.file || cache.target?.version !== release.version ||
-            cache.target.buildNumber !== release.buildNumber || cache.target.sha256 !== release.sha256) continue;
+        if (cache.target?.version !== release.version || cache.target.buildNumber !== release.buildNumber ||
+            cache.target.size !== release.size || cache.target.sha256 !== release.sha256) continue;
+        if (!cache.file) {
+          if (cache.part) partial = cache;
+          continue;
+        }
         try {
           if (!await validInstaller(cache.file, release, signal)) continue;
         } catch {
@@ -160,37 +181,82 @@ function createUpdater({version, buildNumber = 0, directory, fetchImpl = fetch, 
         return cache.file;
       }
       downloaded = null;
-      const response = await request(release.url, AbortSignal.any([signal, AbortSignal.timeout(30 * 60 * 1000)]));
-      const contentLength = response.headers.get('content-length');
-      if (contentLength !== null && Number(contentLength) !== release.size) {await response.body.cancel(); throw Error('安装包大小与官网清单不一致');}
       await fs.promises.mkdir(directory, {recursive:true});
-      const folder = await fs.promises.mkdtemp(path.join(directory, 'update-'));
+      const folder = partial?.folder || await fs.promises.mkdtemp(path.join(directory, 'update-'));
       const file = path.join(folder, INSTALLER_NAME);
-      let handle, complete = false;
+      const part = path.join(folder, PART_NAME);
+      const receipt = path.join(folder, CACHE_RECEIPT);
+      let handle, received = 0, discard = false, idleTimer;
+      const idle = new AbortController();
+      const transfer = AbortSignal.any([signal, idle.signal]);
+      function resetIdleTimer() {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => idle.abort(Error('安装包下载长时间没有进展，可重试续传')), downloadIdleMs);
+      }
       try {
-        handle = await fs.promises.open(file, 'wx', 0o600);
-        const hash = crypto.createHash('sha256'); let received = 0, magic = Buffer.alloc(0), lastProgress = -1;
-        for await (const bytes of response.body) {
-          if (signal.aborted) throw Error('更新已取消');
-          const chunk = Buffer.from(bytes); received += chunk.length;
-          if (received > release.size) throw Error('安装包大小超过官网清单');
-          if (magic.length < 2) magic = Buffer.concat([magic, chunk]).subarray(0, 2);
-          hash.update(chunk);
-          let offset = 0;
-          while (offset < chunk.length) { const {bytesWritten} = await handle.write(chunk, offset); if (!bytesWritten) throw Error('无法写入安装包'); offset += bytesWritten; }
-          const progress = Math.floor(received / release.size * 100);
-          if (progress !== lastProgress) {lastProgress = progress; setStatus('downloading', {progress});}
+        if (!partial) {
+          await fs.promises.writeFile(receipt, JSON.stringify({schemaVersion:1, platform:'win32', arch:'x64', ...release}), {flag:'wx', mode:0o600});
         }
-        setStatus('verifying', {progress:100});
-        if (received !== release.size || hash.digest('hex') !== release.sha256 || magic.toString('ascii') !== 'MZ') throw Error('安装包校验失败，请重新下载');
+        handle = await fs.promises.open(part, partial ? 'r+' : 'wx', 0o600);
+        received = (await handle.stat()).size;
+        if (received > release.size) {await handle.truncate(0); received = 0;}
+        if (received < release.size) {
+          resetIdleTimer();
+          const response = await request(release.url, transfer, received);
+          if (response.status === 206) {
+            const expected = 'bytes ' + received + '-' + (release.size - 1) + '/' + release.size;
+            if (response.headers.get('content-range') !== expected) {
+              discard = true; await response.body.cancel(); throw Error('更新服务返回的续传位置无效，请重新下载');
+            }
+          } else if (received) {
+            await handle.truncate(0);
+            received = 0;
+          }
+          const contentLength = response.headers.get('content-length');
+          if (contentLength !== null && Number(contentLength) !== release.size - received) {
+            await response.body.cancel(); throw Error('安装包大小与官网清单不一致');
+          }
+          let lastProgress = -1;
+          for await (const bytes of response.body) {
+            transfer.throwIfAborted();
+            if (!bytes.length) continue;
+            resetIdleTimer();
+            if (received + bytes.length > release.size) {
+              discard = true; throw Error('安装包大小超过官网清单');
+            }
+            let offset = 0;
+            while (offset < bytes.length) {
+              const {bytesWritten} = await handle.write(bytes, offset, bytes.length - offset, received);
+              if (!bytesWritten) throw Error('无法写入安装包');
+              received += bytesWritten; offset += bytesWritten;
+            }
+            const progress = Math.floor(received / release.size * 100);
+            if (progress !== lastProgress) {lastProgress = progress; setStatus('downloading', {progress});}
+          }
+          transfer.throwIfAborted();
+          if (received < release.size) throw Error('安装包下载中断，可重试续传');
+        }
+        clearTimeout(idleTimer);
         await handle.close(); handle = null;
-        await fs.promises.writeFile(path.join(folder, CACHE_RECEIPT), JSON.stringify({schemaVersion:1, platform:'win32', arch:'x64', ...release}), {flag:'wx', mode:0o600});
-        downloaded = {folder, file}; complete = true;
+        setStatus('verifying', {progress:100});
+        if (!await validInstaller(part, release, signal)) {
+          discard = true; throw Error('安装包校验失败，请重新下载');
+        }
+        await fs.promises.rename(part, file);
+        downloaded = {folder, file};
         setStatus('ready', {progress:100, message:'安装包已就绪'});
         return file;
+      } catch (error) {
+        if (idle.signal.aborted) throw idle.signal.reason;
+        throw error;
       } finally {
+        clearTimeout(idleTimer);
         await handle?.close();
-        if (!complete) {await fs.promises.unlink(file).catch(()=>{}); await fs.promises.unlink(path.join(folder, CACHE_RECEIPT)).catch(()=>{}); await fs.promises.rmdir(folder).catch(()=>{});}
+        if (discard || !received) {
+          await fs.promises.unlink(part).catch(()=>{});
+          await fs.promises.unlink(receipt).catch(()=>{});
+          await fs.promises.rmdir(folder).catch(()=>{});
+        }
       }
     });
   }

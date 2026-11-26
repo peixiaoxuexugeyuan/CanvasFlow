@@ -13,6 +13,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css?v=20261122-generation-studios" />
+  <link rel="stylesheet" href="canvas-video-tools.css?v=1" />
+  <link rel="stylesheet" href="role-studio.css" />
+  <link rel="stylesheet" href="role-studio-voice.css" />
   <link rel="stylesheet" href="director-timeline.css?v=20261010-export-time4" />
   <link rel="stylesheet" href="local-app.css?v=20261019-materials" />
   <link rel="stylesheet" href="workspace-materials.css?v=20261113-compact-controls" />
@@ -27,7 +30,7 @@
   <script defer src="agent-hub-controls.js?v=20261114-skill-editor"></script>
   <script defer src="agent-skill-editor.js?v=20261114-skill-editor"></script>
   <script defer src="agent-hub.js?v=20261117-community-sync"></script>
-  <link rel="stylesheet" href="box3d-hub.css?v=20261114-neutral" />
+  <link rel="stylesheet" href="box3d-hub.css?v=20261125-theme" />
   <script defer src="box3d-hub.js?v=20261114-box1"></script>
   <link rel="stylesheet" href="film-workbench.css?v=20261111-film-capabilities" />
   <script defer src="film-workbench.js?v=20261111-film-capabilities"></script>
@@ -163,11 +166,14 @@
             <button type="button" data-quick-tool="annotate" title="标注" aria-label="标注" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l2.7 5.5 6 .9-4.3 4.2 1 6-5.4-2.8-5.4 2.8 1-6L3.3 9.4l6-.9z" fill="none" stroke="currentColor" stroke-width="1.4"/></svg><span>标注</span></button>
             <button type="button" data-quick-tool="grid-split" title="宫格切分" aria-label="宫格切分" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18" stroke="currentColor" stroke-width="1.2"/></svg><span>宫格切分</span></button>
             <button type="button" data-quick-tool="rotate" title="旋转与镜像" aria-label="旋转与镜像" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M20 4v7h-7" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 6v12M8 9l4-3 4 3" fill="none" stroke="currentColor" stroke-width="1.2"/></svg><span>旋转与镜像</span></button>
+            <button type="button" data-quick-tool="image-to-prompt" title="提示词反推" aria-label="提示词反推" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M13 3H5v18h8m0-18 4 4v4M8 10h5m-5 4h3m4 3h6m-3-3v6"/></svg><span>提示词反推</span></button>
             <button type="button" data-quick-tool="preview" title="预览" aria-label="预览" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12Z" fill="none" stroke="currentColor" stroke-width="1.5"/></svg><span>预览</span></button>
             <button type="button" data-quick-tool="add-library" title="添加到素材库" aria-label="添加到素材库" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h5v5H4zM15 4h5v5h-5zM4 15h5v5H4z" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M15 15h5M17.5 12.5v5" stroke="currentColor" stroke-width="1.5"/></svg><span>添加到素材库</span></button>
             <button type="button" data-quick-tool="download" title="下载主图" aria-label="下载主图" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M4 19h16" fill="none" stroke="currentColor" stroke-width="1.7"/></svg><span>下载主图</span></button>
 
 
+            <button type="button" data-quick-group="video" data-quick-tool="video-depth" title="深度动作捕捉" aria-label="深度动作捕捉" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M8 3H4v4m12-4h4v4M4 17v4h4m12-4v4h-4M8 16l3-4 4 1 2-4"/><circle cx="11" cy="8" r="2"/></svg><span>深度动作捕捉</span></button>
+            <button type="button" data-quick-group="video" data-quick-tool="video-to-prompt" title="提示词反推" aria-label="提示词反推" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M13 3H5v18h8m0-18 4 4v4M8 10h5m-5 4h3m4 3h6m-3-3v6"/></svg><span>提示词反推</span></button>
             <button type="button" data-quick-group="video" data-quick-always data-quick-tool="video-crop" title="裁剪画幅" aria-label="裁剪画幅" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2v14a2 2 0 0 0 2 2h14M2 6h14a2 2 0 0 1 2 2v14" fill="none" stroke="currentColor" stroke-width="1.7"/></svg><span>裁剪画幅</span></button>
             <button type="button" data-quick-group="video" data-quick-always data-quick-tool="video-trim" title="截取" aria-label="截取" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.3" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="6" cy="18" r="2.3" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8.1 7.5 20 17.6M8.1 16.5 20 6.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span>截取</span></button>
             <button type="button" data-quick-group="video" data-quick-tool="video-storyboard" title="分镜切分" aria-label="分镜切分" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18" stroke="currentColor" stroke-width="1.2"/></svg><span>分镜切分</span></button>
@@ -266,6 +272,10 @@
             <span class="char-count" id="charCount">0 字</span>
           </div>
           <div class="dock-foot">
+            <span id="nodeProfileControls" hidden>
+              <span id="nodeProfileSummary"></span>
+              <button type="button" id="nodeProfileToggle" class="dock-select select-field"></button>
+            </span>
 
             <span class="prompt-only-control script-only-control"><button class="dock-select select-field" id="textModelSelectBtn" type="button" aria-haspopup="listbox" aria-expanded="false" title="选择文本模型"><span class="model-logo small">T</span><span class="dock-select-copy"><strong id="textModelLabel">未选择模型</strong></span><i class="chevron">⌄</i></button></span>
             <div class="video-only-control"><button class="dock-select select-field" id="modelSelectBtn" type="button" aria-haspopup="listbox" aria-expanded="false" title="选择生成模型"><span class="model-logo small">W</span><span class="dock-select-copy"><strong>Wan 2.1</strong><small>图生视频 · 推荐</small></span><i class="chevron">⌄</i></button></div>
@@ -347,10 +357,21 @@
           <button class="round-tool" id="assetLibraryBtn" type="button" title="素材库" aria-pressed="false"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><rect x="3.4" y="4.4" width="17.2" height="4.4" rx="1.1"/><path d="M5 8.8v9.4A1.6 1.6 0 0 0 6.6 19.8h10.8a1.6 1.6 0 0 0 1.6-1.6V8.8"/><path d="M10 12.8h4"/></svg></button>
           <button class="round-tool" id="assetManagerBtn" type="button" title="资产管理" aria-pressed="false"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M9.5 4.5v15"/></svg></button>
           <span class="toolbar-divider"></span>
+          <button class="round-tool" id="toggleMiniMapBtn" type="button" aria-label="画布小地图" aria-expanded="true" aria-controls="canvasMiniMap">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M18 8c0 4.2-6 9.3-6 9.3S6 12.2 6 8a6 6 0 1 1 12 0Z"/><circle cx="12" cy="8" r="2.1"/>
+              <path d="M8.2 14H4.9a1 1 0 0 0-.95.68l-2 5.9A1 1 0 0 0 2.9 22h18.2a1 1 0 0 0 .95-1.42l-2-5.9a1 1 0 0 0-.95-.68h-3.3"/>
+            </svg>
+          </button>
           <button class="round-tool" id="toggleEdgesBtn" type="button" title="隐藏节点连线" aria-pressed="false"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="5.6" cy="6" r="2.4"/><circle cx="18.4" cy="18" r="2.4"/><path d="M7.7 7.8 16.3 16.2"/></svg></button>
           <button class="round-tool" id="toggleSnapBtn" type="button" title="网格吸附" aria-pressed="false"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4.5 9.5h15M4.5 14.5h15M9.5 4.5v15M14.5 4.5v15"/></svg></button>
         </div>
-        <div class="mini-map"><div class="mini-map-title">画布概览</div><div class="mini-map-canvas"><span class="mini-node mini-a"></span><span class="mini-node mini-b"></span><span class="mini-node mini-c"></span><span class="mini-viewport"></span></div></div>
+        <div class="mini-map" id="canvasMiniMap">
+          <div class="mini-map-canvas" role="group" tabindex="0" aria-label="画布概览" title="拖动视口框移动画布">
+            <span class="mini-map-nodes" aria-hidden="true"></span>
+            <span class="mini-viewport" aria-hidden="true"></span>
+          </div>
+        </div>
       
       </section>
 
@@ -598,7 +619,20 @@
   <script src="workspace-materials.js?v=20261112-delete-dialog"></script>
   <script src="generation-studio-ui.js?v=20261122-generation-studios"></script>
   <script src="generation-studio.js?v=20261122-generation-studios"></script>
-  <script src="app.js?v=local-20261121-quick-generation"></script>
+  <script src="role-studio-controls.js"></script>
+  <script src="role-studio-prompts.js"></script>
+  <script src="role-studio-styling.js"></script>
+  <script src="assets/role-studio/official-additions.js"></script>
+  <script src="role-studio-cutout.js"></script>
+  <script src="role-studio-preview.js"></script>
+  <script src="role-studio-mark-surface.js"></script>
+  <script src="role-studio-marks.js"></script>
+  <script src="role-studio-voice.js"></script>
+  <script src="role-studio-render.js"></script>
+  <script src="role-studio.js"></script>
+  <script src="canvas-reverse-preferences.js?v=2"></script>
+  <script src="canvas-video-tools.js?v=3"></script>
+  <script src="app.js?v=local-20261125-video-tools"></script>
 
   <div class="library-manager-layer" id="libraryManager" hidden>
     <section class="library-manager" role="dialog" aria-modal="true" aria-label="素材管理">

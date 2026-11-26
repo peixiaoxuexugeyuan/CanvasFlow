@@ -11,7 +11,9 @@ if (fs.existsSync(path.join(input,'desktop-config.json'))) throw Error('Develope
 if (fs.existsSync(output) && fs.readdirSync(output).some(file=>/\.(?:exe|zip|7z)$/.test(file))) throw Error('Choose a fresh release output directory; an old NSIS archive must never be reused');
 if (!fs.existsSync(path.join(input,'resources/app.asar'))) throw Error('Packaged desktop application is missing');
 const built = JSON.parse(fs.readFileSync(path.join(input, 'canvasflow-build.json'), 'utf8'));
-if (built.version !== version || !Number.isSafeInteger(built.buildNumber) || built.buildNumber <= 0) throw Error('Rebuild the desktop app with a valid version/build number before packaging');
+if (built.version !== version || built.buildNumber !== require('./app/package.json').buildNumber || !Number.isSafeInteger(built.buildNumber) || built.buildNumber <= 0) throw Error('Rebuild the desktop app with a valid version/build number before packaging');
+const backendExe = path.join(input, 'resources/backend/CanvasFlowBackend.exe');
+if (built.nativeProof || fs.existsSync(backendExe)) require('../native/build-proof.cjs').verify(root, backendExe, built.nativeProof);
 const stage=path.join(root,'build-private','package-stage-'+require('node:crypto').randomUUID());
 fs.cpSync(input,stage,{recursive:true,filter:file=>!file.split(path.sep).includes('__pycache__') && !/\.(?:log|pyc)$/.test(file)});
 const installerConfig=require('./windows-installer-config.cjs');

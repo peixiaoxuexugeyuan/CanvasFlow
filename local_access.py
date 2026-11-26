@@ -144,6 +144,17 @@ class LocalAccess:
         return (hmac.compare_digest(self.desktop_token.encode(), headers.get('X-CanvasFlow-Session', '').encode())
                 or hmac.compare_digest(self.basic.encode(), headers.get('Authorization', '').encode()))
 
+    def should_retry_browser_auth(self, headers):
+        # Chromium may still offer the previous instance's Basic credentials after pairing.
+        value = headers.get('Authorization', '')
+        if not self.redeemed or not value.startswith('Basic ') or len(value) != len(self.basic):
+            return False
+        try:
+            decoded = base64.b64decode(value[6:], validate=True)
+        except ValueError:
+            return False
+        return re.fullmatch(rb'canvasflow:[0-9a-f]{64}', decoded) is not None
+
 
 def identify(client, url, installation, key):
     """Mutual discovery never sends an access credential to an unverified listener."""

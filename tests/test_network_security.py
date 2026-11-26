@@ -12,6 +12,14 @@ from http.server import HTTPServer,BaseHTTPRequestHandler
 
 
 class NetworkSecurityTests(unittest.TestCase):
+    def test_voice_catalog_redirects_remain_on_the_supplier_origin(self):
+        req = Request('https://supplier.example/voices')
+        req.same_origin_only = True
+        moved = SafeRedirect().redirect_request(req, io.BytesIO(), 302, 'Found', {}, 'https://supplier.example/voices/page')
+        self.assertTrue(moved.same_origin_only)
+        with self.assertRaises(URLError):
+            SafeRedirect().redirect_request(moved, io.BytesIO(), 302, 'Found', {}, 'https://other.example/voices')
+
     def test_non_http_schemes_and_embedded_credentials_are_rejected_without_io(self):
         for url in ('file:///C:/secret.txt','ftp://example.com/private','https://user:password@example.com','http://[broken','data:text/plain,secret'):
             with self.assertRaises(URLError): open_http_url(url)

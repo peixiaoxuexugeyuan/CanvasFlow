@@ -1,4 +1,5 @@
 """Local app integration checks. Uses isolated storage and no paid upstream calls."""
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -7,6 +8,7 @@ import tempfile
 import threading
 import unittest
 import base64
+import io
 import wave
 from email import policy
 from email.parser import BytesParser
@@ -33,6 +35,78 @@ import server
 
 
 class LocalAppTest(unittest.TestCase):
+    def test_voice_catalog_bounds_and_source(self):
+        entry = {'baseUrl':'https://voices.example/v1', 'authMode':'none'}
+        first = entry['baseUrl'] + '/skills/voices?model=model'
+
+        def fetch(*responses, pages=40, rows=5000):
+            with patch.dict(server.VOICE_LIST_CACHE, clear=True), patch.object(server, 'VOICE_LIST_MAX_PAGES', pages), \
+                 patch.object(server, 'VOICE_LIST_MAX_ROWS', rows), patch.object(server, 'request_json_first_hit') as call:
+                call.side_effect = lambda urls, headers, timeout: (200, responses[call.call_count-1], None, urls[0])
+                voices, warning = server.fetch_model_voices(entry,'model')
+                self.assertEqual(server.fetch_model_voices(entry,'model'), (voices,warning))
+                return [v['id'] for v in voices], warning, [args.args[0][0] for args in call.call_args_list]
+
+        rows, warning, urls = fetch({'voices':[{'id':'a'},{'id':'a'},{'id':'b'}]})
+        self.assertEqual((rows,warning,len(urls)), (['a','b'],'',1))
+        rows, warning, urls = fetch({'voices':[{'id':'a'}],'next':'https://elsewhere.example/voices?cursor=next'})
+        self.assertEqual(rows,['a']); self.assertIn('不同来源',warning); self.assertEqual(len(urls),1)
+        rows, warning, urls = fetch({'voices':[{'id':'a'}],'next':first})
+        self.assertEqual(rows,['a']); self.assertIn('重复',warning); self.assertEqual(len(urls),1)
+        rows, warning, urls = fetch({'voices':[{'id':'a'}],'has_more':True}, {'voices':[{'id':'a'}],'has_more':True})
+        self.assertEqual(rows,['a']); self.assertIn('重复',warning); self.assertEqual(len(urls),2)
+        rows, warning, urls = fetch({'voices':[{'id':'a'}],'hasMore':True}, pages=1)
+        self.assertEqual(rows,['a']); self.assertIn('最多',warning); self.assertEqual(len(urls),1)
+        rows, warning, urls = fetch([{'id':'a'},{'id':'b'}], rows=1)
+        self.assertEqual(rows,['a']); self.assertIn('最多',warning)
+        rows, warning, urls = fetch({'data':{'items':[{'id':'a'}]},'meta':{'pagination':{'current_page':1,'total_pages':2}}},
+                                    {'data':[{'id':'b'}], 'hasMore':False})
+        self.assertEqual((rows,warning),(['a','b'],'')); self.assertIn('page=2',urls[1])
+        with patch.object(server, 'upstream_contract', return_value={'voices':[{'id':'a'}, {'id':'a'}, {'id':'b'}]}), \
+             patch.object(server,'request_json_first_hit') as call:
+            rows, warning = server.fetch_model_voices(entry,'model')
+            self.assertEqual(([v['id'] for v in rows],warning),(['a','b'],'')); call.assert_not_called()
+
+    def test_recover_completed_video_from_authenticated_content(self):
+        entry = {'id': 'content-model', 'model': 'video', 'type': 'video', 'usages': ['video'],
+                 'baseUrl': 'https://provider.invalid', 'apiKey': 'fixture-only'}
+        job = {'id': 'job-content-recovery', 'modelId': entry['id'], 'kind': 'video',
+               'providerJobId': 'task-7', 'status': 'completed', 'videoUrl': '', 'progress': 100}
+        result = {'status': 'completed', 'video_url': '/v1/videos/task-7/content'}
+        status_url = entry['baseUrl'] + '/v1/videos/{task_id}'
+        video = b'\x00\x00\x00\x18ftypisom' + bytes(32)
+        def download(req, timeout):
+            self.assertEqual(req.get_method(), 'GET')
+            self.assertEqual(req.full_url, entry['baseUrl'] + result['video_url'])
+            self.assertEqual(req.get_header('Authorization'), 'Bearer fixture-only')
+            response = io.BytesIO(video)
+            response.headers = BytesParser(policy=policy.default).parsebytes(b'Content-Type: application/octet-stream\r\n\r\n')
+            return response
+        with patch.object(server, 'read_ai_models', return_value=[entry]), \
+             patch.object(server, 'provider_status_request', return_value=(result, None, status_url)) as poll, \
+             patch.object(server, 'open_media_url', side_effect=HTTPError(status_url, 502, 'Bad Gateway', {}, None)) as fetch, \
+             patch.object(server, 'call_video_submit') as submit:
+            failed = server.recover_studio_video(job)
+            self.assertEqual(failed['videoUrl'], '')
+            self.assertEqual(failed['status'], 'completed')
+            self.assertIn('502', failed['videoPersistError'])
+            fetch.side_effect = download
+            recovered = server.recover_studio_video(failed)
+            self.assertTrue(recovered['videoUrl'].startswith('/media/'))
+            self.assertEqual(server.resolve_media_file(recovered['videoUrl'].split('/')[-1]).read_bytes(), video)
+            self.assertNotIn('videoPersistError', recovered)
+            self.assertEqual(poll.call_count, 2)
+            submit.assert_not_called()
+
+    def test_video_content_credentials_are_scoped_to_the_original_task(self):
+        entry = {'baseUrl': 'https://provider.invalid', 'apiKey': 'fixture-only'}
+        for url in ('https://cdn.invalid/v1/videos/task-7/content', 'https://provider.invalid/v1/videos/other/content'):
+            job = {'providerJobId': 'task-7', 'videoUrl': url}
+            with patch.object(server, 'persist_media_url', side_effect=ValueError('offline')) as save:
+                server.persist_job_video(job, entry)
+                self.assertNotIn('video_content_headers', save.call_args.kwargs)
+                self.assertEqual(job['videoUrl'], url)
+
     def test_workspace_review_skill_cover_survives_canvas_cleanup(self):
         png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jEOcAAAAASUVORK5CYII=')
         blob = server.save_media_blob(png, 'image/png', 'shared.png', server.LOCAL_ID)
@@ -106,6 +180,28 @@ class LocalAppTest(unittest.TestCase):
         server.write_agent_sessions(raw)
         self.assertEqual(self.api(route, headers=dst)[0], 200)
         self.assertEqual(self.api(route, headers=src)[0], 404)
+
+    def test_moved_project_keeps_existing_and_inflight_jobs_in_destination(self):
+        source, target = [self.api('/api/workspaces', 'POST', {'name': name})[1]['workspace']['id']
+                          for name in ('Job source', 'Job destination')]
+        src, dst = {'X-Workspace-Id': source}, {'X-Workspace-Id': target}
+        project = self.api('/api/projects', 'POST', {'projectName': 'Movable jobs'}, src)[1]['project']
+        active = {'id': 'moving-task', 'kind': 'video', 'userId': server.LOCAL_ID, 'workspaceId': source,
+                  'projectId': project['id'], 'providerJobId': 'fixture', 'status': 'running'}
+        server.append_job(active)
+        finished = {**active, 'id': 'moving-completed', 'status': 'completed'}
+        server.append_job(finished)
+        listing = '/api/jobs?projectId=' + project['id']
+        self.assertEqual(self.api(listing, headers=src)[1]['total'], 2)
+        self.assertEqual(self.api('/api/projects/' + project['id'], 'PUT', {'workspaceId': target}, src)[0], 200)
+        self.assertEqual(self.api(listing, headers=dst)[1]['total'], 2)
+        self.assertEqual(self.api(listing, headers=src)[1]['total'], 0)
+        # A worker can finish with its pre-move snapshot.
+        server.append_job({**active, 'status': 'completed'})
+        for job_id in (active['id'], finished['id']):
+            recovered = self.api('/api/jobs/' + job_id, headers=dst)[1]['job']
+            self.assertEqual((recovered['status'], recovered['workspaceId']), ('completed', target))
+            self.assertEqual(self.api('/api/jobs/' + job_id, headers=src)[0], 404)
 
     def test_workspace_review_removed_space_tombstones_respect_existing_default_materials(self):
         workspace = self.api('/api/workspaces', 'POST', {'name':'Old tombstones'})[1]['workspace']['id']
@@ -182,6 +278,44 @@ class LocalAppTest(unittest.TestCase):
         remote = {**job, 'videoUrl':'https://fixture.invalid/result.mp4', 'videoPersistError':'temporary'}
         self.assertFalse(server.completed_media_update(job, remote)['videoUrl'])
         self.assertEqual(server.completed_media_update(job, {**remote, '_studioLookup': True})['videoUrl'], remote['videoUrl'])
+
+    def test_recovery_replaces_expired_and_missing_results_without_resubmission(self):
+        refreshed = 'https://fixture.invalid/fresh.mp4'
+        space = self.api('/api/workspaces', 'POST', {'name': 'Recover result'})[1]['workspace']['id']
+        headers = {'X-Workspace-Id': space}
+        for suffix, old in [('cdn', 'https://fixture.invalid/stale.mp4'), ('local', '/media/missing.mp4')]:
+            job = {'id': 'recover-' + suffix, 'status': 'completed', 'kind': 'video', 'userId': server.LOCAL_ID,
+                   'workspaceId': space, 'providerJobId': 'task-' + suffix, 'videoUrl': old}
+            server.append_job(job)
+            route = '/api/jobs/' + job['id'] + '?recoverMedia=1'
+            with patch.object(server, 'refresh_video_job') as lookup, patch.object(server, 'call_video_submit') as submit:
+                lookup.return_value = {'videoUrl': old, 'videoPersistError': 'unavailable'}
+                self.assertEqual(self.api(route, headers=headers)[0], 409)
+                self.assertEqual(server.index_jobs()[job['id']]['videoUrl'], old)
+                lookup.return_value = {'videoUrl': refreshed, 'videoPersistError': 'temporary download failure'}
+                self.assertEqual(self.api(route, headers=headers)[1]['job']['videoUrl'], refreshed)
+                self.assertEqual(server.index_jobs()[job['id']]['videoUrl'], refreshed)
+                self.assertEqual(lookup.call_args.args[0]['videoUrl'], '')
+                submit.assert_not_called()
+
+    def test_depth_video_recovery_rebuilds_missing_playback_from_local_master(self):
+        space = self.api('/api/workspaces', 'POST', {'name': 'Recover depth video'})[1]['workspace']['id']
+        headers = {'X-Workspace-Id': space}
+        raw = b'\x00\x00\x00\x18ftypisom' + bytes(32)
+        master = server.save_media_blob(raw, 'video/mp4', 'master.mp4', owner_id=server.LOCAL_ID)
+        playable = server.save_media_blob(raw, 'video/mp4', 'playable.mp4', owner_id=server.LOCAL_ID)
+        job = {'id': 'recover-depth-master', 'status': 'completed', 'kind': 'video', 'userId': server.LOCAL_ID,
+               'workspaceId': space, 'providerProtocol': server.DEPTH_PROTOCOL, 'providerJobId': 'depth-task',
+               'videoUrl': '/media/missing.mp4', 'depthMasterUrl': master['url']}
+        server.append_job(job)
+        route = '/api/jobs/' + job['id'] + '?recoverMedia=1'
+        with patch('mediakit_depth.playable_version', return_value=playable['url']) as transcode, \
+             patch('mediakit_depth.transport') as transport, patch.object(server, 'refresh_video_job') as lookup:
+            self.assertEqual(self.api(route, headers=headers)[1]['job']['videoUrl'], playable['url'])
+            self.assertEqual(self.api(route, headers=headers)[1]['job']['videoUrl'], playable['url'])
+            transcode.assert_called_once()
+            transport.assert_not_called()
+            lookup.assert_not_called()
 
     def test_studio_submission_can_be_loaded_from_workspace_history(self):
         saved = {'prompt': '原始镜头描述', 'settings': {'referenceMode': 'frames2video', 'duration': '5'},
@@ -396,6 +530,319 @@ class LocalAppTest(unittest.TestCase):
         except HTTPError as error:
             return error.code,json.load(error)
 
+    def derivative_request(self, slots=(1, 2)):
+        key = str(server.uuid.uuid4())
+        source = server.save_media_blob(b'role source', 'image/png', 'source.png',server.LOCAL_ID)['url']
+        role = {'id':'role-'+key,'name':'派生图测试','images':[source, '', '', ''],
+                'styling':{'version':1,'sourceImages':[source,'','',''],'renderedSlots':[0],'renderReadySlots':[0]}}
+        items = [{'slot':i, 'payload':{'modelId':'model-offline','prompt':str(i),'referenceImages':[source]}} for i in slots]
+        return {'id':role['id'],'record':role,'expectedRevision':'','derivatives':{'id':key,'projectId':'','items':items}}
+
+    def test_role_derivatives_background_and_replay(self):
+        from time import monotonic, sleep
+        request = self.derivative_request()
+        path = '/api/preset-roles/record?scope=mine'
+        key = request['derivatives']['id']
+        status_path = '/api/preset-roles/derivatives?id='+key
+        gate = threading.Event()
+        def submit(user, payload, workspace, *, job_id):
+            self.assertTrue(gate.wait(5))
+            blob = server.save_media_blob(('result '+payload['prompt']).encode(),'image/png','slot.png',user['id'])
+            return {'id':job_id, 'status':'completed', 'imageUrl':blob['url']}, None
+        with patch.object(server, 'create_image_job', side_effect=submit) as create:
+            code, saved = self.api(path,'PUT',request)
+            self.assertEqual(code,200,saved)
+            self.assertEqual(saved['derivatives']['initialRevision'],saved['recordRevisions'][request['id']])
+            self.assertEqual(self.api(path,'PUT',request)[0],200)
+            self.assertEqual(self.api(path,'PUT',{**request,'record':{**request['record'],'name':'另一个修改'}})[0],409)
+            gate.set()
+            deadline = monotonic()+8
+            while monotonic()<deadline:
+                code, state = self.api(status_path)
+                if state['status']=='completed':
+                    break
+                sleep(.05)
+            self.assertEqual((code,state['status']),(200,'completed'),state)
+            self.assertEqual(create.call_count,2)
+            self.http.role_worker.close()
+            self.http.role_worker = server.RoleDerivativeWorker()
+        code, replay = self.api(path,'PUT',request)
+        self.assertEqual(code,200)
+        card = next(r for r in replay['custom'] if r['id']==request['id'])
+        self.assertEqual(card['images'][1:3],[item['imageUrl'] for item in state['items']])
+        self.assertEqual(card['styling']['renderReadySlots'],[0,1,2])
+        self.assertEqual(replay['recordRevisions'][card['id']],state['revision'])
+        self.assertEqual(card['styling']['derivativeBatchId'],key)
+        self.assertNotIn('payload',state['items'][0])
+
+    def test_role_derivative_result_cannot_overwrite_intervening_edit(self):
+        request = self.derivative_request((1,2,3))
+        path = '/api/preset-roles/record?scope=mine'
+        key = request['derivatives']['id']
+        with patch.object(self.http.role_worker, 'resume'):
+            code, reply = self.api(path,'PUT',request)
+            self.assertEqual(code,200)
+        role = next(r for r in reply['custom'] if r['id']==request['id'])
+        replacement = server.save_media_blob(b'replacement','image/png','new.png',server.LOCAL_ID)['url']
+        def submit(user, payload, workspace, *, job_id):
+            self.assertEqual(self.api(path,'PUT',{'id':role['id'],'expectedRevision':reply['recordRevisions'][role['id']],
+                                                  'record':{**role,'name':'较新版本','images':[replacement]*4}})[0],200)
+            return {'id':job_id,'status':'completed','imageUrl':role['images'][0]}, None
+        with patch.object(server, 'create_image_job', side_effect=submit) as create:
+            worker = server.RoleDerivativeWorker()
+            worker.advance(key)
+            self.assertEqual(create.call_count,1)
+        _, state = self.api('/api/preset-roles/derivatives?id='+key)
+        self.assertEqual([r['status'] for r in state['items']], ['superseded']*3)
+        mine = self.api('/api/preset-roles')[1]['mine']['custom']
+        self.assertEqual(next(r['images'] for r in mine if r['id']==role['id']),[replacement]*4)
+
+    def test_role_derivative_resumes_existing_async_receipt(self):
+        request = self.derivative_request((1,))
+        key = request['derivatives']['id']
+        path = '/api/preset-roles/record?scope=mine'
+        with patch.object(self.http.role_worker, 'resume'):
+            self.assertEqual(self.api(path, 'PUT', request)[0], 200)
+        def submit(user, payload, workspace, *, job_id):
+            job = {'id':job_id, 'userId':user['id'], 'workspaceId':workspace, 'modelId':payload['modelId'],
+                   'kind':'image', 'simulated':False, 'providerJobId':'remote-offline', 'status':'running'}
+            server.append_job(job)
+            return job, None
+        worker = server.RoleDerivativeWorker()
+        with patch.object(server, 'create_image_job', side_effect=submit) as create:
+            worker.advance(key)
+            blob = server.save_media_blob(b'async result','image/png','async-result.png',server.LOCAL_ID)
+            resumed = server.RoleDerivativeWorker()
+            with patch.object(server, 'refresh_image_job', side_effect=lambda j: {**j,'status':'completed','imageUrl':blob['url']}) as refresh:
+                resumed.advance(key)
+                self.assertEqual(refresh.call_args.args[0]['providerJobId'],'remote-offline')
+            self.assertEqual(create.call_count,1)
+        self.assertEqual(self.api('/api/preset-roles/derivatives?id='+key)[1]['status'],'completed')
+
+    def test_role_derivatives_validate_restore_and_stale_role(self):
+        path = '/api/preset-roles/record?scope=mine'
+        with patch.object(self.http.role_worker,'resume'):
+            request = self.derivative_request((1,))
+            role, spec = request['record'], request['derivatives']
+            code, _ = self.api(path,'PUT',{**request,'derivatives':{**spec,'projectId':'missing-project'}})
+            self.assertEqual(code,400)
+            bad = {**spec['items'][0]['payload'],'referenceImages':['https://invalid.example/file.png']}
+            self.assertEqual(self.api(path,'PUT',{**request,'derivatives':{**spec,'items':[{'slot':1,'payload':bad}]}})[0],400)
+            shared = server.save_media_blob(b'public role fixture','image/png','published.png','other-owner')['url']
+            refs = [role['images'][0], shared]
+            borrowed = {**request,'derivatives':{**spec,'items':[{'slot':1,'payload':{**bad,'referenceImages':refs}}]}}
+            file_row, can_read = server.ACCOUNT_STORAGE.file_row, server.ACCOUNT_STORAGE.can_read
+            with patch.object(server.ACCOUNT_STORAGE,'file_row',side_effect=lambda name:
+                              {**file_row(name),'ownerId':'other-owner'} if name==shared[7:] else file_row(name)):
+                with patch.object(server.ACCOUNT_STORAGE,'can_read',side_effect=lambda name, owner: name!=shared[7:] and can_read(name,owner)):
+                    self.assertEqual(self.api(path,'PUT',borrowed)[1]['error'],'invalid_derivatives')
+                with patch.object(server.ACCOUNT_STORAGE,'can_read',side_effect=lambda name, owner: name==shared[7:] or can_read(name,owner)):
+                    code, result = self.api(path,'PUT',borrowed)
+                    self.assertEqual((code,result['error'],result['references']),(400,'copy_shared_role_references',[shared]))
+            code, initial = self.api(path,'PUT',request)
+            self.assertEqual(code,200,initial)
+        worker = server.RoleDerivativeWorker()
+        # Simulate a crash between provider submission and receipt persistence.
+        key = spec['id']
+        with server.LOCK:
+            raw = server.read_preset_roles_raw()
+            raw['derivativeBatches'][key]['items'][0].update(status='running', jobId='job-missing-derivative')
+            server.write_file(server.PRESET_ROLES_FILE,raw)
+        with patch.object(server,'create_image_job') as create:
+            worker.advance(key)
+            create.assert_not_called()
+        code, failed = self.api('/api/preset-roles/derivatives?id='+key)
+        self.assertEqual((code,failed['status']),(200,'failed'))
+        with patch.object(self.http.role_worker,'resume'):
+            second = self.derivative_request((3,))
+            code, saved = self.api(path,'PUT',second)
+            self.assertEqual(code,200)
+            latest = next(r for r in saved['custom'] if r['id']==second['id'])
+            self.assertEqual(self.api(path,'PUT',{'id':latest['id'],'record':{**latest,'name':'更新后的角色'},
+                                                  'expectedRevision':saved['recordRevisions'][latest['id']]})[0],200)
+        key = second['derivatives']['id']
+        with patch.object(server,'create_image_job') as create:
+            worker.advance(key)
+            create.assert_not_called()
+        self.assertEqual(self.api('/api/preset-roles/derivatives?id='+key)[1]['status'],'superseded')
+
+    def test_role_styling_and_references_survive_single_record_writes(self):
+        path = '/api/preset-roles/record?scope=mine'
+        official = {'id': 'libtv-local-fixture', 'name': '模板', 'value': '原设定'}
+        self.assertEqual(self.api('/api/preset-roles?scope=global', 'PUT', {'overrides': {official['id']: official}})[0], 200)
+        self.assertEqual(self.api(path, 'PUT', {'id': official['id'], 'record': official})[0], 409)
+        blob = server.save_media_blob(b'role reference', 'image/png', 'role.png', server.LOCAL_ID)
+        outfit = server.save_media_blob(b'outfit reference', 'image/png', 'outfit.png', server.LOCAL_ID)
+        styling = {'version': 1, 'outfitUrl': outfit['url'], 'controls': {'character.hair.length': -79, 'voice.tone.enabled': False,
+                                             'voice.tone.description': '轻声、缓慢'}, 'prompt': '长发。声音轻缓。'}
+        copy = {**official, 'id': 'char-copy-fixture', 'styling': styling, 'images': ['', blob['url'], '', '']}
+        private = {'id': 'char-existing-fixture', 'name': '同名', 'value': '老格式'}
+        for record in [copy, private, dict(copy, name='新名字')]:
+            status, result = self.api(path, 'PUT', {'id': record['id'], 'record': record})
+            self.assertEqual(status, 200, result)
+        snapshot = self.api('/api/preset-roles')[1]
+        saved = {role['id']: role for role in snapshot['mine']['custom']}
+        self.assertEqual(saved[copy['id']], {**copy, 'name': '新名字', 'tags': []})
+        self.assertNotIn('styling', saved[private['id']])
+        self.assertEqual(snapshot['global']['overrides'][official['id']]['value'], '原设定')
+        self.assertNotIn('styling', snapshot['global']['overrides'][official['id']])
+        self.assertIn('角色库', server.media_referenced_by(blob['url'].split('/')[-1]))
+        self.assertIn('角色库', server.media_referenced_by(outfit['url'].split('/')[-1]))
+        self.assertEqual(server.role_storage_bytes(saved[copy['id']]), len(b'role reference') + len(b'outfit reference'))
+        for untrusted in ('https://example.invalid/outfit.jpg', '/media/../file.jpg', 'data:image/png;base64,YmFk'):
+            invalid = {**copy, 'styling': {**styling, 'outfitUrl': untrusted}}
+            self.assertNotIn('outfitUrl', server._clean_role(invalid)['styling'])
+        self.assertEqual(self.api(path, 'PUT', {'id': copy['id'], 'remove': True})[0], 200)
+        self.assertNotIn('角色库', server.media_referenced_by(outfit['url'].split('/')[-1]))
+        self.assertNotIn('角色库', server.media_referenced_by(blob['url'].split('/')[-1]))
+
+    def test_multiple_wardrobe_references_and_render_provenance(self):
+        path = '/api/preset-roles/record?scope=mine'
+        first = server.save_media_blob(b'first outfit', 'image/png', 'first.png', server.LOCAL_ID)
+        second = server.save_media_blob(b'second outfit', 'image/png', 'second.png', server.LOCAL_ID)
+        foreign = server.save_media_blob(b'other outfit', 'image/png', 'other.png', 'other-owner')
+        renamed = server.save_media_blob(b'plain text', 'text/plain', 'renamed.png', server.LOCAL_ID)
+        images = [first['url'], second['url'], '', '']
+        style = {'version':1, 'controls':{}, 'outfitUrls':[second['url'],first['url'],second['url']],
+                 'renderBasisKey':'abc0' * 8, 'renderReadySlots':[1, 0, 1, 3], 'renderSlotModels':['new','old','',''],
+                 'sourceImages':images, 'renderedSlots':[1], 'renderModelId':'new'}
+        record = {'id':'char-outfits', 'name':'服装配方', 'images':images, 'styling':style}
+        def save(styling):
+            return self.api(path, 'PUT', {'id':record['id'],'record':{**record,'styling':styling}})
+        self.assertEqual(save(style)[0],200)
+        saved = next(r for r in self.api('/api/preset-roles')[1]['mine']['custom'] if r['id'] == record['id'])
+        self.assertEqual(saved['styling']['outfitUrl'],second['url'])
+        self.assertEqual(saved['styling']['outfitUrls'],[second['url'],first['url']])
+        self.assertEqual(saved['styling']['renderReadySlots'],[0,1])
+        self.assertEqual(saved['styling']['renderBasisKey'],style['renderBasisKey'])
+        self.assertEqual(saved['styling']['renderSlotModels'],style['renderSlotModels'])
+        self.assertEqual(server.role_storage_bytes(saved),len(b'first outfitsecond outfit'))
+        allowed = server.ACCOUNT_STORAGE.can_read
+        with patch.object(server.ACCOUNT_STORAGE,'can_read',side_effect=lambda media,user:media != foreign['mediaId'] and allowed(media,user)):
+            self.assertEqual(save({**style,'outfitUrls':[first['url'],foreign['url']]})[0],400)
+        for urls in [first['url'], [renamed['url']], ['/media/media-'+'a'*32+'.mp3'], ['https://invalid.test/f.png'], [first['url']]*17]:
+            with self.subTest(urls=urls): self.assertGreaterEqual(save({**style,'outfitUrls':urls})[0],400)
+        cleared = server._clean_role({**record,'styling':{**style,'outfitUrls':[],'outfitUrl':first['url']}})['styling']
+        self.assertNotIn('outfitUrl',cleared)
+        self.assertEqual(cleared['outfitUrls'],[])
+
+    def test_account_mark_library_filters_and_reuses_private_uploads(self):
+        path = '/api/preset-roles/marks'
+        stamp = server.save_media_blob(b'private mark library test', 'image/png', 'mark-library.png', server.LOCAL_ID)
+        legacy = server.save_media_blob(b'legacy mark library test', 'image/png', 'mark-legacy.png', server.LOCAL_ID)
+        other = server.save_media_blob(b'unrelated image', 'image/png', 'not-a-mark.png', server.LOCAL_ID)
+        role = {'id':'char-legacy-mark-library', 'name':'旧贴图', 'styling':{'version':1, 'controls':{'features.marks.customImage':legacy['url']}}}
+        self.assertEqual(self.api('/api/preset-roles/record?scope=mine', 'PUT', {'id':role['id'], 'record':role})[0],200)
+        for _ in range(2):
+            status, result = self.api(path, 'PUT', {'url':stamp['url']})
+            self.assertEqual(status,200)
+            self.assertEqual(result['mark'],{'url':stamp['url'], 'name':'mark-library.png'})
+        status, result = self.api(path)
+        self.assertEqual(status,200)
+        urls = [mark['url'] for mark in result['marks']]
+        self.assertEqual(urls.count(stamp['url']),1)
+        self.assertIn(legacy['url'],urls)
+        self.assertNotIn(other['url'],urls)
+        self.assertNotIn(stamp['url'],[mark['url'] for mark in server.role_custom_marks('another-account')])
+        self.assertIn('角色贴图库',server.media_referenced_by(stamp['mediaId']))
+        with patch.object(server.ACCOUNT_STORAGE,'file_row',return_value={'ownerId':'another-account'}):
+            self.assertEqual(self.api(path,'PUT',{'url':stamp['url']})[0],404)
+        self.assertEqual(self.api(path,'PUT',{'url':'role-library/web/001-1.jpg'})[0],400)
+
+    def test_role_source_views_custom_mark_and_render_flags_round_trip_and_protect_media(self):
+        path = '/api/preset-roles/record?scope=mine'
+        source = server.save_media_blob(b'source view', 'image/png', 'source.png', server.LOCAL_ID)
+        mark = server.save_media_blob(b'decal', 'image/png', 'mark.png', server.LOCAL_ID)
+        output = server.save_media_blob(b'generated face', 'image/png', 'face.png', server.LOCAL_ID)
+        key = 'features.marks.customImage'
+        role = {'id': 'char-render-state', 'name': '造型版本', 'images': ['', output['url'], '', ''],
+                'styling': {'version': 1, 'controls': {key: mark['url']}, 'sourceImages':
+                            ['_libtv_roles/web/001-1.jpg', source['url'], '', ''],
+                            'renderedSlots': [False, 1, 1, 3, 9], 'halfPreviewOnly': True}}
+        self.assertEqual(self.api(path, 'PUT', {'id': role['id'], 'record': role})[0], 200)
+        stored = next(r for r in self.api('/api/preset-roles')[1]['mine']['custom'] if r['id'] == role['id'])
+        self.assertEqual(stored['styling']['renderedSlots'], [1])
+        self.assertTrue(stored['styling']['halfPreviewOnly'])
+        self.assertEqual(stored['styling']['sourceImages'], ['role-library/web/001-1.jpg', source['url'], '', ''])
+        self.assertEqual(stored['styling']['controls'][key], mark['url'])
+        self.assertEqual(server.role_storage_bytes(stored), len(b'decal')+len(b'source view')+len(b'generated face'))
+        self.assertEqual(server.role_storage_bytes({**stored, 'images':[source['url'],output['url']]}), server.role_storage_bytes(stored))
+        self.assertIn('角色库', server.media_referenced_by(source['url'].split('/')[-1]))
+        self.assertIn('角色库', server.media_referenced_by(mark['url'].split('/')[-1]))
+        with patch.object(server.ACCOUNT_STORAGE, 'can_read', return_value=False):
+            for route, payload in [(path, {'record':role, 'id':role['id']}),('/api/preset-roles?scope=mine', {'custom':[role]})]:
+                self.assertEqual(self.api(route, 'PUT', payload)[0], 400)
+        for style in ({'sourceImages':['../private.png']}, {'controls':{key:'https://example.invalid/mark.png'}}):
+            invalid = {**role, 'styling':{**role['styling'], **style}}
+            self.assertEqual(self.api(path, 'PUT', {'id':role['id'], 'record':invalid})[0], 400)
+        self.assertEqual(self.api(path, 'PUT', {'id':role['id'], 'remove':True})[0], 200)
+        self.assertNotIn('角色库', server.media_referenced_by(source['url'].split('/')[-1]))
+        self.assertNotIn('角色库', server.media_referenced_by(mark['url'].split('/')[-1]))
+
+    def test_multiple_role_marks_validate_each_user_image_and_release_removed_layers(self):
+        route = '/api/preset-roles/record?scope=mine'
+        a = server.save_media_blob(b'first sticker', 'image/png', 'first.png', server.LOCAL_ID)
+        b = server.save_media_blob(b'second sticker', 'image/png', 'second.png', server.LOCAL_ID)
+        preset = {'id':'mole', 'preset':'痣', 'x':43.5, 'y':10, 'size':5, 'turn':-40}
+        first = {**preset, 'id':'one', 'preset':'自定义', 'src':a['url'], 'view':'full'}
+        second = {**first, 'id':'two', 'src':b['url'], 'view':'half'}
+        key = 'features.marks.items'
+        def with_marks(items):
+            return {'id':'char-multi-mark', 'name':'叠加贴图', 'images':[],
+                    'styling':{'version':1, 'controls':{key:json.dumps(items, ensure_ascii=False)}}}
+        def put(record):
+            return self.api(route, 'PUT', {'id':record['id'], 'record':record})[0]
+        role = with_marks([preset, first, second, {**first, 'id':'duplicate-image'}])
+        self.assertEqual(put(role), 200)
+        response = self.api('/api/preset-roles')[1]
+        self.assertGreaterEqual(response['imageLineageVersion'], 2)
+        saved = next(r for r in response['mine']['custom'] if r['id'] == role['id'])
+        self.assertEqual(json.loads(saved['styling']['controls'][key]), json.loads(role['styling']['controls'][key]))
+        self.assertEqual(server.role_storage_bytes(saved), len(b'first sticker')+len(b'second sticker'))
+        for media in (a,b):
+            self.assertIn('角色库', server.media_referenced_by(media['url'].split('/')[-1]))
+        allowed = server.ACCOUNT_STORAGE.can_read
+        def only_first(filename, user_id):
+            return filename != b['url'].split('/')[-1] and allowed(filename, user_id)
+        with patch.object(server.ACCOUNT_STORAGE, 'can_read', side_effect=only_first):
+            self.assertEqual(put(role), 400)
+            self.assertEqual(self.api('/api/preset-roles?scope=mine','PUT',{'custom':[role]})[0],400)
+        for items in [[{**second, 'src':'https://example.invalid/sticker.png'}],
+                      [{**second, 'src':'data:image/png;base64,YmFk'}], [first,first],
+                      [{**second,'turn':361}], [{**second, 'x':-1}], [{**second,'view':'unknown'}]]:
+            self.assertEqual(put(with_marks(items)), 400)
+        self.assertEqual(put(with_marks([preset,second])), 200)
+        self.assertNotIn('角色库', server.media_referenced_by(a['url'].split('/')[-1]))
+        self.assertIn('角色库', server.media_referenced_by(b['url'].split('/')[-1]))
+        self.assertEqual(self.api(route, 'PUT', {'id':role['id'], 'remove':True})[0], 200)
+        self.assertNotIn('角色库', server.media_referenced_by(b['url'].split('/')[-1]))
+
+    def test_role_record_and_bucket_compare_versions_for_preexisting_data(self):
+        route = '/api/preset-roles/record?scope=mine'
+        key = 'char-revision-legacy'
+        record = {'id':key,'name':'历史角色','styling':{'version':1,'controls':{},'renderModelId':'local-test'}}
+        result = self.api(route,'PUT',{'id':key,'record':record})[1]
+        rev = result['recordRevisions'][key]
+        old_bucket = result['revision']
+        for suffix in ['A','B']:
+            other = {**record,'id':key+suffix}
+            self.assertEqual(self.api(route,'PUT',{'id':other['id'],'record':other,'expectedRevision':''})[0],200)
+        def update(body):
+            return self.api(route, 'PUT', {'id':key,'expectedRevision':rev,**body})
+        ok, changed = update({'record':{**record,'name':'并发的改动'}})
+        self.assertEqual(ok, 200)
+        self.assertNotEqual(changed['recordRevisions'][key], rev)
+        for body in [{'record':record},{'remove':True}]:
+            code, response = update(body)
+            self.assertEqual((code,response.get('error')), (409,'role_revision_conflict'))
+        self.assertEqual(self.api('/api/preset-roles?scope=mine','PUT',{'custom':[record],'expectedRevision':old_bucket})[0],409)
+        snapshot = self.api('/api/preset-roles')[1]['mine']
+        current = next(r for r in snapshot['custom'] if r['id']==key)
+        self.assertEqual(current['name'],'并发的改动')
+        self.assertEqual(current['styling']['renderModelId'],'local-test')
+        for item in [key,key+'A',key+'B']:
+            self.assertEqual(self.api(route,'PUT',{'id':item,'remove':True,'expectedRevision':snapshot['recordRevisions'][item]})[0],200)
+
     def test_role_library_images_and_saved_legacy_urls(self):
         expected = (server.ROOT / 'role-library/web/001-1.jpg').read_bytes()
         for prefix in ('role-library', '_libtv_roles'):
@@ -444,6 +891,82 @@ class LocalAppTest(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(skill['prompt'], prompt)
         self.assertNotIn('onclick', server.sanitize_rich_text('<p onclick="bad()">' + prompt + '</p>'))
+
+    def test_role_prompt_edits_persist_and_reset_only_selected_entries(self):
+        path = '/api/dock-prompts'
+        studio = 'roleStudio'
+        skin, hair = 'field.face.skin.smooth', 'step.outfit.styling.hairstyle'
+        camera = 'motion-01'
+        store = Path(self.enterContext(tempfile.TemporaryDirectory())) / 'dock-prompts.json'
+        self.enterContext(patch.object(server, 'DOCK_PROMPTS_FILE', store))
+        self.enterContext(patch.object(server, '_DOCK_PROMPTS_CACHE', {'value': None}))
+        _, packed = self.api('/role-studio-prompts.json')
+        status, defaults = self.api(path)
+        self.assertEqual(status, 200)
+        self.assertTrue(defaults['canEdit'])
+        self.assertEqual(set(defaults['prompts'][studio]), set(packed))
+        self.assertEqual(defaults['prompts'][studio][skin], {**packed[skin], 'custom': False})
+        self.assertEqual(self.api(path, 'PUT', {'prompts': {'camera': {camera: '运镜自定义'}}})[0], 200)
+
+        def edit(changes):
+            return self.api(path, 'PUT', {'partial': True, 'prompts': {studio: changes}})
+
+        with ThreadPoolExecutor(max_workers=2) as editors:
+            saves = editors.map(edit, ({skin: '面部编辑 {value}'}, {hair: '发型编辑 {value}'}))
+            for status, saved in saves:
+                self.assertEqual(status, 200)
+                self.assertTrue(saved['partial'])
+        server._DOCK_PROMPTS_CACHE['value'] = None
+        merged = self.api(path)[1]['prompts']
+        self.assertEqual(merged[studio][skin]['prompt'], '面部编辑 {value}')
+        self.assertTrue(merged[studio][skin]['custom'])
+        self.assertEqual(merged[studio][hair]['prompt'], '发型编辑 {value}')
+        for invalid in ({skin: '不应被保留', 'unknown': '未注册'}, {skin: {'prompt': '错误类型'}}):
+            self.assertEqual(edit(invalid)[0], 400)
+        self.assertEqual(self.api(path, 'PUT', {
+            'partial': True, 'prompts': {studio: {skin: ''}, 'camera': {}},
+        })[0], 400)
+        self.assertEqual(self.api(path)[1]['prompts'][studio][skin]['prompt'], '面部编辑 {value}')
+        self.assertEqual(edit({skin: ''})[0], 200)
+        cleared = self.api(path)[1]['prompts']
+        self.assertEqual(cleared[studio][skin], {**packed[skin], 'custom': False})
+        self.assertTrue(cleared[studio][hair]['custom'])
+        self.assertEqual(json.loads(store.read_text(encoding='utf-8'))['prompts'], {
+            'camera': {camera: '运镜自定义'}, studio: {hair: '发型编辑 {value}'},
+        })
+        self.assertEqual(self.api(path, 'PUT', {'prompts': {studio: {skin: '只保存新的一组'}}})[0], 200)
+        full = self.api(path)[1]['prompts']
+        self.assertFalse(full[studio][hair]['custom'])
+        self.assertTrue(full[studio][skin]['custom'])
+        self.assertEqual(self.api(path + '/reset', 'PUT', {'kind': studio})[0], 200)
+        reset = self.api(path)[1]['prompts']
+        self.assertFalse(reset[studio][skin]['custom'])
+        self.assertEqual(reset['camera'][camera]['prompt'], '运镜自定义')
+
+    def test_role_prompt_readers_cannot_edit_or_reset(self):
+        path = '/api/dock-prompts'
+        with patch.object(server.Handler, 'authenticated_user', return_value={'role': 'user', 'id': 'viewer'}):
+            status, response = self.api(path)
+            self.assertEqual(status, 200)
+            self.assertFalse(response['canEdit'])
+            self.assertIn('roleStudio', response['prompts'])
+            self.assertEqual(self.api(path, 'PUT', {'prompts': {'roleStudio': {}}})[0], 403)
+            self.assertEqual(self.api(path + '/reset', 'PUT', {'kind': 'roleStudio'})[0], 403)
+
+    def test_node_text_and_media_prompts_round_trip_verbatim(self):
+        title = '  ' + '長いタイトル' * 30 + '  '
+        body = '  A\n\n一段\n '
+        nodes = [{'id':'img', 'type':'image', 'title':title, 'copy':body, 'mediaPrompt':'  @素材 A\r\n鏡頭\n',
+                  'mediaPromptMentions':[{'start':2,'end':7,'nodeId':'ref','type':'mixed','mediaType':'image','index':1}]},
+                 {'id':'vid', 'type':'output', 'title':'動画', 'mediaPrompt':''},
+                 {'id':'legacy', 'type':'output'}, {'id':'no-editor','type':'image','mediaPrompt':None}]
+        _, created = self.api('/api/projects', 'POST', {'projectName':'Verbatim graph'})
+        path = '/api/projects/' + created['project']['id']
+        self.assertEqual(self.api(path, 'PUT', {**created['project'], 'nodes':nodes})[0], 200)
+        saved = self.api(path)[1]['project']['nodes']
+        for source, returned in zip(nodes, saved):
+            self.assertEqual({key:returned[key] for key in source}, source)
+        self.assertNotIn('mediaPrompt', saved[2])
 
     def test_conflict_copy_can_be_retried_and_saved_without_touching_original(self):
         _, created = self.api('/api/projects', 'POST', {'projectName': 'original', 'modelPrompt': 'server draft'})
@@ -1019,6 +1542,34 @@ class LocalAppTest(unittest.TestCase):
         nodes=[{'id':'node-'+str(index),'type':'prompt','left':index*10,'top':0,'title':'Text','copy':'Test'} for index in range(600)]
         cleaned=server.clean_graph({'nodes':nodes,'edges':[]})
         self.assertEqual(len(cleaned[0]),600)
+
+    def test_distant_canvas_layout_survives_save_and_reopen(self):
+        layout = {'nodes': [{'id': 'left', 'type': 'prompt', 'left': -12450.5, 'top': 20500.25},
+                            {'id': 'right', 'type': 'image', 'left': 31450, 'top': -14760}],
+                  'groups': [{'id': 'group', 'x': 31400, 'y': -14800, 'w': 500, 'h': 400}],
+                  'panX': -20101.625, 'panY': 12001.125, 'zoom': .25}
+        status, created = self.api('/api/projects', 'POST', layout)
+        self.assertEqual(status, 201, created)
+        path = '/api/projects/' + created['project']['id']
+        updated = {**layout, 'panX': 54321, 'panY': -45678, 'zoom': 8}
+        for index, expected in enumerate([layout, updated]):
+            if index:
+                status, result = self.api(path, 'PUT', {**expected, 'revision': created['project']['revision']})
+                self.assertEqual(status, 200, result)
+            status, result = self.api(path)
+            self.assertEqual(status, 200, result)
+            project = result['project']
+            for key in ('panX', 'panY', 'zoom'):
+                self.assertEqual(project[key], expected[key])
+            for node, source in zip(project['nodes'], expected['nodes'], strict=True):
+                self.assertEqual((node['left'], node['top']), (source['left'], source['top']))
+            self.assertEqual(project['groups'][0]['x'], 31400)
+
+        invalid = server.clean_project({'nodes': [{'id': 'n', 'left': 'NaN', 'top': -12345}],
+                                        'groups': [{'id': 'g', 'x': 'inf'}],
+                                        'panX': '-Infinity', 'panY': 10 ** 400, 'zoom': 'NaN'})
+        self.assertEqual((invalid['nodes'][0]['left'], invalid['nodes'][0]['top']), (0, -12345))
+        self.assertEqual((invalid['groups'][0]['x'], invalid['panX'], invalid['panY'], invalid['zoom']), (0, 0, 0, 1))
 
     def test_material_filters_classification_persist_and_workspace_scope(self):
         status,result=self.api('/api/workspaces','POST',{'name':'Material isolation'})

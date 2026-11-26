@@ -12,7 +12,7 @@ import uuid
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TREE = ast.parse((ROOT / 'server.py').read_text(encoding='utf-8-sig'))
 NAMES = {'read_preset_prompts', 'preset_prompt_text', 'create_image_job', 'attach_studio_draft',
-         'track_image_call', 'run_image_job_in_background', 'finish_background_image'}
+         'track_image_call', 'run_image_job_in_background', 'finish_background_image', 'role_styling_prompt'}
 MODULE = ast.Module(body=[n for n in TREE.body if isinstance(n, ast.FunctionDef) and n.name in NAMES], type_ignores=[])
 DEFAULTS = ast.literal_eval(next(n.value for n in TREE.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'PRESET_PROMPT_DEFAULTS' for t in n.targets)))
 

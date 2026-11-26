@@ -183,11 +183,12 @@ test('canvas preserves first/last order across storage types and keeps video lin
     {dataset:{nodeId:'clip',node:'output'}},
   ];
   const scope={
+    state:{roleSnapshots:new Map()},
     window:{CanvasFlowConnections:{getEdges:()=>nodes.map(node=>({source:node.dataset.nodeId,target:'out'}))}},
     $$:()=>nodes, nodeImageHandles:node=>node.handles, fetchMediaUrlAsDataUrl:async()=>first,
     activeReferences:()=>[{linked:true,video:true,data:'https://media.example/clip.mp4'}, {linked:true,data:last}],
   };
-  load(scope,['collectVideoReferenceImages']);
+  load(scope,['roleInputsForGeneration','collectVideoReferenceImages']);
   const target={dataset:{nodeId:'out'}};
   assert.deepEqual(Array.from(await scope.collectVideoReferenceImages(target,'frames2video')),['/media/start.png',last]);
   nodes[1].handles={previewMedia:'/media/start.png'};
@@ -288,7 +289,7 @@ test('Agent canvas snapshot includes the entire node prompt beyond 300 character
   const copy = '提示词'.repeat(1000) + '保留最后一段约束';
   const node = { dataset: { nodeId: 'n', node: 'prompt' }, querySelector: selector => selector === '.node-copy' ? { textContent: copy } : null };
   const scope = { $$: () => [node], stage: {}, state: { projectId: 'draft' }, nodeLabel: () => '', nodeHasUsableImage: () => false, window: {} };
-  load(scope, ['agentCanvasPayload']); assert.equal(scope.agentCanvasPayload().nodes[0].copy, copy);
+  load(scope, ['textNodeText', 'agentCanvasPayload']); assert.equal(scope.agentCanvasPayload().nodes[0].copy, copy);
 });
 
 function agentSessionsFixture() {
@@ -345,11 +346,11 @@ test('image history replacement clears stale media and uses the restored image a
   const preview = { dataset: { previewMedia: '/media/old.png' }, style: {}, classList: { add() {} }, querySelector: () => null };
   const node = { dataset: { nodeId: 'source', node: 'image', previewMedia: '/media/old.png', previewAsset: 'old' }, matches: () => true, querySelector: s => s === '.media-preview' ? preview : null };
   const target = { dataset: { nodeId: 'target', node: 'image' } };
-  const scope = { state: { references: [] }, Image: class {}, refreshQuickToolbarState() {},
+  const scope = { state: { references: [], roleSnapshots:new Map() }, Image: class {}, refreshQuickToolbarState() {},
     window: { CanvasFlowConnections: { getEdges: () => [{ source: 'source', target: 'target' }] } },
     $$: () => [node, target], resolveNodeImageData: async () => preview.dataset.previewData,
   };
-  load(scope, ['nodeImageHandles', 'nodeHasUsableImage', 'setMediaNodeImage', 'collectImageReferenceImages']);
+  load(scope, ['nodeImageHandles', 'nodeHasUsableImage', 'setMediaNodeImage', 'roleInputsForGeneration', 'collectImageReferenceImages']);
   scope.setMediaNodeImage(node, 'data:image/png;base64,RESTORED', 'restored', 'restored-asset');
   assert.equal(node.dataset.previewMedia, undefined); assert.equal(preview.dataset.previewMedia, undefined);
   assert.equal(node.dataset.previewAsset, 'restored-asset');
@@ -359,10 +360,10 @@ test('image history replacement clears stale media and uses the restored image a
 });
 
 function providersFixture() {
-  const calls = [], backdrop = { hidden: false };
+  const calls = [], backdrop = Object.assign(new EventTarget(), { hidden: false });
   const scope = {
     aboutUpdateCleanup: null, providerSaveTimer: null, providerSaveInFlight: null, pendingProviderPatches: new Map(),
-    PROVIDER_SAVE_DELAY: 600, setTimeout: () => 1, clearTimeout() {},
+    PROVIDER_SAVE_DELAY: 600, Event, setTimeout: () => 1, clearTimeout() {},
     patchProvider: async (group, patch) => { calls.push({ id: group.providerId, patch: { ...patch } }); return true; },
     panelToast() {}, $id: id => id === "settingsBackdrop" ? backdrop : null, wizard: {}, renderWizardLayer() {},
   };

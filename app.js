@@ -232,6 +232,7 @@ async function canvasflowVideoAudioInputs(output) {
     // 统计某个视频节点**已连入**的素材（按上游边的源节点类型）。模式菜单据此动态收窄。
     function videoReferenceInputs(node) {
       const out = { images: 0, videos: 0, audios: 0 };
+      const images = new Set();
       if (!node) return out;
       const id = node.dataset.nodeId;
       if (!id) return out;
@@ -241,10 +242,11 @@ async function canvasflowVideoAudioInputs(output) {
         const src = byId.get(edge.source);
         if (!src) return;
         const kind = src.dataset.node;
-        if (kind === 'image') out.images += 1;
+        if (kind === 'image') { out.images += 1; const h=nodeImageHandles(src); images.add(h.previewMedia || h.previewData); }
         else if (kind === 'audio') out.audios += 1;
-        else if (kind === 'model' || kind === 'output') out.videos += 1;
+        else if (kind === 'video' || kind === 'model' || kind === 'output') out.videos += 1;
       });
+      for (const {mainReferenceImageUrl:url} of roleInputsForGeneration(node)) if (url && !images.has(url)) { images.add(url); out.images++; }
       return out;
     }
     // 模式在按钮上显示的文案（含「首尾帧 → 首帧」的降级特例）。
@@ -279,8 +281,8 @@ async function canvasflowVideoAudioInputs(output) {
     //   ★ 判据与 `syncModelSpecsForCurrentModel()` 走**同一份** `specRowsFor('video', …)`，
     //     不能各写一套「按模型查登记表」（本项目踩过静默不匹配的坑）。
     const VIDEO_INPUT_SOURCE_KEYS = ['video_url', 'videoUrl', 'video', 'videos', 'video_urls', 'input_video'];
-    function videoModelNeedsSourceVideo() {
-      const rows = specRowsFor('video', currentVideoModelEntry()) || [];
+    function videoModelNeedsSourceVideo(model = currentVideoModelEntry()) {
+      const rows = specRowsFor('video', model) || [];
       return rows.some(row => {
         const names = [String(row?.key || '').trim(), String(row?.field || '').trim()];
         return names.some(name => name && VIDEO_INPUT_SOURCE_KEYS.includes(name));
@@ -414,7 +416,11 @@ async function canvasflowVideoAudioInputs(output) {
       };
       if (!isVideoTarget) { syncDockAfterHintToggle(); return; }
       const inputs = videoReferenceInputs(node);
-      const settings = state.generationSettings || defaultGenerationSettings();
+      const original = node?.dataset.generationProfile ? nodeGenerationProfile(node) : null;
+      if (original?.operation && !original.useWorkspace) { syncDockAfterHintToggle(); return; }
+      const settings = original && !original.useWorkspace
+        ? {referenceMode: sourceVideoMode(original, inputs.images), duration: original.specs.find(s => /^\d+s$/.test(s))}
+        : state.generationSettings || defaultGenerationSettings();
       const verdict = evaluateVideoGenMode(settings.referenceMode, inputs, {
         prompt: $('#promptInput')?.value || '',
         duration: settings.duration,
@@ -461,6 +467,7 @@ async function canvasflowVideoAudioInputs(output) {
     const $ = (selector, root = document) => root.querySelector(selector);
     const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
     const state = {
+      roleSnapshots: new Map(),
       zoom: 1,
       panX: 0,
       panY: 0,
@@ -562,7 +569,7 @@ async function canvasflowVideoAudioInputs(output) {
     function dispatchPromptInput(bubbles = true) {
       if (!promptInput) return;
       promptValueSyncing = true;
-      try { promptInput.dispatchEvent(new Event('input', { bubbles })); }
+      try { promptInput.dispatchEvent(new CustomEvent('input', { bubbles, detail: { reflectOnly: !bubbles } })); }
       finally { promptValueSyncing = false; }
     }
     /**
@@ -619,7 +626,10 @@ async function canvasflowVideoAudioInputs(output) {
 
     const localProjectsStorage = {
       get() { try { return JSON.parse(localStorage.getItem('canvasflow-projects') || 'null'); } catch { return null; } },
-      set(value) { try { localStorage.setItem('canvasflow-projects', JSON.stringify(value)); } catch { /* private browsing */ } },
+      set(value) {
+        try { localStorage.setItem('canvasflow-projects', JSON.stringify(value)); return true; }
+        catch { return false; }
+      },
     };
     const sidebarStorage = {
       get() { try { return localStorage.getItem('canvasflow-sidebar-hidden') === '1'; } catch { return false; } },
@@ -648,16 +658,17 @@ async function canvasflowVideoAudioInputs(output) {
     }
     function writeLocalProject(project) {
       const projectId = project?.id || project?.projectId;
-      if (!projectId) return;
+      if (!projectId) return false;
       const list = readLocalProjects();
       const next = { ...project, id: projectId, nodeCount: Array.isArray(project.nodes) ? project.nodes.length : Number(project.nodeCount) || 0, updatedAt: project.updatedAt || new Date().toISOString() };
       const index = list.findIndex(item => item.id === next.id);
       if (index >= 0) list[index] = { ...list[index], ...next };
       else list.unshift(next);
-      localProjectsStorage.set(list);
+      if (!localProjectsStorage.set(list)) return false;
       // The localStorage mirror is only authoritative offline. In server mode the badge must keep
       // showing the /api/projects count, otherwise a stale local cache reports a wrong project count.
       if (isStandaloneFile()) updateProjectBadge(list.length);
+      return true;
     }
     function removeLocalProject(projectId) {
       const next = readLocalProjects().filter(project => project.id !== projectId);
@@ -726,12 +737,12 @@ async function canvasflowVideoAudioInputs(output) {
       } catch { return {}; }
     }
     let dockQuoteTimer = null, dockQuoteVersion = 0, lastDockQuote = null, rechargePromptOpen = false;
-    const BILLABLE_API_PATHS = new Set(['/api/generate','/api/ai/text-generate','/api/ai/image-generate','/api/ai/tts','/api/ai/image-to-text','/api/ai/translate']);
+    const BILLABLE_API_PATHS = new Set(['/api/generate','/api/ai/text-generate','/api/ai/video-to-prompt','/api/ai/image-generate','/api/ai/tts','/api/ai/image-to-text','/api/ai/translate']);
     function seedOnlyGraph(graph) {
       if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length !== 3 || graph.jobBindings?.length) return false;
       const ids = graph.nodes.map(n=>n.id).sort().join(',');
       if (ids !== 'model-1,output-1,prompt-1') return false;
-      return graph.nodes.every(n=>!n.previewMedia&&!n.previewImage&&!n.jobId&&!n.audioUrl&&!n.videoUrl
+      return graph.nodes.every(n=>!n.mediaPrompt&&!n.textInstruction&&!n.previewMedia&&!n.previewImage&&!n.jobId&&!n.audioUrl&&!n.videoUrl
         && (!n.copy || n.type==='prompt' && n.copy.trim()==='雨夜的东京街头，霓虹倒影在湿润的柏油路面上。镜头缓慢推进，电影感...'));
     }
     function billingHintElement() {
@@ -932,10 +943,11 @@ return {box:null,refresh(){},dispose(){}};
     // The snapshot has to carry the editable text too. Rebuilding a node from the bare type would
     // reset a renamed title and a written prompt on every reload, undo or project switch.
     // 文本节点正文的 HTML 形态：只有真的带标签时才返回，纯文本继续走 copy 字段。
+    const restoredPromptBodies = new WeakMap();
     function promptCopyHtml(node) {
       const el = node?.querySelector('.node-copy');
       if (!el) return '';
-      const html = el.innerHTML.trim();
+      const html = el.innerHTML;
       return /<[a-z][\s\S]*>/i.test(html) ? html : '';
     }
 
@@ -947,11 +959,17 @@ return {box:null,refresh(){},dispose(){}};
         top: parseFloat(node.style.top) || 0,
         // 卡片层级（右键「置于顶层 / 置于底层」的结果），载入时用来还原叠放次序。
         layer: nodeLayerOf(node),
-        title: nodeLabelEl(node)?.textContent?.trim() || '',
-        copy: node.dataset.node === 'script' ? (node.querySelector('.script-source')?.value || '') : (node.querySelector('.node-copy')?.textContent?.trim() || ''),
+        title: nodeLabelEl(node)?.textContent || '',
+        copy: node.dataset.node === 'script' ? (node.querySelector('.script-source')?.value || '') : textNodeText(node),
+        ...(node.dataset.mediaPromptAbsent ? { mediaPrompt: null } :
+          node.dataset.mediaPrompt !== undefined ? { mediaPrompt: node.dataset.mediaPrompt } : {}),
+        ...(node.dataset.mediaPromptMentions ? { mediaPromptMentions: JSON.parse(node.dataset.mediaPromptMentions) } : {}),
+        ...(node.dataset.generationProfile ? {generationProfile: JSON.parse(node.dataset.generationProfile)} : {}),
+        ...nodeRoleReferenceFields(node),
         trackId: node.dataset.trackId || '',
         audioUrl: node.dataset.audioUrl || '',
         audioName: node.dataset.audioName || '',
+        roleVoice: node.dataset.roleVoice || '',
         generationJobId: node.dataset.generationJobId || '',
         appliedGenerationJobId: node.dataset.appliedGenerationJobId || '',
         generated: node.dataset.generated === 'true',
@@ -959,6 +977,8 @@ return {box:null,refresh(){},dispose(){}};
         jobError: node.dataset.jobError || '',
         videoUrl: node.dataset.videoUrl || node.querySelector('.output-preview')?.dataset.videoUrl || '',
         sourceDirectorId: node.dataset.sourceDirectorId || '',
+        ...(node.dataset.trimEnd !== undefined ? {trimStart:Number(node.dataset.trimStart || 0),trimEnd:Number(node.dataset.trimEnd)} : {}),
+        ...(node.dataset.videoTool === 'depth' ? {videoTool:'depth'} : {}),
         jobId: node.dataset.jobId || '',
         previewData: node.querySelector('.media-preview')?.dataset.previewData || '',
         titleCustom: node.dataset.titleCustom === '1',
@@ -1015,11 +1035,12 @@ return {box:null,refresh(){},dispose(){}};
 
     function graphSnapshot() {
       const edges = window.CanvasFlowConnections?.getEdges?.() || window.__canvasflowPendingEdges || [];
-      return { nodes: nodeSnapshot(), edges: Array.isArray(edges) ? edges.slice() : [], groups: (state.groups || []).map(group => ({ ...group })) };
+      const roleSnapshots = snapshotsForText(state.modelPrompt);
+      return { ...(roleSnapshots.length ? {roleSnapshots} : {}), nodes: nodeSnapshot(), edges: Array.isArray(edges) ? edges.slice() : [], groups: (state.groups || []).map(group => ({ ...group })) };
     }
 
     function historySnapshot() {
-      return { ...graphSnapshot(), zoom: state.zoom, panX: state.panX, panY: state.panY, projectName: state.projectName };
+      return { ...graphSnapshot(), modelPrompt:state.modelPrompt || '', zoom: state.zoom, panX: state.panX, panY: state.panY, projectName: state.projectName };
     }
 
     function resetHistoryBaseline() {
@@ -1151,7 +1172,10 @@ return {box:null,refresh(){},dispose(){}};
       if (multiAngleSession || relightSession) { dock.classList.remove('is-open'); return; }
       const node = singleSelectedNode();
 
-      if (!node || !node.offsetParent || node.dataset.node === 'director') { dock.classList.remove('is-open'); return; }
+      if (!node || !node.offsetParent || node.dataset.node === 'director' || (node.dataset.mediaPromptAbsent && !node.dataset.generationProfile)) {
+        dock.classList.remove('is-open');
+        return;
+      }
       const wrap = $('#canvasWrap');
       if (!wrap) { dock.classList.remove('is-open'); return; }
       const wrapRect = wrap.getBoundingClientRect();
@@ -1379,10 +1403,14 @@ return {box:null,refresh(){},dispose(){}};
       const user = currentUser();
       const owner = { id: state.projectOwnerId || user.id, name: state.projectOwnerName || user.name, avatar: state.projectOwnerAvatar || user.avatar };
       const payload = { ...projectSnapshot(graph), ownerId: owner.id, ownerName: owner.name, ownerAvatar: owner.avatar, shared: Boolean(state.projectShared) };
-      safeStorage.set(payload);
-      writeLocalProject(payload);
+      const savedLocally = writeLocalProject(payload);
+      if (savedLocally) safeStorage.set(payload);
       const status = $('#saveStatus');
       if (isStandaloneFile()) {
+        if (!savedLocally) {
+          if (status) status.textContent='本机保存失败 · 请导出 JSON 备份';
+          return false;
+        }
         if (state.projectIsDraft) { state.projectIsDraft=false; state.lastOpenedProjectId=saveProjectId; updateProjectUrl(saveProjectId); }
         if (status) status.textContent='已保存到本机';
         return true;
@@ -1392,7 +1420,8 @@ return {box:null,refresh(){},dispose(){}};
       // the uploaded asset itself), and references are only re-sent when they actually changed so
       // typing in the prompt does not ship megabytes of base64 on every autosave.
       const refsSig = JSON.stringify(state.references || []);
-      const refsChanged = refsSig !== state.lastRefsSig;
+      // An earlier queued save can still change the server's references before this one arrives.
+      const refsChanged = pendingProjectSnapshots.has(saveProjectId) || refsSig !== state.lastRefsSig;
       // 分镜格子的预览图与节点预览同理：base64 只进本机缓存，服务器只保留 previewAsset 引用。
       const serverPayload = { ...payload, createDraft:Boolean(state.projectIsDraft), revision: state.projectRevision, nodes: graph.nodes.map(({ previewData, ...rest }) => ({ ...rest, cells: Array.isArray(rest.cells) ? rest.cells.map(({ previewData: _cellPreview, ...cellRest }) => cellRest) : undefined })) };
       const signature = canvasSignature(projectSnapshot(graph));
@@ -1414,9 +1443,16 @@ return {box:null,refresh(){},dispose(){}};
       return projectSaveQueue.enqueue(saveProjectId,serverPayload).then(result=>{
         if (pendingProjectSnapshots.get(saveProjectId) === snapshot) {
           pendingProjectSnapshots.delete(saveProjectId);
-          if (result && state.projectId === saveProjectId && state.canvasEpoch === canvasEpoch) savedCanvasSignature = signature;
+          if (state.projectId === saveProjectId && state.canvasEpoch === canvasEpoch) {
+            if (result) savedCanvasSignature = signature;
+            else if (!projectSaveQueue.blocked(saveProjectId)) {
+              // The server may have committed a write even if its response never reached us.
+              savedCanvasSignature = '';
+              state.lastRefsSig = null;
+              if (status) status.textContent = savedLocally ? '已保存到本机 · 服务端未确认' : '保存失败 · 请导出 JSON 备份';
+            }
+          }
         }
-        if(!result&&state.projectId===saveProjectId&&!projectSaveQueue.blocked(saveProjectId)&&status)status.textContent='已保存到本机';
         return Boolean(result);
       });
     }
@@ -1658,61 +1694,113 @@ return {box:null,refresh(){},dispose(){}};
     }, { passive: false });
     if (zoomLabel) zoomLabel.title = '左右拖动或滚轮调整缩放；Shift + 滚轮精细调整';
 
-    // The overview used to be three decorative dots and a fake viewport rectangle. Render the real
-    // graph and the real visible region instead, and let a click jump the canvas there.
-    let miniMapView = null;
+    const miniMapBoard = $('.mini-map-canvas');
+    const miniMapNodes = $('.mini-map-nodes', miniMapBoard);
+    const miniMapViewport = $('.mini-viewport', miniMapBoard);
+    let miniMapProjection = null;
+    let miniMapDrag = null;
+    let miniMapBounds;
+
     function renderMiniMap() {
-      const board = $('.mini-map-canvas');
-      if (!board) return;
-      const zoom = state.zoom || 1;
-      const viewW = wrap?.clientWidth || 0;
-      const viewH = wrap?.clientHeight || 0;
-      const view = { left: -state.panX / zoom, top: -state.panY / zoom, width: (viewW / zoom) || 1, height: (viewH / zoom) || 1 };
-      const boxes = $$('.flow-node').map(node => ({
-        node,
-        left: parseFloat(node.style.left) || 0,
-        top: parseFloat(node.style.top) || 0,
-        width: node.offsetWidth || NODE_SLOT_W,
-        height: node.offsetHeight || NODE_SLOT_H,
-      }));
-      const frames = boxes.concat([view]);
-      const minX = Math.min(...frames.map(box => box.left));
-      const minY = Math.min(...frames.map(box => box.top));
-      const spanX = Math.max(1, Math.max(...frames.map(box => box.left + box.width)) - minX);
-      const spanY = Math.max(1, Math.max(...frames.map(box => box.top + box.height)) - minY);
-      const boardW = board.clientWidth || 1;
-      const boardH = board.clientHeight || 1;
-      const scale = Math.min(boardW / spanX, boardH / spanY);
-      const offsetX = (boardW - spanX * scale) / 2;
-      const offsetY = (boardH - spanY * scale) / 2;
-      miniMapView = { minX, minY, scale, offsetX, offsetY };
-      const toMini = box => ({
-        left: offsetX + (box.left - minX) * scale,
-        top: offsetY + (box.top - minY) * scale,
-        width: Math.max(3, box.width * scale),
-        height: Math.max(3, box.height * scale),
-      });
-      const style = box => `left:${box.left.toFixed(1)}px;top:${box.top.toFixed(1)}px;width:${box.width.toFixed(1)}px;height:${box.height.toFixed(1)}px`;
-      const dots = boxes.map(box => {
-        const kind = box.node.dataset.node === 'model' ? 'mini-b' : box.node.dataset.node === 'output' ? 'mini-c' : 'mini-a';
-        const active = box.node.classList.contains('selected') ? ' mini-active' : '';
-        return `<span class="mini-node ${kind}${active}" style="${style(toMini(box))}"></span>`;
-      }).join('');
-      board.innerHTML = `${dots}<span class="mini-viewport" style="${style(toMini(view))}"></span>`;
+      const boardW = miniMapBoard.clientWidth;
+      const boardH = miniMapBoard.clientHeight;
+      if (!boardW || !boardH || !wrap.clientWidth || !wrap.clientHeight) return;
+      const view = { left: -state.panX / state.zoom, top: -state.panY / state.zoom,
+        width: wrap.clientWidth / state.zoom, height: wrap.clientHeight / state.zoom };
+
+      // The graph is stationary during a minimap drag. Only its projection changes.
+      if (!miniMapDrag || !miniMapBounds) {
+        const groups = $$('.group-frame', stage);
+        const groupIds = new Set(groups.map(group => group.dataset.groupId));
+        const looseNodes = $$('.flow-node', stage).filter(node => !groupIds.has(node.dataset.groupId));
+        const bounds = { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity };
+        miniMapNodes.innerHTML = groups.concat(looseNodes).map(el => {
+          const x = parseFloat(el.style.left) || 0, y = parseFloat(el.style.top) || 0;
+          const width = el.offsetWidth, height = el.offsetHeight;
+          bounds.left = Math.min(bounds.left, x);
+          bounds.top = Math.min(bounds.top, y);
+          bounds.right = Math.max(bounds.right, x + width);
+          bounds.bottom = Math.max(bounds.bottom, y + height);
+          return `<span class="mini-node" style="left:${x}px;top:${y}px;width:${width}px;height:${height}px"></span>`;
+        }).join('');
+        miniMapBounds = bounds;
+      }
+      const left = Math.min(view.left, miniMapBounds.left), top = Math.min(view.top, miniMapBounds.top);
+      const right = Math.max(view.left + view.width, miniMapBounds.right), bottom = Math.max(view.top + view.height, miniMapBounds.bottom);
+      const unitsPerPixel = Math.max((right - left) / boardW, (bottom - top) / boardH);
+      const padding = 5;
+      const scale = Math.min(boardW / (boardW + 2 * padding), boardH / (boardH + 2 * padding)) / unitsPerPixel;
+      const originX = (left + right - boardW / scale) / 2, originY = (top + bottom - boardH / scale) / 2;
+      miniMapProjection = { scale, originX, originY, unitsPerPixel };
+      miniMapNodes.style.transform = `translate(${-originX * scale}px,${-originY * scale}px) scale(${scale})`;
+      miniMapViewport.style.cssText = `left:${(view.left - originX) * scale}px;top:${(view.top - originY) * scale}px;width:${view.width * scale}px;height:${view.height * scale}px`;
     }
 
-    function focusMiniMapPoint(event) {
-      const board = $('.mini-map-canvas');
-      if (!board || !miniMapView?.scale) return;
-      const rect = board.getBoundingClientRect();
-      const stageX = miniMapView.minX + (event.clientX - rect.left - miniMapView.offsetX) / miniMapView.scale;
-      const stageY = miniMapView.minY + (event.clientY - rect.top - miniMapView.offsetY) / miniMapView.scale;
-      const zoom = state.zoom || 1;
-      state.panX = Math.round((wrap?.clientWidth || 0) / 2 - stageX * zoom);
-      state.panY = Math.round((wrap?.clientHeight || 0) / 2 - stageY * zoom);
-      updateTransform();
-      window.CanvasFlowConnections?.draw?.();
-      scheduleSave();
+    function bindMiniMap() {
+      miniMapBoard.addEventListener('pointerdown', event => {
+        if (event.button !== 0 || !event.isPrimary || miniMapDrag) return;
+        stopViewportAnimation();
+        renderMiniMap();
+        if (!miniMapProjection) return;
+        event.preventDefault();
+        event.stopPropagation();
+        miniMapBoard.focus({ preventScroll: true });
+        miniMapBoard.setPointerCapture(event.pointerId);
+        miniMapBoard.classList.add('is-dragging');
+        miniMapDrag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
+      });
+      function move(event) {
+        const drag = miniMapDrag;
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+        if (!dx && !dy) return;
+        const pixelsPerMapPixel = state.zoom * miniMapProjection.unitsPerPixel;
+        state.panX -= dx * pixelsPerMapPixel;
+        state.panY -= dy * pixelsPerMapPixel;
+        drag.x = event.clientX;
+        drag.y = event.clientY;
+        drag.moved = true;
+        updateTransform();
+      }
+      function finish(event) {
+        if (!miniMapDrag || miniMapDrag.pointerId !== event.pointerId) return;
+        if (event.type === 'pointerup') {
+          move(event);
+          if (!miniMapDrag.moved) {
+            const rect = miniMapBoard.getBoundingClientRect();
+            const { originX, originY, scale } = miniMapProjection;
+            const worldX = originX + (event.clientX - rect.left - miniMapBoard.clientLeft) / scale;
+            const worldY = originY + (event.clientY - rect.top - miniMapBoard.clientTop) / scale;
+            state.panX = wrap.clientWidth / 2 - worldX * state.zoom;
+            state.panY = wrap.clientHeight / 2 - worldY * state.zoom;
+            miniMapDrag.moved = true;
+            updateTransform();
+          }
+        }
+        const { moved } = miniMapDrag;
+        miniMapDrag = null;
+        miniMapBoard.classList.remove('is-dragging');
+        if (miniMapBoard.hasPointerCapture(event.pointerId)) miniMapBoard.releasePointerCapture(event.pointerId);
+        renderMiniMap();
+        if (moved) scheduleSave();
+      }
+      miniMapBoard.addEventListener('pointermove', move);
+      for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) miniMapBoard.addEventListener(type, finish);
+      miniMapBoard.addEventListener('keydown', event => {
+        const directions = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+        const direction = directions[event.key];
+        if (!direction || miniMapDrag || event.ctrlKey || event.metaKey || event.altKey) return;
+        event.preventDefault();
+        event.stopPropagation();
+        stopViewportAnimation();
+        state.panX -= direction[0] * wrap.clientWidth / 4;
+        state.panY -= direction[1] * wrap.clientHeight / 4;
+        updateTransform();
+        scheduleSave();
+      });
+      const resize = new ResizeObserver(renderMiniMap);
+      resize.observe(miniMapBoard);
+      resize.observe(wrap);
     }
 
     // Real "fit to content": frame every node instead of only snapping back to 100%. On an infinite
@@ -4483,18 +4571,32 @@ return {box:null,refresh(){},dispose(){}};
       if (!node?.matches?.('.script-node')) return;
       if (scriptShots(node).length && !window.confirm('重新生成会覆盖当前脚本内容及最终提示词，是否继续？')) return;
       promptInput = $('#promptInput') || promptInput;
-      const seed = String(promptInput?.value || '').trim();
+      const seed = node.dataset.nodeId === state.activeNodeId ? String(promptInput?.value || '').trim() : '';
       const theme = String(node.dataset.scriptTheme || '').trim();
       if (!seed && !theme) return showToast('请先描述剧情片段，或填写主题', '⚠');
-      showToast('正在生成脚本…', '✦');
       const instruction = [
         '你是分镜师。把下面的剧情拆成 3-6 个连续镜头，输出**严格 JSON**（不要 Markdown 代码块、不要解释）：',
         '{"shots":[{"duration":"5s","description":"画面描述","shotSize":"景别","lighting":"光影氛围","dialogue":"对白或旁白","sfx":"音效","cameraMove":"运镜"}]}',
         '景别可选：特写/近景/中景/全景/远景；运镜可选：固定/推/拉/摇/移/跟/升降/环绕；每条镜头都要有画面描述。',
         theme ? `主题：${theme}` : '',
-        seed ? `剧情片段：${seed}` : '',
+        seed && seed !== theme ? `剧情片段：${seed}` : '',
       ].filter(Boolean).join('\n');
-      const result = await api('/api/ai/text-generate', { method: 'POST', body: JSON.stringify({ prompt: instruction }) });
+      const modelPlan = sourceTextModelPlan(node);
+      if (modelPlan?.error) return showToast(modelPlan.error, '⚠');
+      const inputs = collectUpstreamInputs(node, { includeDock: false });
+      const context = generationContext(node);
+      const requestedModel = modelPlan?.model?.id || textModelId();
+      const modelId = requestedModel && requestedModel !== '__none' ? requestedModel : undefined;
+      let result;
+      try {
+        const referenceImages = await collectImageReferenceImages(node);
+        if (!generationContextActive(context)) return;
+        showToast('正在生成脚本…', '✦');
+        result = await api('/api/ai/text-generate', { method: 'POST', throwOnError: true, body: JSON.stringify({
+          prompt: [instruction, inputs.prompt].filter(Boolean).join('\n\n'), modelId, referenceImages,
+        }) });
+      } catch (error) { return showToast(error.message || '脚本生成失败，请重试', '×'); }
+      if (!generationContextActive(context)) return;
       const text = String(result?.text || '').trim();
       if (!text) return showToast('脚本生成失败，请重试', '×');
       const parsed = scriptParseShots(text);
@@ -5262,6 +5364,8 @@ return {box:null,refresh(){},dispose(){}};
       delete target.dataset.presetScene;
       delete target.dataset.presetTitle;
       delete target.dataset.presetEntry;
+      if (target.dataset.mediaPrompt !== undefined) target.dataset.mediaPrompt = '';
+      delete target.dataset.mediaPromptMentions;
       const copyEl = target.querySelector('.node-copy');
       if (copyEl) copyEl.textContent = '';
       promptInput = $('#promptInput') || promptInput;
@@ -5285,12 +5389,14 @@ return {box:null,refresh(){},dispose(){}};
       //   （胶囊只是个不可编辑的原子标记，点它才展开看提示词正文；正文本身不在输入框里。）
       const localPromptSelector = { script: '.script-source' }[type];
       if (localPromptSelector) {
-        promptInput.value = node.querySelector(localPromptSelector)?.value || '';
+        promptInput.value = node.dataset.scriptTheme ?? node.querySelector(localPromptSelector)?.value ?? '';
       } else if (type === 'prompt') {
 
 
         promptInput.value = node.dataset.textInstruction || '';
-      } else if (type === 'image' || type === 'audio') {
+      } else if (type === 'image' || type === 'output' || type === 'model') {
+        promptInput.value = mediaNodePrompt(node);
+      } else if (type === 'audio') {
         // 卡片文案 = **用户自己写的**内容（预设正文不进节点数据，见 server.py 的 clean_graph）。
         // ★ 回填时就要过统一清洗：生成完成后 `.node-copy` 是「AI生成图片 · …」**结果命名**，
         //   原样回填会让用户以为"这就是提示词"，而且他一旦在上面续写，
@@ -5419,6 +5525,8 @@ return {box:null,refresh(){},dispose(){}};
     }
 
     function syncDockVisibility(node = $('.flow-node.selected')) {
+      syncNodeProfileControls(node);
+      inspector.classList.toggle('source-params-only', !!node?.dataset.mediaPromptAbsent && inspector.classList.contains('has-source-profile'));
       const isVideoNode = ['model', 'output'].includes(node?.dataset.node);
       const isImageNode = node?.dataset.node === 'image';
       const isPromptNode = node?.dataset.node === 'prompt';
@@ -5576,13 +5684,13 @@ return {box:null,refresh(){},dispose(){}};
 
     function applyNodeContent(node, options = {}) {
       if (!node) return node;
-      for (const key of ['audioUrl', 'audioName', 'generationJobId', 'appliedGenerationJobId']) {
+      for (const key of ['audioUrl', 'audioName', 'roleVoice', 'generationJobId', 'appliedGenerationJobId']) {
         if (key in options) node.dataset[key] = String(options[key] || '');
       }
       // 字符串（含空串）都要写入：空串代表用户清空了文案，跳过会让旧文字在撤销/刷新后复活。
       if (typeof options.title === 'string') {
         const labelEl = nodeLabelEl(node);
-        if (labelEl) labelEl.textContent = options.title.trim();
+        if (labelEl) labelEl.textContent = options.title;
       }
       if (options.titleCustom === true) node.dataset.titleCustom = '1';
       else if (options.titleCustom === false) delete node.dataset.titleCustom;
@@ -5591,11 +5699,16 @@ return {box:null,refresh(){},dispose(){}};
         if (node.dataset.node === 'script' && node.querySelector('.script-source')) { node.querySelector('.script-source').value = options.copy; updateScriptShotCount(node); }
         // 文本节点支持富文本：有 copyHtml 时按 HTML 还原，否则回落到纯文本（旧项目数据兼容）。
         else if (node.dataset.node === 'prompt' && copyEl) {
-          if (typeof options.copyHtml === 'string' && options.copyHtml.trim()) copyEl.innerHTML = window.CanvasFlowSafeHTML.sanitize(options.copyHtml);
-          else copyEl.textContent = options.copy.trim();
+          if (typeof options.copyHtml === 'string' && options.copyHtml.trim()) {
+            copyEl.innerHTML = window.CanvasFlowSafeHTML.sanitize(options.copyHtml);
+            restoredPromptBodies.set(copyEl, { html: copyEl.innerHTML, text: options.copy });
+          } else {
+            restoredPromptBodies.delete(copyEl);
+            copyEl.textContent = options.copy;
+          }
           syncPromptNodeTextState(node);
         }
-        else if (copyEl) copyEl.textContent = options.copy.trim();
+        else if (copyEl) copyEl.textContent = options.copy;
       }
       return node;
     }
@@ -5617,9 +5730,10 @@ return {box:null,refresh(){},dispose(){}};
 
         script: { title: '脚本节点', copy: '', dimension: 'SCRIPT' },
       }[type] || {};
-      const title = String(options.title || defaults.title || '').trim();
-      const copy = String(options.copy || defaults.copy || '').trim();
+      const title = String(options.title ?? defaults.title ?? '');
+      const copy = String(options.copy ?? defaults.copy ?? '');
       const node = document.createElement('article');
+      if (!options.id && (type === 'output' || type === 'model')) node.dataset.mediaPrompt = copy;
       const portMarkup = '<span class="port port-left" data-port="in" title="输入端"></span><span class="port port-right" data-port="out" title="输出端"></span>';
       // 空态中心（文本/图片/视频/音频）：图标 + 主文案 + 引导副文案。
       // ★ 显隐全部由 CSS 按既有状态驱动（.has-text/.has-image/.generating/[data-track-id]/[data-video-url]/[data-job-status]），
@@ -6323,6 +6437,7 @@ return {box:null,refresh(){},dispose(){}};
       { id: 'annotate', label: '标注' },
       { id: 'grid-split', label: '宫格切分' },
       { id: 'rotate', label: '旋转与镜像' },
+      { id: 'image-to-prompt', label: '提示词反推' },
       { id: 'preview', label: '预览' },
       { id: 'add-library', label: '添加到素材库' },
       { id: 'download', label: '下载主图' },
@@ -6331,6 +6446,8 @@ return {box:null,refresh(){},dispose(){}};
       { id: 'download-text', label: '下载文本' },
 
       { id: 'video-crop', label: '裁剪画幅' },
+      { id: 'video-depth', label: '深度动作捕捉' },
+      { id: 'video-to-prompt', label: '提示词反推' },
       { id: 'video-trim', label: '截取' },
       { id: 'video-storyboard', label: '分镜切分' },
       { id: 'video-replace', label: '替换素材' },
@@ -6410,6 +6527,9 @@ return {box:null,refresh(){},dispose(){}};
       const group = quickToolbarGroup(node);
       if (!group) return;
       syncQuickToolbarLabels(node);
+      syncQuickToolAvailability(toolbar, group, node);
+    }
+    function syncQuickToolAvailability(toolbar, group, node) {
       const usable = group === 'text' ? nodeHasUsableText(node)
         : group === 'audio' ? nodeHasUsableAudio(node)
         : group === 'video' ? nodeHasUsableVideo(node)
@@ -6417,7 +6537,9 @@ return {box:null,refresh(){},dispose(){}};
       // data-quick-always：与成片无关的设置类工具（裁剪/截取/替换/图层/画幅）始终可点。
       $$('button', toolbar).forEach(button => {
         if (button.hidden) return;
-        button.disabled = button.hasAttribute('data-quick-always') ? false : !usable;
+        const canRecover = button.dataset.quickTool === 'video-preview' && node.dataset.jobStatus === 'completed'
+          && Boolean(node.dataset.jobId || node.dataset.generationJobId);
+        button.disabled = !(usable || canRecover || button.hasAttribute('data-quick-always'));
       });
     }
 
@@ -6522,16 +6644,21 @@ return {box:null,refresh(){},dispose(){}};
       const width = node.offsetWidth || 270;
       // 贴卡上方居中。浮层自身用 scale(1/zoom) 抵消画布缩放（屏幕上恒定大小），
       // 所以间距也要按 1/zoom 折算，屏幕上才稳定是 10px。
-      toolbar.style.left = `${left + width / 2}px`;
-      toolbar.style.top = `${top - 10 * inverseCanvasZoom()}px`;
-      const usable = group === 'text' ? nodeHasUsableText(node)
-        : group === 'audio' ? nodeHasUsableAudio(node)
-        : group === 'video' ? nodeHasUsableVideo(node)
-        : nodeHasUsableImage(node);
-      $$('button', toolbar).forEach(button => {
-        if (button.hidden) return;
-        button.disabled = button.hasAttribute('data-quick-always') ? false : !usable;
-      });
+      const inverse = inverseCanvasZoom();
+      let center = left + width / 2;
+      let bottom = top - 10 * inverse;
+      const bounds = $('#canvasWrap').getBoundingClientRect();
+      const card = node.getBoundingClientRect();
+      if (card.right > bounds.left && card.left < bounds.right && card.bottom > bounds.top && card.top < bounds.bottom) {
+        const half = toolbar.offsetWidth / 2;
+        const intendedX = card.left + card.width / 2;
+        const safeX = Math.max(bounds.left + half + 4, Math.min(intendedX, bounds.right - half - 4));
+        center += (safeX - intendedX) * inverse;
+        bottom += Math.max(0, bounds.top + toolbar.offsetHeight + 4 - (card.top - 10)) * inverse;
+      }
+      toolbar.style.left = `${center}px`;
+      toolbar.style.top = `${bottom}px`;
+      syncQuickToolAvailability(toolbar, group, node);
     }
     // 把 `/media/` 直链或 http(s) 图取回来转成 data URI（各图像工具都按 data URI 消费源图）。
     async function fetchMediaUrlAsDataUrl(url) {
@@ -8472,10 +8599,7 @@ return {box:null,refresh(){},dispose(){}};
       //   **既不读上游连线**，又会被「AI生成图片 · …」结果命名污染 —— 实测捕获到的请求体是
       //   `扩图（outpainting）：AI生成图片 · 根据引用的文本生成图片。…`，
       //   与 `jobs.jsonl` 里那 4 条 failed 记录逐字一致。现在走 `collectGenerationPrompt()`。
-      const prompt = collectGenerationPrompt(node, [
-        promptInput?.value?.trim() || '',
-        node.querySelector('.node-copy')?.textContent?.trim() || '',
-      ]);
+      const prompt = collectGenerationPrompt(node);
       const image = new Image();
       const loaded = new Promise(resolve => { image.onload = resolve; image.onerror = resolve; });
       image.src = source;
@@ -9103,6 +9227,7 @@ return {box:null,refresh(){},dispose(){}};
         case 'download-audio': return void downloadAudioNode(node);
         // 视频节点工具组
         case 'video-crop': return void openVideoCropDialog(node);
+        case 'image-to-prompt': case 'video-depth': case 'video-to-prompt': return openCanvasMediaTool(node, toolId);
         case 'video-trim': return void openVideoTrimDialog(node);
         case 'video-storyboard': return void runVideoStoryboard(node);
         case 'video-replace': return void replaceVideoSource(node);
@@ -9120,6 +9245,178 @@ return {box:null,refresh(){},dispose(){}};
 
     function nodeVideoElement(node) {
       return node?.querySelector?.('.media-preview video, .output-preview video') || null;
+    }
+
+    function markDepthOutput(node) {
+      node.dataset.videoTool = 'depth';
+      const badge = node.querySelector('.media-badge');
+      if (badge) badge.textContent = '深度参考';
+      const name = node.querySelector('.model-name strong');
+      if (name) name.textContent = '火山 AI MediaKit';
+      const detail = node.querySelector('.model-name span');
+      if (detail) detail.textContent = '动作与运镜参考视频';
+    }
+
+    async function imagePromptReference(node) {
+      const media = nodeImageHandles(node).previewMedia;
+      // /api/ai/text-generate allows 5,000,000 characters per inline image.
+      // Keep an owned file handle when it fits, and prepare an analysis copy for larger images.
+      const inlineLimit = 5_000_000;
+      if (media) {
+        const url = new URL(media, location.href);
+        if (url.origin !== location.origin && /^https?:$/.test(url.protocol)) return url.href;
+        if (url.origin === location.origin && url.pathname.startsWith('/media/')) {
+          const response = await fetch(url, {method:'HEAD', credentials:'same-origin'});
+          if (response.ok) {
+            if (Number(response.headers.get('Content-Length')) * 4 / 3 + 64 <= inlineLimit) return url.pathname + url.search;
+            const full = await fetch(url, {credentials:'same-origin'});
+            if (full.ok) return prepareReferenceImage(await full.blob());
+          }
+        }
+      }
+      const data = await resolveNodeImageData(node);
+      if (!data) throw new Error('无法读取当前图片，请重新载入素材。');
+      if (data.length <= inlineLimit) return data;
+      return prepareReferenceImage(dataUrlToFile(data, '图片反推参考'));
+    }
+
+    function openCanvasMediaTool(source, toolId) {
+      const context = generationContext(source);
+      const image = toolId === 'image-to-prompt';
+      const sourceId = source.dataset.nodeId;
+      const ownerId = currentUser()?.id;
+      const sameProject = () => !state.projectLoadPending && state.projectId === context.projectId &&
+        JSON.stringify(workspaceHeader()) === JSON.stringify(context.headers);
+      let reverseStarted = false;
+      function currentSource() {
+        if (!image) return source.dataset.videoUrl || nodeVideoElement(source)?.getAttribute('src');
+        const handles = nodeImageHandles(source);
+        return handles.previewMedia || handles.previewData || handles.previewAsset;
+      }
+      const sourceUrl = currentSource();
+      if (image && !sourceUrl) return showToast('请先上传或生成一张图片。', 'ⓘ');
+      if (!image && (!sourceUrl || /^(blob:|data:)/i.test(sourceUrl))) return showToast('请先将视频保存到项目，再使用视频工具。', 'ⓘ');
+      const trim = !image && source.dataset.trimEnd !== undefined ? {
+        start: Number(source.dataset.trimStart || 0), end: Number(source.dataset.trimEnd)
+      } : null;
+      if (trim && !(Number.isFinite(trim.start) && Number.isFinite(trim.end) && trim.end > trim.start && trim.start >= 0)) {
+        return showToast('当前截取范围无效，请重新设置入点和出点。', 'ⓘ');
+      }
+      const check = () => {
+        if (currentUser()?.id !== ownerId) throw new Error('当前账号已更改，请返回原账号。');
+        if (reverseStarted && !generationContextActive(context)) return;
+        if (!generationContextActive(context) || currentSource() !== sourceUrl) {
+          throw new Error('来源素材或画布已更改，请重新打开工具。');
+        }
+      };
+      const request = (path, options = {}) => {
+        check();
+        return api(path, { ...options, headers: {'X-Workspace-Id':'', ...context.headers}, throwOnError: true });
+      };
+      function derived(type, title, copy) {
+        check();
+        const near = {left: source.offsetLeft + source.offsetWidth + 60, top: source.offsetTop};
+        const node = addNode(type, {title, copy, near, silent:true});
+        if (!node) throw new Error('无法创建结果节点。');
+        if (!window.CanvasFlowConnections?.connect?.(source.querySelector('.port-right'), node.querySelector('.port-left'))) {
+          deleteNode(node, {silent:true});
+          throw new Error('无法将结果节点连接到来源素材。');
+        }
+        node.dataset.titleCustom = '1';
+        return node;
+      }
+      let output;
+      const requestId = crypto.randomUUID();
+      const resultId = 'prompt-' + requestId;
+      const originalPosition = {left:source.offsetLeft + source.offsetWidth + 60, top:source.offsetTop};
+      async function saveReverseText(text) {
+        check();
+        const endpoint = '/api/projects/' + encodeURIComponent(context.projectId);
+        for (let attempt = 0; attempt < 4; attempt++) {
+          if (sameProject()) {
+            if (stage.querySelector('[data-node-id="' + resultId + '"]')) return Boolean(await saveProject());
+            const parent = stage.querySelector('[data-node-id="' + CSS.escape(sourceId) + '"]');
+            const near = parent ? {left:parent.offsetLeft+parent.offsetWidth+60, top:parent.offsetTop} : originalPosition;
+            const node = addNode('prompt', {id:resultId, title:'提示词反推', copy:text, near, silent:true});
+            if (!node) throw new Error('无法创建反推结果节点。');
+            node.dataset.titleCustom = '1';
+            if (parent) window.CanvasFlowConnections.connect(parent.querySelector('.port-right'), node.querySelector('.port-left'));
+            syncPromptNodeTextState(node);
+            clearTimeout(state.saveTimer);
+            return Boolean(await saveProject());
+          }
+          const {project} = await request(endpoint);
+          const revision = Number(project.revision) || 0;
+          if (project.nodes.some(item => item.id === resultId)) return true;
+          if (sameProject()) continue;
+          const point = {...originalPosition};
+          for (let offset = 0; offset < project.nodes.length && project.nodes.some(n =>
+            Math.abs(n.left-point.left) < 20 && Math.abs(n.top-point.top) < 20); offset++) point.top += 180;
+          const node = {id:resultId, type:'prompt', title:'提示词反推', titleCustom:true, copy:text, ...point};
+          const edges = [...project.edges];
+          if (project.nodes.some(n => n.id === sourceId)) edges.push({id:'edge-'+requestId, source:sourceId, target:resultId});
+          try {
+            const saved = await request(endpoint, {method:'PUT', body:JSON.stringify({
+              revision, nodes:[...project.nodes, node], edges, nodeCount:project.nodes.length+1
+            })});
+            if (sameProject() && !stage.querySelector('[data-node-id="' + resultId + '"]')) {
+              if (state.projectRevision === revision) state.projectRevision = saved.project.revision;
+              continue;
+            }
+            return true;
+          } catch (error) {
+            if (error.status !== 409 || attempt === 3) throw error;
+          }
+        }
+        throw new Error('来源项目正在切换，请重试保存反推结果。');
+      }
+      return window.CanvasVideoTools.open({
+        toolId, sourceUrl, trim, projectId:context.projectId, label:nodeLabel(source), owner:source, check, request,
+        preferenceKey:JSON.stringify([currentUser()?.id || 'local', currentWorkspaceId()]),
+        notify:message => showToast(message, 'ⓘ'),
+        async readImage() {
+          check();
+          const ref = await imagePromptReference(source);
+          check();
+          return ref;
+        },
+        async beginReverse() {
+          check();
+          const saved = await saveProject();
+          if (!saved) throw new Error('请先保存来源项目，再提交反推。');
+          reverseStarted = true;
+        },
+        writeText:saveReverseText,
+        async submitDepth() {
+          if (!output?.isConnected) {
+            output = derived('output', '深度动作捕捉', '');
+            markDepthOutput(output);
+          }
+          if (!await prepareGenerationSubmission({...context, node:output})) throw new Error('输出节点已关闭。');
+          let result;
+          try {
+            result = await request('/api/media-tools/depth', {method:'POST',body:JSON.stringify({
+              projectId:context.projectId, nodeId:output.dataset.nodeId, requestId, sourceUrl, ...trim
+            })});
+          } catch (error) {
+            if (generationContextActive({...context,node:output})) {
+              if ([400,401,403,404,413,415,422].includes(error.status)) {
+                deleteNode(output, {silent:true});
+                output = null;
+              } else {
+                renderJobProgress(output, {status:'failed',error:'暂时无法确认任务状态，重新打开项目可接回已提交的提取任务。'});
+              }
+              scheduleSave();
+            }
+            throw error;
+          }
+          if (!result?.job?.id) throw new Error('深度提取任务未返回编号。');
+          if (generationContextActive({...context, node:output})) {
+            trackBatchVideoJob(output, result.job);
+            await saveProject();
+          }
+        }
+      });
     }
     // 图层合成：把上游参考图作为半透明叠加层合成到预览上（真实可见的合成预览，可再次点击关闭）。
     function toggleVideoLayerOverlay(node) {
@@ -9176,6 +9473,12 @@ return {box:null,refresh(){},dispose(){}};
       const end = backdrop.querySelector('.video-trim-end');
       const startLabel = backdrop.querySelector('.video-trim-start-label');
       const endLabel = backdrop.querySelector('.video-trim-end-label');
+      if (node.dataset.trimEnd && Number(node.dataset.trimEnd) > Number(node.dataset.trimStart || 0)) {
+        start.value = node.dataset.trimStart || '0';
+        end.value = node.dataset.trimEnd;
+        startLabel.textContent = Number(start.value).toFixed(1) + 's';
+        endLabel.textContent = Number(end.value).toFixed(1) + 's';
+      }
       const sync = () => {
         if (Number(start.value) > Number(end.value)) {
           if (document.activeElement === start) end.value = start.value; else start.value = end.value;
@@ -9211,16 +9514,34 @@ return {box:null,refresh(){},dispose(){}};
       showToast(`已截取 ${(to - from).toFixed(1)}s 片段（${from.toFixed(1)}s → ${to.toFixed(1)}s）`, '✂');
     }
     // 区间循环：播放到出点自动回到入点（截取在播放上真正生效）。
-    function bindTrimPlayback(video) {
+    function videoTrimRange(node, video) {
+      const from = Math.max(0, Number(node?.dataset.trimStart || 0));
+      const to = Math.min(Number(node?.dataset.trimEnd), video.duration || Infinity);
+      return Number.isFinite(from) && Number.isFinite(to) && to > from ? { from, to } : null;
+    }
+    function bindTrimPlayback(video, node = video?.closest('.flow-node')) {
       if (!video || video.dataset.trimBound) return;
       video.dataset.trimBound = '1';
-      video.addEventListener('timeupdate', () => {
-        const node = video.closest('.flow-node');
-        const from = Number(node?.dataset.trimStart || 0);
-        const to = Number(node?.dataset.trimEnd || 0);
-        if (!to || to <= from) return;
-        if (video.currentTime >= to) { try { video.currentTime = from; } catch { /* ignore */ } }
-      });
+      const enforce = () => {
+        const range = videoTrimRange(node, video);
+        if (range && (video.currentTime < range.from - .001 || video.currentTime >= range.to)) {
+          try { video.currentTime = range.from; } catch { /* Metadata can still be loading. */ }
+        }
+        return range;
+      };
+      for (const event of ['loadedmetadata', 'play', 'seeking', 'timeupdate']) video.addEventListener(event, enforce);
+      if (video.requestVideoFrameCallback) {
+        let frame = null;
+        const checkFrame = () => {
+          frame = null;
+          if (!video.paused && video.isConnected && enforce()) frame = video.requestVideoFrameCallback(checkFrame);
+        };
+        video.addEventListener('playing', () => { if (frame === null) checkFrame(); });
+        video.addEventListener('pause', () => {
+          if (frame !== null) video.cancelVideoFrameCallback(frame);
+          frame = null;
+        });
+      }
     }
     // 裁剪画幅：按倍数放大并裁掉画面边缘（真正作用在节点预览上，与「画框比例」区分）。
     function openVideoCropDialog(node) {
@@ -9463,15 +9784,18 @@ return {box:null,refresh(){},dispose(){}};
     //   `_extract_dock_prompts.js` 从 app.js 生成（守卫测试 `_test_dock_prompt_defaults.py`）。
     // ★ r844 新增第三张表 `emotionDynamic`：动态表情的提示词（通用文案骨架 + 每档要点正文）。
     //   以前动态那段 `@表情变化：…` 是**写死**在 `emotionDynamicPrompt()` 里的，管理员改不了。
-    let dockPrompts = { camera: {}, emotion: {}, emotionDynamic: {} };
-    async function loadDockPrompts() {
-      const result = await api('/api/dock-prompts').catch(() => null);
+    let dockPrompts = { camera: {}, emotion: {}, emotionDynamic: {}, roleStudio: {} };
+    async function loadDockPrompts({requireRolePrompts = false} = {}) {
+      const result = await api('/api/dock-prompts');
+      if (requireRolePrompts && !result?.prompts?.roleStudio) throw new Error('角色提示词未载入，请确认本地服务已更新后重试。');
       if (result?.prompts) {
         dockPrompts = {
           camera: result.prompts.camera || {},
           emotion: result.prompts.emotion || {},
           emotionDynamic: result.prompts.emotionDynamic || {},
+          roleStudio: result.prompts.roleStudio || {},
         };
+        window.CanvasFlowRolePrompts?.setOverrides(dockPrompts.roleStudio);
       }
       return dockPrompts;
     }
@@ -9534,6 +9858,15 @@ return {box:null,refresh(){},dispose(){}};
     //   ★ `tab.kind` 是**服务端那张表的 kind** —— 保存/恢复默认都按当前页签的 kind 走，
     //     服务端 `write_dock_prompts()` 是按 kind 合并的，存动态不会把静态的覆盖值清掉。
     const DOCK_PROMPT_EDITOR = {
+      roleStudio: {
+        title: '编辑角色 · 提示词编辑',
+        get tabs() {
+          return window.CanvasFlowRoleModes.filter(mode => mode.id !== 'voice').map(mode => ({
+            id: mode.id, label: mode.label, kind: 'roleStudio',
+            sub: '编辑选中参数或预设时使用的图片生成文案。花括号内的变量会替换为角色的实际选值。',
+          }));
+        },
+      },
       camera: {
         title: '运镜广场 · 提示词编辑',
         tabs: [{
@@ -9578,7 +9911,16 @@ return {box:null,refresh(){},dispose(){}};
       if (!meta) return;
       if (!isAdminUser()) return showToast('提示词只有管理员可以查看和修改', '×');
       // 每次打开都重拉一次：别人（或另一个标签页）刚改过也能看到最新值。
-      await loadDockPrompts();
+      const roleEditor = kind === 'roleStudio';
+      if (roleEditor) {
+        try {
+          await Promise.all([loadDockPrompts({requireRolePrompts:true}), window.CanvasFlowRolePrompts.ready]);
+        } catch (error) {
+          options.onError?.(error.message || '角色提示词载入失败，请重试。');
+          return;
+        }
+        if (!options.parentDialog?.open) return;
+      } else await loadDockPrompts();
       $('.dock-prompt-layer')?.remove();
 
       const tabs = meta.tabs || [];
@@ -9588,6 +9930,7 @@ return {box:null,refresh(){},dispose(){}};
       // 条目清单：camera = 画廊的 23 条；emotion = 平静 + 10 情绪 × 5 档（带分组标题）。
       // 动态页签 = 11 项「通用文案」骨架 + 上面那 51 档（留空沿用静态，所以给 placeholder）。
       const itemsFor = tab => {
+        if (roleEditor) return window.CanvasFlowRolePrompts.entries.filter(item => item.mode === tab.id);
         if (tab.kind === 'camera') {
           return CAMERA_MOTION_PRESETS.map(preset => ({
             key: preset.id,
@@ -9630,8 +9973,9 @@ return {box:null,refresh(){},dispose(){}};
         return items;
       };
 
-      const layer = document.createElement('div');
+      const layer = document.createElement(roleEditor ? 'dialog' : 'div');
       layer.className = 'dock-prompt-layer';
+      if (roleEditor) layer.setAttribute('aria-label', meta.title);
       const cardHtml = (tab, item) => {
         const entry = dockPrompts[tab.kind]?.[item.key] || {};
         const prompt = entry.prompt || '';
@@ -9647,14 +9991,14 @@ return {box:null,refresh(){},dispose(){}};
             ${custom ? '<span class="preset-prompt-badge">已自定义</span>' : ''}
             <small>${escapeHtml(item.desc || '')}</small>
           </header>
-          <textarea class="preset-prompt-text" data-dock-prompt-key="${escapeHtml(item.key)}" spellcheck="false" rows="3"${placeholder}>${escapeHtml(prompt)}</textarea>
+          <textarea class="preset-prompt-text" data-dock-prompt-key="${escapeHtml(item.key)}" aria-label="${escapeHtml([item.group,item.title].filter(Boolean).join(' · '))}" spellcheck="false" rows="3"${placeholder}>${escapeHtml(prompt)}</textarea>
           <footer class="preset-prompt-foot">${inherit}<span class="preset-prompt-count" data-dock-prompt-count="${escapeHtml(item.key)}">${prompt.length} 字</span></footer>
         </article>`;
       };
       const tabsHtml = tabs.length > 1
         ? `<div class="dock-prompt-tabs" role="tablist" aria-label="提示词类型">${tabs.map(tab => `<button type="button" role="tab" aria-selected="${tab.id === tabId}" class="${tab.id === tabId ? 'is-active' : ''}" data-dock-prompt-tab="${escapeHtml(tab.id)}">${escapeHtml(tab.label)}</button>`).join('')}</div>`
         : '';
-      layer.innerHTML = `<div class="dock-prompt-dialog" role="dialog" aria-modal="true" aria-label="${escapeHtml(meta.title)}">
+      layer.innerHTML = `<div class="dock-prompt-dialog"${roleEditor ? '' : ` role="dialog" aria-modal="true" aria-label="${escapeHtml(meta.title)}"`}>
         <header class="dock-prompt-head">
           <div><h2>${escapeHtml(meta.title)}</h2><p data-dock-prompt-sub>${escapeHtml(tabOf(tabId).sub || '')}</p></div>
           <button type="button" class="dock-prompt-close" data-dock-prompt-close aria-label="关闭">×</button>
@@ -9672,10 +10016,11 @@ return {box:null,refresh(){},dispose(){}};
         <footer class="dock-prompt-foot">
           <button type="button" class="is-primary" data-dock-prompt-save>保存修改</button>
           <button type="button" class="is-ghost" data-dock-prompt-reset>恢复默认</button>
-          <span class="dock-prompt-hint" data-dock-prompt-hint></span>
+          <span class="dock-prompt-hint" data-dock-prompt-hint role="status"></span>
         </footer>
       </div>`;
       document.body.appendChild(layer);
+      if (roleEditor) layer.showModal();
 
       const list = layer.querySelector('[data-dock-prompt-list]');
       const summary = layer.querySelector('[data-dock-prompt-summary]');
@@ -9691,7 +10036,9 @@ return {box:null,refresh(){},dispose(){}};
       /** 读当前列表里所有输入框的值 = 当前页签即将提交的那张表。 */
       const readTable = () => {
         const table = {};
-        list.querySelectorAll('[data-dock-prompt-key]').forEach(area => { table[area.dataset.dockPromptKey] = area.value; });
+        list.querySelectorAll('[data-dock-prompt-key]').forEach(area => {
+          if (!roleEditor || area.value !== area.defaultValue) table[area.dataset.dockPromptKey] = area.value;
+        });
         return table;
       };
       /**
@@ -9741,6 +10088,11 @@ return {box:null,refresh(){},dispose(){}};
       const paintSummary = () => {
         const tab = tabOf(activeTab);
         const items = itemsFor(tab);
+        if (roleEditor && search.value.trim()) {
+          const visible = list.querySelectorAll('[data-dock-prompt-card]:not([hidden])').length;
+          summary.textContent = visible ? `找到 ${visible} 项` : '没有匹配的提示词';
+          return;
+        }
         const custom = items.filter(item => dockPrompts[tab.kind]?.[item.key]?.custom).length;
         summary.textContent = `共 ${items.length} 项${custom ? ` · 其中 ${custom} 项已自定义` : ''}`;
       };
@@ -9765,6 +10117,10 @@ return {box:null,refresh(){},dispose(){}};
         });
         if (subEl) subEl.textContent = tab.sub || '';
         if (search) search.value = '';
+        if (roleEditor) {
+          list.parentElement.scrollTop = 0;
+          hint.textContent = '保存或恢复仅作用于当前分类，对所有项目生效。';
+        }
         if (previewEl) previewEl.hidden = tab.kind !== 'emotionDynamic';
         paintSummary();
         paintPreview();
@@ -9776,16 +10132,25 @@ return {box:null,refresh(){},dispose(){}};
         list.querySelectorAll('[data-dock-prompt-card]').forEach(card => {
           card.hidden = Boolean(query) && !String(card.dataset.dockPromptSearch || '').toLowerCase().includes(query);
         });
+        if (roleEditor) paintSummary();
       });
       layer.addEventListener('input', event => {
         const area = event.target?.closest?.('[data-dock-prompt-key]');
         if (!area) return;
         const count = layer.querySelector(`[data-dock-prompt-count="${CSS.escape(area.dataset.dockPromptKey)}"]`);
         if (count) count.textContent = `${area.value.length} 字`;
-        drafts[activeTab] = readTable();
+        if (!roleEditor) drafts[activeTab] = readTable();
         paintPreview();
       });
-      const close = () => layer.remove();
+      const close = () => {
+        if (roleEditor && layer.open) layer.close();
+        layer.remove();
+      };
+      if (roleEditor) {
+        layer.addEventListener('cancel', event => { event.preventDefault(); close(); });
+        layer.addEventListener('keydown', event => event.stopPropagation());
+        layer.addEventListener('keyup', event => event.stopPropagation());
+      }
       layer.addEventListener('click', async event => {
         if (event.target === layer || event.target.closest('[data-dock-prompt-close]')) return close();
         const tabButton = event.target.closest('[data-dock-prompt-tab]');
@@ -9795,7 +10160,34 @@ return {box:null,refresh(){},dispose(){}};
           renderTab(tabButton.dataset.dockPromptTab);
           return;
         }
-        if (event.target.closest('[data-dock-prompt-save]')) {
+        const saveButton = event.target.closest('[data-dock-prompt-save]');
+        const resetButton = event.target.closest('[data-dock-prompt-reset]');
+        if (roleEditor && (saveButton || resetButton)) {
+          const tab = tabOf(activeTab);
+          const changes = resetButton ? Object.fromEntries(itemsFor(tab).map(item => [item.key, ''])) : readTable();
+          if (!Object.keys(changes).length) { hint.textContent = '当前分类没有待保存的修改。'; return; }
+          const buttons = layer.querySelectorAll('[data-dock-prompt-save], [data-dock-prompt-reset], [data-dock-prompt-tab]');
+          buttons.forEach(button => { button.disabled = true; });
+          list.inert = true;
+          hint.textContent = '正在保存…';
+          try {
+            const result = await api('/api/dock-prompts', { method: 'PUT', throwOnError: true,
+              body: JSON.stringify({partial:true, prompts:{roleStudio:changes}}) });
+            if (!result?.ok || !result.partial) throw new Error('服务未确认保存，请刷新后重试。');
+            await loadDockPrompts({requireRolePrompts:true});
+            if (!layer.isConnected) return;
+            delete drafts[tab.id];
+            renderTab(tab.id);
+            hint.textContent = resetButton ? '已恢复当前分类的默认提示词。' : '已保存，下次生成将使用新提示词。';
+          } catch (error) {
+            hint.textContent = error.message || '保存失败，请重试。';
+          } finally {
+            list.inert = false;
+            buttons.forEach(button => { button.disabled = false; });
+          }
+          return;
+        }
+        if (saveButton) {
           const tab = tabOf(activeTab);
           const result = await api('/api/dock-prompts', {
             method: 'PUT',
@@ -9809,7 +10201,7 @@ return {box:null,refresh(){},dispose(){}};
           showToast(`已保存（${result.customCount || 0} 项自定义），对所有人立即生效`, '✦');
           return;
         }
-        if (event.target.closest('[data-dock-prompt-reset]')) {
+        if (resetButton) {
           const tab = tabOf(activeTab);
           const result = await api('/api/dock-prompts/reset', { method: 'PUT', body: JSON.stringify({ kind: tab.kind }) }).catch(() => null);
           if (!result?.ok) return showToast('恢复失败，请重试', '×');
@@ -9820,7 +10212,8 @@ return {box:null,refresh(){},dispose(){}};
         }
       });
       // 打开时给个焦点提示（面板本身滚动，不抢焦点）
-      if (hint) hint.textContent = '改动会立即对所有人生效（全局一套）';
+      if (!roleEditor && hint) hint.textContent = '改动会立即对所有人生效（全局一套）';
+      if (roleEditor) search.focus({preventScroll:true});
       setTimeout(() => layer.classList.add('is-open'), 0);
     }
 
@@ -10746,12 +11139,20 @@ return {box:null,refresh(){},dispose(){}};
 
 
     function textNodeText(node) {
-      return (node?.querySelector('.node-copy')?.textContent || '').trim();
+      const body = node?.querySelector('.node-copy');
+      if (!body) return '';
+      if (node.dataset.node === 'prompt' && body.firstElementChild) {
+        // Preserve the author's plain-text representation of paragraphs, lists and line breaks.
+        const restored = restoredPromptBodies.get(body);
+        if (restored && restored.html === body.innerHTML) return restored.text;
+        return body.innerText;
+      }
+      return body.textContent || '';
     }
     // 文本节点卡片里没有正文时不给「双击编辑」入口：去掉 hover 手型与提示，双击也不进编辑态。
     function syncPromptNodeTextState(node) {
       if (!node?.matches?.('.prompt-node')) return;
-      const hasText = Boolean(textNodeText(node));
+      const hasText = Boolean(textNodeText(node).trim());
       node.classList.toggle('has-text', hasText);
       const copy = node.querySelector('.node-copy');
       if (!copy) return;
@@ -12998,7 +13399,7 @@ return {box:null,refresh(){},dispose(){}};
         el.classList.remove('editing');
         el.setAttribute('contenteditable', 'false');
         el.removeAttribute('contenteditable');
-        const next = (el.textContent || '').replace(/\s+$/, '');
+        const next = el.textContent || '';
         if (!commit || next === before) { el.textContent = before; return; }
         remember();
         el.textContent = next;
@@ -13270,10 +13671,10 @@ return {box:null,refresh(){},dispose(){}};
         activeTextEditor = null;
         activeTextBar = null;
         if (!commit) { el.innerHTML = beforeHtml; return; }
-        const html = el.innerHTML.trim();
-        if (html === beforeHtml.trim()) return;
+        const html = el.innerHTML;
+        if (html === beforeHtml) return;
         remember();
-        el.innerHTML = html;
+        restoredPromptBodies.set(el, { html, text: el.innerText });
         scheduleSave();
         syncPromptNodeTextState(node);
         refreshQuickToolbarState();
@@ -13338,46 +13739,124 @@ return {box:null,refresh(){},dispose(){}};
       preview.title = '';
     }
 
-    function setOutputVideoPreview(output, videoUrl) {
+    function createOutputVideoSurface(video) {
+      const surface = document.createElement('div');
+      surface.className = 'output-video-surface';
+      const cover = new Image();
+      cover.className = 'output-video-cover';
+      cover.alt = '';
+      cover.hidden = true;
+      const frame = document.createElement('canvas');
+      frame.className = 'output-video-frame';
+      frame.setAttribute('aria-hidden', 'true');
+      frame.hidden = true;
+      surface.append(video, cover, frame);
+
+      // A scaled canvas node can lose the native video layer after its first play.
+      // Paint decoded frames only during playback; keep the original still underneath.
+      const context = frame.getContext('2d');
+      if (!context) return surface;
+      function paintFrame() {
+        if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) return false;
+        const scale = Math.min(1, 960 / Math.max(video.videoWidth, video.videoHeight));
+        const width = Math.max(1, Math.round(video.videoWidth * scale));
+        const height = Math.max(1, Math.round(video.videoHeight * scale));
+        if (frame.width !== width || frame.height !== height) {
+          frame.width = width;
+          frame.height = height;
+        }
+        context.drawImage(video, 0, 0, width, height);
+        frame.hidden = false;
+        return true;
+      }
+      cover.onload = () => {
+        cover.hidden = false;
+        if (video.paused) frame.hidden = true;
+      };
+      cover.onerror = () => {
+        cover.hidden = true;
+        video.removeAttribute('poster');
+        video.preload = 'auto';
+        paintFrame();
+      };
+      if (video.poster) cover.src = video.poster;
+      video.addEventListener('loadeddata', () => {
+        if (cover.naturalWidth || !paintFrame()) return;
+        if (!video.poster) {
+          try {
+            video.poster = frame.toDataURL('image/jpeg', .85);
+            cover.src = video.poster;
+          } catch { /* A remote video can be drawn even if the frame cannot be exported. */ }
+        }
+      }, { once: true });
+
+      let pendingFrame = null;
+      function paintPlaying() {
+        pendingFrame = null;
+        if (video.paused || video.ended || !surface.isConnected) return;
+        paintFrame();
+        pendingFrame = video.requestVideoFrameCallback(paintPlaying);
+      }
+      function showStill() {
+        if (pendingFrame !== null) video.cancelVideoFrameCallback(pendingFrame);
+        pendingFrame = null;
+        if (videoTrimRange(video.closest('.flow-node'), video) && paintFrame()) return;
+        if (cover.naturalWidth) frame.hidden = true;
+        else paintFrame();
+      }
+      if (video.requestVideoFrameCallback) {
+        video.addEventListener('playing', () => {
+          if (pendingFrame === null) paintPlaying();
+        });
+      } else {
+        video.addEventListener('timeupdate', () => { if (!video.paused) paintFrame(); });
+      }
+      video.addEventListener('pause', showStill);
+      video.addEventListener('error', showStill);
+      video.addEventListener('seeked', () => { if (video.paused) showStill(); });
+      return surface;
+    }
+
+    function setOutputVideoPreview(output, videoUrl, posterUrl, preserveTrim = false) {
       const preview = output?.querySelector?.('.output-preview');
       if (!preview || !videoUrl) return;
+      if (!preserveTrim && preview.dataset.videoUrl && preview.dataset.videoUrl !== videoUrl) {
+        delete output.dataset.trimStart;
+        delete output.dataset.trimEnd;
+      }
+      if (!preserveTrim && preview.dataset.videoUrl && preview.dataset.videoUrl !== videoUrl && posterUrl === undefined) {
+        delete output.dataset.previewMedia;
+      }
+      posterUrl ??= output.dataset.previewMedia;
       preview.dataset.videoUrl = videoUrl;
       output.dataset.videoUrl = videoUrl;
       preview.querySelector('.media-art')?.remove();
       preview.querySelector('.preview-lines')?.remove();
-      preview.querySelector('.output-video-element')?.remove();
+      preview.querySelector('.output-video-surface')?.remove();
       const video = document.createElement('video');
       video.className = 'output-video-element';
       video.src = videoUrl;
       video.muted = true;
       video.loop = true;
       video.playsInline = true;
-      // Load an actual frame even while the director overlay hides the canvas node.
-      video.preload = 'auto';
-      if (output.dataset.previewMedia) video.poster = output.dataset.previewMedia;
-      // Older exports have no saved poster. Keep a decoded first frame for paused preview.
-      video.addEventListener('loadeddata', () => {
-        if (video.poster || !video.videoWidth) return;
-        try {
-          const frame = document.createElement('canvas');
-          frame.width = Math.min(640, video.videoWidth); frame.height = Math.round(frame.width * video.videoHeight / video.videoWidth);
-          frame.getContext('2d').drawImage(video, 0, 0, frame.width, frame.height);
-          video.poster = frame.toDataURL('image/jpeg', .85);
-        } catch { /* Cross-origin supplier videos can still play without a local poster. */ }
-      }, { once: true });
+      video.preload = posterUrl ? 'metadata' : 'auto';
+      if (posterUrl) video.poster = posterUrl;
       video.setAttribute('aria-label', '生成的视频预览');
       video.addEventListener('error', () => {
+        if (!preview.contains(video)) return;
         const stateText = preview.querySelector('.output-state');
-        if (stateText) stateText.textContent = '视频地址不可播放 · 重试生成可恢复';
+        if (stateText) stateText.textContent = output.dataset.jobId || output.dataset.generationJobId
+          ? '视频暂不可播放 · 打开放大预览可重新取回' : '视频暂不可播放';
       }, { once: true });
       // 视频节点同理：拿到元数据后卡片边框自适应当前视频长宽比。
       video.addEventListener('loadedmetadata', () => {
-        if (!video.videoWidth || !video.videoHeight) return;
+        if (!preview.contains(video) || !video.videoWidth || !video.videoHeight) return;
         output.dataset.mediaRatio = String(video.videoHeight / video.videoWidth);
         const dimension=output.querySelector('.media-dimension');if(dimension)dimension.textContent=video.videoWidth+' × '+video.videoHeight;
         applyNodeAspectSizing(output);
       });
-      preview.prepend(video);
+      bindTrimPlayback(video, output);
+      preview.prepend(createOutputVideoSurface(video));
     }
     // 模型卡生成状态浮层：独立于模型名徽标，避免被 syncGenerationControls 覆盖。
     function setModelJobState(node, text) {
@@ -13393,8 +13872,13 @@ return {box:null,refresh(){},dispose(){}};
       chip.textContent = text;
     }
     // 模型卡即生成卡：成片直接内嵌到模型卡的预览区。
-    function setModelNodeVideo(node, videoUrl) {      const preview = node?.querySelector?.('.media-preview');
+    function setModelNodeVideo(node, videoUrl, preserveTrim = false) {
+      const preview = node?.querySelector?.('.media-preview');
       if (!preview || !videoUrl) return;
+      if (!preserveTrim && preview.dataset.videoUrl && preview.dataset.videoUrl !== videoUrl) {
+        delete node.dataset.trimStart;
+        delete node.dataset.trimEnd;
+      }
       preview.dataset.videoUrl = videoUrl;
       node.dataset.videoUrl = videoUrl;
       preview.querySelector('.media-art')?.remove();
@@ -13413,7 +13897,7 @@ return {box:null,refresh(){},dispose(){}};
         if (badge) badge.textContent = '视频地址不可播放';
       }, { once: true });
       preview.classList.add('generated');
-      bindTrimPlayback(video);
+      bindTrimPlayback(video, node);
       // 视频节点同理：拿到元数据后卡片边框自适应当前视频长宽比。
       video.addEventListener('loadedmetadata', () => {
         if (!video.videoWidth || !video.videoHeight) return;
@@ -13440,13 +13924,41 @@ return {box:null,refresh(){},dispose(){}};
       const title = dialog.querySelector('strong');
       if (title) title.textContent = node.querySelector('.output-meta span')?.textContent?.trim() || nodeLabel(node) || '视频节点';
       const stage = dialog.querySelector('.video-lightbox-stage');
+      function showRecovery() {
+        const jobId = node.dataset.jobId || node.dataset.generationJobId;
+        stage.innerHTML = '<div class="video-lightbox-recovery"><p role="status"></p><button type="button">重新取回视频</button></div>';
+        const message = stage.querySelector('p');
+        const retry = stage.querySelector('button');
+        message.textContent = !jobId ? '这个节点没有可播放的视频或关联任务。'
+          : videoUrl ? '当前视频无法播放，可重新取回原任务的成片。' : '视频任务已完成，成片尚未取回。';
+        retry.hidden = !jobId;
+        retry.addEventListener('click', async () => {
+          if (retry.disabled) return;
+          const context = generationContext(node);
+          retry.disabled = true;
+          message.textContent = '正在取回原任务的成片…';
+          try {
+            const { job } = await api('/api/jobs/' + encodeURIComponent(jobId) + '?recoverMedia=1', { headers: context.headers, throwOnError: true });
+            if (!generationContextActive(context) || (node.dataset.jobId || node.dataset.generationJobId) !== jobId) return;
+            if (!job?.videoUrl) throw new Error('成片暂不可用，可稍后重试。');
+            renderJobProgress(node, job, { preserveTrim: true });
+            scheduleSave();
+            if (backdrop.isConnected) openVideoOutputPreview(node);
+          } catch (error) {
+            message.textContent = error.message || '视频取回失败，可稍后重试。';
+          } finally {
+            retry.disabled = false;
+          }
+        });
+      }
       if (videoUrl) {
         const video = document.createElement('video');
-        video.className = 'video-lightbox-video'; video.src = videoUrl; video.controls = true; video.autoplay = true; video.loop = true; video.playsInline = true;
+        video.className = 'video-lightbox-video'; video.controls = true; video.autoplay = true; video.loop = true; video.playsInline = true;
+        bindTrimPlayback(video, node);
+        video.addEventListener('error', showRecovery, { once: true });
+        video.src = videoUrl;
         stage.append(video);
-      } else {
-        stage.innerHTML = '<div class="video-lightbox-frame playing"><div class="media-art video-art"></div><div class="preview-lines"></div><span class="media-badge">VIDEO OUTPUT</span><span class="video-lightbox-status">供应商未返回视频地址</span></div>';
-      }
+      } else showRecovery();
       backdrop.appendChild(dialog); document.body.appendChild(backdrop);
       const close = () => backdrop.remove();
       backdrop.addEventListener('click', event => { if (event.target === backdrop || event.target.closest('.video-lightbox-close')) close(); });
@@ -13456,6 +13968,7 @@ return {box:null,refresh(){},dispose(){}};
       if (!node?.matches?.('.output-node, .model-node')) return;
       const preview = node.querySelector('.output-preview') || node.querySelector('.media-preview');
       if (!preview || preview.dataset.previewBound) return;
+      preview.dataset.previewBound = '1';
       preview.querySelector('.play-button')?.remove();
       preview.removeAttribute('aria-label');
       preview.removeAttribute('role');
@@ -13475,7 +13988,7 @@ return {box:null,refresh(){},dispose(){}};
         const video = hoverVideo();
         if (video) {
           video.pause();
-          try { video.currentTime = 0; } catch { /* 个别编码 seek 失败时保持当前帧 */ }
+          try { video.currentTime = videoTrimRange(node, video)?.from || 0; } catch { /* 个别编码 seek 失败时保持当前帧 */ }
         }
       });
     }
@@ -13758,7 +14271,9 @@ return {box:null,refresh(){},dispose(){}};
 
 
 
-    function resetCanvasNodes() {
+    function resetCanvasNodes(roleSnapshots) {
+      state.roleSnapshots = new Map();
+      restoreRoleSnapshots(roleSnapshots);
       $$('.flow-node').forEach(node => node.remove());
       state.activeNodeId = null;
       state.multiSelection = new Set();
@@ -13769,7 +14284,7 @@ return {box:null,refresh(){},dispose(){}};
     // Restore what a rebuild-from-type-preset would lose: the preview image (local cache first,
     // asset fetch as fallback) and the completed state of an output node.
     const pendingAssetRestores = new Set();
-    function queuePreviewAssetRestore(node, assetId, name) {
+    function queuePreviewAssetRestore(node, assetId, name, preserveCaption = false) {
       if (isStandaloneFile() || !assetId) return;
       const context = generationContext(node);
       const key = `${context.projectId}:${context.canvasEpoch}:${node.dataset.nodeId}:${assetId}`;
@@ -13778,14 +14293,31 @@ return {box:null,refresh(){},dispose(){}};
       fetchAssetData(assetId).then(data => {
         if (!data || !document.contains(node) || !generationContextActive(context)
             || node.dataset.previewAsset !== assetId) return;
-        setMediaNodeImage(node, data, name, assetId);
+        setMediaNodeImage(node, data, name, assetId, node.dataset.mediaPromptAbsent ? '' : undefined, preserveCaption);
       }).finally(() => pendingAssetRestores.delete(key));
     }
     function applyNodeVisualState(node, item) {
       if (!node || !item) return;
+      if (item.roleAsset && state.roleSnapshots.has(item.roleAsset.ref) && [0,1,2,3].includes(item.roleAsset.slot)) {
+        node.dataset.roleSnapshotRef = item.roleAsset.ref;
+        node.dataset.roleSnapshotSlot = String(item.roleAsset.slot);
+      } else { delete node.dataset.roleSnapshotRef; delete node.dataset.roleSnapshotSlot; }
       if (node.dataset.node === 'prompt') {
         node.dataset.textInstruction = String(item.textInstruction || '');
       }
+      if (item.generationProfile && typeof item.generationProfile.model === 'string' && Array.isArray(item.generationProfile.specs)) {
+        node.dataset.generationProfile = JSON.stringify(item.generationProfile);
+      } else delete node.dataset.generationProfile;
+      if (typeof item.mediaPrompt === 'string') node.dataset.mediaPrompt = item.mediaPrompt;
+      else delete node.dataset.mediaPrompt;
+      if (item.mediaPrompt === null) node.dataset.mediaPromptAbsent = '1';
+      else delete node.dataset.mediaPromptAbsent;
+      const mentions = typeof item.mediaPrompt === 'string' && Array.isArray(item.mediaPromptMentions)
+        ? item.mediaPromptMentions.filter(ref => typeof ref?.nodeId === 'string' && Number.isInteger(ref.start)
+          && Number.isInteger(ref.end) && ref.start >= 0 && ref.start < ref.end && ref.end <= item.mediaPrompt.length)
+        : [];
+      if (mentions.length) node.dataset.mediaPromptMentions = JSON.stringify(mentions);
+      else delete node.dataset.mediaPromptMentions;
       // 分组成员标记：随快照恢复/清除，分组框渲染依赖它。
       if (item.groupId) node.dataset.groupId = item.groupId;
       else delete node.dataset.groupId;
@@ -13813,7 +14345,8 @@ return {box:null,refresh(){},dispose(){}};
       else delete node.dataset.shots;
       if (item.scriptAssets) node.dataset.scriptAssets = typeof item.scriptAssets === 'string' ? item.scriptAssets : JSON.stringify(item.scriptAssets);
       else delete node.dataset.scriptAssets;
-      if (item.scriptTheme) node.dataset.scriptTheme = item.scriptTheme;
+      if (typeof item.scriptTheme === 'string') node.dataset.scriptTheme = item.scriptTheme;
+      else delete node.dataset.scriptTheme;
       if (item.scriptStyle) node.dataset.scriptStyle = item.scriptStyle;
       if (item.autoLink) node.dataset.autoLink = item.autoLink;
       else delete node.dataset.autoLink;
@@ -13868,7 +14401,7 @@ return {box:null,refresh(){},dispose(){}};
       }
       if (item.previewData && preview) {
         preview.dataset.previewData = item.previewData;
-        if (node.matches('.image-node')) setMediaNodeImage(node, item.previewData, item.previewName || '', item.previewAsset || '');
+        if (node.matches('.image-node')) setMediaNodeImage(node, item.previewData, item.previewName || '', item.previewAsset || '', item.mediaPrompt === null ? '' : undefined, typeof item.copy === 'string');
         // Snapshot handles describe the same image. Preserve its durable URL after restoring
         // the inline cache; replacing an image elsewhere must clear the previous URL.
         if (item.previewMedia && node.matches('.image-node')) {
@@ -13881,12 +14414,17 @@ return {box:null,refresh(){},dispose(){}};
         // `?project=` 又会让 `loadProject` 整个跳过 localStorage），所以对
         // 「Agent 生成图」这类只有 previewMedia 的节点，过去刷新后是一张**空白卡**。
         // 现在直接用 `/media/` 静态文件渲染 —— 比回源取 base64 还快。
-        setMediaNodeImageUrl(node, item.previewMedia, item.previewName || '', item.previewAsset || '');
+        setMediaNodeImageUrl(node, item.previewMedia, item.previewName || '', item.previewAsset || '', item.mediaPrompt === null ? '' : undefined, typeof item.copy === 'string');
       } else if (item.previewAsset && preview && !preview.dataset.previewData) {
         node.dataset.previewAsset = item.previewAsset;
-        queuePreviewAssetRestore(node, item.previewAsset, item.previewName || '');
+        queuePreviewAssetRestore(node, item.previewAsset, item.previewName || '', typeof item.copy === 'string');
       }
       if (item.previewName && node.matches('.image-node')) node.dataset.previewName = item.previewName;
+      if (Number.isFinite(item.trimStart) && Number.isFinite(item.trimEnd) && item.trimEnd > item.trimStart && item.trimStart >= 0) {
+        node.dataset.trimStart = String(item.trimStart);
+        node.dataset.trimEnd = String(item.trimEnd);
+      }
+      if (item.videoTool === 'depth') markDepthOutput(node);
       if (node.dataset.node === 'output') {
         const status = item.jobStatus || ((item.generated || item.videoUrl) ? 'completed' : '');
         if (item.jobId) node.dataset.jobId = item.jobId;
@@ -13894,10 +14432,10 @@ return {box:null,refresh(){},dispose(){}};
         if (item.jobError) node.dataset.jobError = item.jobError;
         if (status === 'completed') {
           node.dataset.generated = 'true';
-          if (item.videoUrl) setOutputVideoPreview(node, item.videoUrl);
+          if (item.videoUrl) setOutputVideoPreview(node, item.videoUrl, item.previewMedia || '');
           preview?.classList.add('generated');
           const stateText = node.querySelector('.output-state');
-          if (stateText) stateText.textContent = item.videoUrl ? '生成完成 · 右键菜单可放大播放' : '已完成，但供应商未返回视频地址';
+          if (stateText) stateText.textContent = item.videoUrl ? '生成完成 · 右键菜单可放大播放' : '成片尚未取回 · 打开预览可重试';
           const pill = node.querySelector('.status-pill');
           if (pill) { pill.textContent = '已完成'; pill.className = 'status-pill ready'; }
           const time = node.querySelector('.node-time');
@@ -13914,10 +14452,15 @@ return {box:null,refresh(){},dispose(){}};
         }
       }
       // 模型卡即生成卡：刷新后把成片/失败状态还原到模型卡的预览区。
-      if (node.dataset.node === 'model' && (item.videoUrl || item.jobStatus === 'failed')) {
-        const modelPreview = node.querySelector('.media-preview');
-        void modelPreview;
+      if (node.dataset.node === 'model' && (item.videoUrl || ['failed', 'completed'].includes(item.jobStatus))) {
+        if (item.jobId) node.dataset.jobId = item.jobId;
+        node.dataset.jobStatus = item.jobStatus || 'completed';
         if (item.videoUrl) setModelNodeVideo(node, item.videoUrl);
+        else if (item.jobStatus === 'completed') {
+          node.dataset.generated = 'true';
+          node.querySelector('.media-preview')?.classList.add('generated');
+          setModelJobState(node, '成片尚未取回 · 打开预览可重试');
+        }
         else setModelJobState(node, '生成失败 · 可右键重试');
       }
     }
@@ -13955,6 +14498,9 @@ return {box:null,refresh(){},dispose(){}};
     }
 
     function applyGraph(project) {
+      state.roleSnapshots = new Map();
+      restoreRoleSnapshots(project.roleSnapshots);
+      for (const item of project.nodes || []) restoreRoleSnapshots(item?.roleSnapshots);
       if (!Array.isArray(project.nodes) || !project.nodes.length) return;
       state.isRestoring = true;
       // Reuse the element that already represents this node id. Rebuilding every node from its type
@@ -14392,7 +14938,7 @@ return {box:null,refresh(){},dispose(){}};
         left: Math.round(options.near?.left ?? ((-state.panX + 70) / (state.zoom || 1))),
         top: Math.round(options.near?.top ?? ((-state.panY + 70) / (state.zoom || 1))),
       };
-      const node = appendNode(type, { ...spot, title: options.title, copy: options.copy });
+      const node = appendNode(type, { ...spot, id:options.id, title: options.title, copy: options.copy });
       if (!node) return null;
       state.nodeCount = $$('.flow-node').length; updateNodeCount(); closeModal(); selectNode(node);
       // 给了 near 的调用方（预设类工具）尊重它的落点，只把视角平滑跟过去 —— 但**位置被占了
@@ -14472,12 +15018,14 @@ const nodeTypeNames = { prompt: '文本节点', image: '图片节点', audio: '�
         frame.style.top = `${minY - pad - (isGenerator ? 0 : 30)}px`;
         frame.style.width = `${maxX - minX + pad * 2}px`;
         frame.style.height = `${maxY - minY + pad * 2 + (isGenerator ? 0 : 30)}px`;
-        frame.innerHTML = `<span class="port port-left group-frame-port" data-port="in" title="输入端"></span><span class="port port-right group-frame-port" data-port="out" title="输出端"></span><div class="group-frame-head"><span class="group-frame-name">${escapeHtml(group.name || '分组')}</span><span class="group-frame-count">${members.length} 节点</span><span class="group-frame-actions"><button type="button" data-group-action="${group.collapsed ? 'expand' : 'collapse'}" title="${group.collapsed ? '展开' : '折叠'}">${group.collapsed ? '▸' : '▾'}</button><button type="button" data-group-action="ungroup" title="解组">✕</button></span></div>`;
+        const countLabel = group.showNodeCount === false ? '' : `<span class="group-frame-count">${members.length} 节点</span>`;
+        frame.innerHTML = `<span class="port port-left group-frame-port" data-port="in" title="输入端"></span><span class="port port-right group-frame-port" data-port="out" title="输出端"></span><div class="group-frame-head"><span class="group-frame-name">${escapeHtml(group.name || '分组')}</span>${countLabel}<span class="group-frame-actions"><button type="button" data-group-action="${group.collapsed ? 'expand' : 'collapse'}" title="${group.collapsed ? '展开' : '折叠'}">${group.collapsed ? '▸' : '▾'}</button><button type="button" data-group-action="ungroup" title="解组">✕</button></span></div>`;
         stage.insertBefore(frame, stage.firstChild);
       }
       // 框体几何一变就同步工具栏位置。收敛在这里（而不是每个调用点各写一次 syncNodeOverlays），
       // 否则拖动块组 / 排列 / 自动布局 / 复制成组时，工具栏会留在原地和框体"分叉"开。
       positionGroupToolbar();
+      renderMiniMap();
     }
     function createGroupFromSelection() {
       const selected = $$('.flow-node').filter(node => node.classList.contains('selected'));
@@ -14941,6 +15489,8 @@ const nodeTypeNames = { prompt: '文本节点', image: '图片节点', audio: '�
 
     function applyNodeLayers(list) {
       list.forEach((node, index) => { node.style.zIndex = String(NODE_LAYER_BASE + index); });
+      // Keep stage-anchored controls above even the frontmost card in a large graph.
+      stage.style.setProperty('--cf-above-nodes', String(NODE_LAYER_BASE + list.length));
     }
 
     // 置于顶层；新建 / 复制出来的节点也走这里，否则显式层级一引入，新卡片就会被之前置顶过的卡片盖住。
@@ -14996,6 +15546,21 @@ const nodeTypeNames = { prompt: '文本节点', image: '图片节点', audio: '�
         if (chip) chip.textContent = String(count);
       });
       delete menu.dataset.groupId;
+      menu.querySelectorAll('[data-node-action="role-refresh"]').forEach(button => button.remove());
+      const bindings = nodeRoleSnapshots(node);
+      if (bindings.length) {
+        const liveRoles = characterStorage.get();
+        const added = new Set();
+        for (const snapshot of bindings) {
+          const role = liveRoles.find(r => r.id === snapshot.roleId);
+          if (!role || canvasRoleVersion(role) === snapshot.version || added.has(role.id)) continue;
+          added.add(role.id);
+          const button = document.createElement('button');
+          button.type = 'button'; button.dataset.nodeAction = 'role-refresh'; button.dataset.updateRoleId = role.id;
+          button.textContent = '有新版本 · 更新画布中的「' + role.name + '」';
+          menu.querySelector('[data-node-action="duplicate"]')?.before(button);
+        }
+      }
       if (node.dataset.node === 'image') {
         const hasImage = nodeHasUsableImage(node);
         const previewBtn = menu.querySelector('[data-node-action="image-preview"]');
@@ -15024,7 +15589,7 @@ const nodeTypeNames = { prompt: '文本节点', image: '图片节点', audio: '�
           const canDownload = status === 'completed' && Boolean(videoUrl);
           downloadBtn.hidden = false;
           downloadBtn.disabled = !canDownload;
-          downloadBtn.title = canDownload ? '下载视频' : (status === 'completed' ? '供应商未返回视频地址' : '视频生成完成后才能下载');
+          downloadBtn.title = canDownload ? '下载视频' : (status === 'completed' ? '成片尚未取回，请打开放大预览' : '视频生成完成后才能下载');
           downloadBtn.setAttribute('aria-disabled', String(!canDownload));
         }
         if (retryBtn) retryBtn.hidden = status !== 'failed' || !node.dataset.jobId;
@@ -15254,9 +15819,23 @@ const nodeTypeNames = { prompt: '文本节点', image: '图片节点', audio: '�
       const sourceLabel = nodeLabelEl(node);
       const copyLabel = nodeLabelEl(copy);
       if (sourceLabel && copyLabel) copyLabel.textContent = `${sourceLabel.textContent.trim()} 副本`;
+      if (node.dataset.generationProfile) copy.dataset.generationProfile = node.dataset.generationProfile;
       const sourceCopy = node.querySelector('.node-copy');
       const targetCopy = copy.querySelector('.node-copy');
       if (sourceCopy && targetCopy) targetCopy.textContent = sourceCopy.textContent;
+      if (node.dataset.mediaPromptAbsent) {
+        copy.dataset.mediaPromptAbsent = '1';
+        delete copy.dataset.mediaPrompt;
+      } else if (type === 'image' || type === 'model' || type === 'output') {
+        copy.dataset.mediaPrompt = mediaNodePrompt(node);
+      }
+      for (const key of ['roleSnapshotRef','roleSnapshotSlot','roleVoice']) if (node.dataset[key] !== undefined) copy.dataset[key] = node.dataset[key];
+      if (node.dataset.mediaPromptMentions) copy.dataset.mediaPromptMentions = node.dataset.mediaPromptMentions;
+      if (type === 'script' && node.dataset.scriptTheme !== undefined) copy.dataset.scriptTheme = node.dataset.scriptTheme;
+      if (type === 'prompt') {
+        copy.dataset.textInstruction = node.dataset.textInstruction || '';
+        applyNodeContent(copy, { copy: textNodeText(node), copyHtml: promptCopyHtml(node) });
+      }
       // 图片预览与配乐引用跟着走，否则复制出来是一张空卡/无声节点。
       const sourcePreview = node.querySelector('.media-preview');
       const targetPreview = copy.querySelector('.media-preview');
@@ -16287,6 +16866,7 @@ const nodeTypeNames = { prompt: '文本节点', image: '图片节点', audio: '�
       const protocol = model.videoProtocol || 'openai-video';
       const workflow = model.videoProfile === 'sanyuan-video';
       const zhongheng = model.videoProfile === 'zhongheng-video';
+      const localVideo = zhongheng || model.videoLocalReferences;
       const docByName = new Map(definitions.map(field => [field.name, field]));
       const rowName = row => row.field || row.key;
       function inputKind(name) {
@@ -16354,7 +16934,7 @@ const nodeTypeNames = { prompt: '文本节点', image: '图片节点', audio: '�
       function references(settings) {
         const mode = settings.referenceMode || modeField.default;
         const slot = (key, label, kind, min, max) => ({key, label, kinds:[kind], min, max,
-          urlOnly:kind === 'video' && !zhongheng, allowLink:kind === 'video',
+          urlOnly:kind === 'video' && !localVideo, allowLink:kind === 'video',
           ...(kind === 'video' && zhongheng ? {maxBytes:25 * 1024 * 1024} : {})});
         const first = slot('firstFrame', '首帧', 'image', 1, 1);
         if (mode === 'singleImage2video') return [first];
@@ -16510,7 +17090,7 @@ const nodeTypeNames = { prompt: '文本节点', image: '图片节点', audio: '�
           if (items.length > slot.max) return slot.label + '最多可添加 ' + slot.max + ' 个。';
           for (const item of items) {
             if (!slot.kinds.includes(item.kind)) return '请重新选择' + slot.label + '。';
-            if (item.kind === 'video' && !(zhongheng && localMedia(item.url))
+            if (item.kind === 'video' && !(localVideo && localMedia(item.url))
                 && (!/^https?:\/\//i.test(item.url) || item.url.length > 4000)) return '参考视频需要可公开访问的 HTTP(S) 直链。';
             if (item.kind === 'audio' && !localMedia(item.url) && !/^(https?:\/\/|data:audio\/)/i.test(item.url)) return '请提供可读取的参考音频。';
             if (item.url?.startsWith('data:') && item.url.length > 5000000) return slot.label + '过大，请压缩后再试。';
@@ -16837,6 +17417,298 @@ const nodeTypeNames = { prompt: '文本节点', image: '图片节点', audio: '�
       };
     }
 
+    async function roleImageModels(headers) {
+      const [specs, catalog] = await Promise.all([
+        loadModelSpecs(), api('/api/ai/models', {headers, throwOnError:true}),
+      ]);
+      if (!specs) throw Error('图片模型参数加载失败，请重新打开编辑器。');
+      return catalog?.models?.t2i || [];
+    }
+
+    async function roleGenerationReference(value) {
+      if (typeof value !== 'string' || !value.trim()) throw Error('角色参考图片为空，请重新选择。');
+      if (/^data:image\/[\w.+-]+;base64,/i.test(value)) return value;
+      let url = new URL(value, document.baseURI);
+      if (url.protocol === 'file:') {
+        // Portable projects can contain the old absolute file URL of a bundled role.
+        const path = url.pathname.match(/\/((?:role-library|_libtv_roles)\/web\/[^/]+|assets\/.+)$/i);
+        if (!path) throw Error('请通过上传按钮重新选择本机参考图。');
+        if (!/^https?:$/.test(location.protocol)) throw Error('请在 CanvasFlow 应用中打开角色编辑器后生成。');
+        url = new URL('/' + path[1], location.origin);
+      }
+      if (url.username || url.password || !['http:', 'https:', 'blob:'].includes(url.protocol)) throw Error('参考图片地址无效，请重新选择。');
+      if (url.protocol !== 'blob:' && url.origin !== location.origin) return url.href;
+      if (url.pathname.startsWith('/media/')) return url.pathname + url.search;
+      const data = await fetchMediaUrlAsDataUrl(url.href);
+      if (!/^data:image\/[\w.+-]+;base64,/i.test(data)) throw Error('参考图片读取失败，请重新选择。');
+      return data;
+    }
+
+    async function storeRoleImage(data, name) {
+      const file = dataUrlToFile(data, name);
+      if (!file?.type.startsWith('image/')) throw Error('图片数据无效，请重新选择。');
+      const media = await uploadMediaFile(file, {throwOnError:true});
+      if (!media?.url?.startsWith('/media/')) throw Error('图片尚未保存到本机。');
+      return media.url;
+    }
+
+    async function generateRoleImage({modelId, prompt = '', referenceImages = [], slot = 0, preview, roleStyling, isActive, onProgress, onSubmitted, signal, resumeJobId, beforeSubmit, prepareOnly=false, referenceCache}) {
+      const views = [
+        '生成同一角色的单人正面全身立绘，从头顶到双脚完整入镜，背景干净，不拼图。',
+        preview === 'half' ? '生成单人正面半身肖像，取景从头顶到腰部，背景干净。' : '生成单人正面面部特写，清晰呈现五官、发型与肤质，背景干净。',
+        '生成三行三列的表情九宫格，每格都是同一人物同一角度的面部特写，依次表现平静、微笑、大笑、惊讶、愤怒、忧伤、担忧、疑惑和坚定，保持发型、五官与服装一致。',
+        '生成同一角色的横版人物设定呈现板，包含全身正面、侧面、背面以及脸部和服装细节。',
+      ];
+      if (!Number.isInteger(slot) || !views[slot]) throw Error('请选择有效的角色图位。');
+      const headers = {...workspaceHeader()}, user = currentUser()?.id, epoch = navigationEpoch, projectId=state.projectId;
+      const active = () => !signal?.aborted && (!isActive || isActive()) && epoch === navigationEpoch && user === currentUser()?.id && projectId===state.projectId
+        && headers['X-Workspace-Id'] === workspaceHeader()['X-Workspace-Id'];
+      const checkActive = () => { if (!active()) throw Error('角色编辑已结束。'); };
+      if (resumeJobId) {
+        const existing=await api('/api/jobs/'+encodeURIComponent(resumeJobId),{headers,throwOnError:true});
+        checkActive();
+        if (!existing?.job) throw Error('上次提交的角色任务暂时无法读取，请稍后再试。');
+        return collect({jobId:resumeJobId,job:existing.job});
+      }
+      if (!modelId) throw Error('请在供应商设置中启用图片模型。');
+      if (!prompt.trim() && !referenceImages.length) throw Error('请填写角色外观或添加参考图。');
+      const models = await roleImageModels(headers);
+      checkActive();
+      const model = models.find(item => item.id === modelId);
+      if (!model) throw Error('所选图片模型已停用，请重新选择。');
+      const adapter = createStudioImageAdapter(model);
+      const settings = {};
+      const aspectField = adapter.fields.find(f => f.key === 'aspectRatio');
+      const resolutionField = adapter.fields.find(f => f.key === 'resolution');
+      const ratios = slot === 3 ? ['16:9', '3:2', '4:3'] : slot === 2 ? ['1:1'] : ['3:4', '2:3', '9:16'];
+      for (const ratio of ratios) {
+        const resolution = resolutionField?.options?.find(o => resolutionMatchesAspect(o.value, ratio));
+        if (aspectField && !aspectField.options.some(o => o.value === ratio)) continue;
+        if (/^\d+x\d+$/i.test(resolutionField?.default || '') && !resolution) continue;
+        if (aspectField) settings.aspectRatio = ratio;
+        if (resolution) settings.resolution = resolution.value;
+        break;
+      }
+      const description = [
+        prompt.trim(), roleStyling?.brief && '用户本次造型要求：'+roleStyling.brief,
+        views[slot],
+      ].filter(Boolean).join('\n');
+      const refs = {referenceImages:referenceImages.map(url => ({kind:'image', url}))};
+      const reason = adapter.validate(settings, refs, description);
+      if (reason) throw Error(reason);
+      async function durableReference(source) {
+        let url = await roleGenerationReference(source);
+        if (url.startsWith('/media/')) return url.split('?')[0];
+        if (!url.startsWith('data:')) url = await fetchMediaUrlAsDataUrl(url);
+        checkActive();
+        return storeRoleImage(url,'角色派生参考图');
+      }
+      const prepared = await Promise.all(referenceImages.map(source=>{
+        if (!prepareOnly) return roleGenerationReference(source);
+        if (!referenceCache) return durableReference(source);
+        if (!referenceCache.has(source)) referenceCache.set(source,durableReference(source));
+        return referenceCache.get(source);
+      }));
+      checkActive();
+      // Server JSON bodies are limited to 8 MB. Move large inline references to original binary media.
+      if (prepared.reduce((total, url) => total + url.length, 0) > 7_000_000) {
+        for (let i = 0; i < prepared.length; i++) {
+          if (prepared[i].startsWith('data:')) prepared[i] = await storeRoleImage(prepared[i], '角色参考图');
+          checkActive();
+        }
+      }
+      refs.referenceImages = prepared.map(url => ({kind:'image', url}));
+      if (projectId && state.projectIsDraft) {
+        state.draftPersistenceRequested=true;
+        if (await saveProject()!==true) throw Error('未能保存角色任务所属画布，请稍后重试。');
+        checkActive();
+      }
+      const payload = {modelId, prompt:description, ...adapter.payload(settings, refs, description), asyncTask:true, projectId};
+      if (roleStyling && roleStyling.name!=='不使用技能') {
+        const skillId=window.CanvasFlowRoleStyling.skillId(roleStyling.name);
+        if (!skillId) throw Error('所选造型技能不可用，请重新选择。');
+        payload.roleStyling={skillId};
+      }
+      if (slot === 3) payload.presetScene = 'character_setting_sheet';
+      if (prepareOnly) return payload;
+      await beforeSubmit?.();
+      checkActive();
+      const submitted = await api('/api/ai/image-generate', {method:'POST', headers, throwOnError:true, body:JSON.stringify(payload)})
+        .catch(error=>{
+          if (!error.status && active()) throw Error('提交没有收到任务回执。请先在生成历史中核对，再决定是否重新生成。');
+          throw error;
+        });
+      const receipt=submitted?.jobId || submitted?.job?.id;
+      if (receipt) onSubmitted?.(receipt);
+      return collect(submitted);
+      async function collect(submitted) {
+        const jobId = submitted?.jobId || submitted?.job?.id;
+        const cancel = () => {
+          if(jobId && !['completed','failed'].includes(submitted?.job?.status) && currentUser()?.id===user) {
+            void api('/api/jobs/'+encodeURIComponent(jobId)+'/cancel',{method:'POST',headers,throwOnError:true,body:'{}'})
+              .catch(()=>showToast('已离开角色编辑器。供应商未确认取消，可在生成历史中查看任务状态。'));
+          }
+        };
+        if(signal?.aborted)cancel();
+        checkActive();
+        if (submitted?.job?.status === 'failed') {onProgress?.(submitted.job);throw Error(submitted.job.error || '生成角色图片失败。');}
+        let job = submitted?.job;
+        if (jobId && job?.status !== 'completed') {
+          signal?.addEventListener('abort',cancel,{once:true});
+          try {job = await pollGenerationJob(jobId, {headers, isActive:active, onProgress, mediaOnly:true})}
+          finally {signal?.removeEventListener('abort',cancel)}
+          checkActive();
+        }
+        if (job?.imageUrl?.startsWith('/media/')) return job.imageUrl;
+        const data = job?.imageData || submitted?.image;
+        if (/^data:image\/[\w.+-]+;base64,/i.test(data || '')) {
+          const url = await storeRoleImage(data, '角色图片');
+          checkActive();
+          return url;
+        }
+        throw Error(job?.imagePersistError || '没有收到已保存的角色图片，请查看图片生成记录。');
+      }
+    }
+
+    window.CanvasFlowRoleGeneration = {
+      async models() {
+        const models = await roleImageModels(workspaceHeader());
+        const selected = models.find(model => model.id === t2iModelId()) || models[0];
+        return models.map(model => ({id:model.id, name:model.name || model.model || model.id,
+          isDefault:model === selected, minReferences:model.imageReferences?.min || 0, maxReferences:model.imageReferences?.max ?? null}));
+      },
+      generate: generateRoleImage,
+    };
+
+    function roleVoiceModel(model) {
+      if (!model) return null;
+      const contract = currentModelContract(model);
+      const rows = state.modelSpecs?.audio?.[model.model] || state.modelSpecs?.audio?.[model.name] || [];
+      const params = contract?.params || rows.map(r => ({name:r.field || r.key,options:r.options}));
+      const style = params.find(p => ['instructions','style_prompt','voice_description'].includes(p.name));
+      const speaker = params.find(p => AUDIO_VOICE_FIELD_RE.test(p.name));
+      const upstream = String(model.model || '').toLowerCase();
+      const directed = /^(?:gem-3\.1-tts|gemini-.*-tts)$/.test(upstream);
+      const field = style?.name || (!model.mediaGenerate && upstream.startsWith('gpt-4o-mini-tts') ? 'instructions' : '');
+      if (model.mediaGenerate && params.length && !speaker && !directed && !field) return null;
+      return {...model, field, directed, voiceField:speaker?.name, design:!!(directed || field || model.roleVoiceRegistration),
+        defaultVoice:contract?.voices?.[0]?.voice_id || speaker?.options?.[0]?.value};
+    }
+    function roleVoicePayload(model, voice, description, line) {
+      return {modelId:model.id, mode:'speech', voice,
+        text:model.directed && description ? '声音演绎要求：' + description + '\n请只朗读以下台词：\n' + line : line,
+        spec:{...(model.mediaGenerate && model.voiceField ? {[model.voiceField]:voice} : {}),
+          ...(model.field && description ? {[model.field]:description} : {})}};
+    }
+    function readRoleVoice(json) {
+      if (typeof json !== 'string' || !json) return null;
+      try {
+        const v = JSON.parse(json);
+        if (!v || typeof v.name !== 'string') return null;
+        if (window.roleStudioVoicePreset?.(v.id)) return v;
+        if (!v.profile?.modelId || v.profile.kind === 'preview') return null;
+        const direct = v.source === 'provider' || v.profile.kind === 'registered';
+        const identifier = direct ? v.profile.voice : v.profile.description;
+        return typeof identifier === 'string' && identifier.trim() ? v : null;
+      } catch { return null; }
+    }
+    function canvasRoleVoicePayload(voice, line) {
+      const profile = voice.profile;
+      const model = roleVoiceModel(profile?.modelId ? state.audioModels.find(m => m.id === profile.modelId) : currentAudioModel());
+      if (!model) throw Error(profile ? '角色音色所用的语音模型已停用，请重新接入或改选音色。'
+        : '角色预置声线需要支持风格指令的语音模型，请在配音模型菜单中选择。');
+      const preset = window.roleStudioVoicePreset?.(voice.id);
+      if (voice.source === 'provider' || profile?.kind === 'registered') {
+        if (profile.kind === 'registered' && model.roleVoiceRegistration !== profile.provider) throw Error('此角色已注册的供应商与当前模型配置不一致。');
+        return roleVoicePayload(model, profile.voice, '', line);
+      }
+      if (!model.design || model.roleVoiceRegistration) throw Error('此角色声线使用声音描述，请接入支持风格指令的语音模型或选择供应商音色。');
+      const base = profile?.voice || (model.directed ? (model.defaultVoice || 'Zephyr') : preset?.base) || 'alloy';
+      return roleVoicePayload(model, base, profile?.description || preset?.description || '', line);
+    }
+    window.createRoleVoiceService = function (isOpen) {
+      const headers = {...workspaceHeader()}, user = currentUser()?.id;
+      const projectId = state.projectId || '';
+      const active = () => isOpen() && user === currentUser()?.id
+        && headers['X-Workspace-Id'] === workspaceHeader()['X-Workspace-Id'] && projectId === (state.projectId || '');
+      const check = () => { if (!active()) throw Error('角色编辑已结束。'); };
+      const request = async (path, options = {}) => {
+        check();
+        const result = await api(path, {...options, headers, throwOnError:true});
+        check();
+        if (!result) throw Error('本地服务不可用。');
+        return result;
+      };
+      const prefix = '角色音色 · ';
+      const fromAsset = asset => ({id:asset.id, name:asset.name.slice(prefix.length), url:asset.mediaUrl,
+        source:'mine', profile:asset.roleVoiceProfile, jobId:asset.roleVoiceJobId, ...asset.roleVoiceMetadata});
+      let catalogModels = [];
+      async function models() {
+        const catalog = await request('/api/ai/models');
+        await loadModelSpecs();
+        check();
+        catalogModels = (catalog.models?.tts || []).map(roleVoiceModel).filter(Boolean);
+        return catalogModels;
+      }
+      return {
+        models,
+        async providerPage(modelId, page, q, filters) {
+          const params = new URLSearchParams({modelId, page:String(page), q});
+          for (const [field, values] of Object.entries(filters)) for (const value of values) params.append(field, value);
+          const catalog = await request('/api/ai/voices?' + params.toString());
+          if (catalog.error && !catalog.voices?.length) throw Error('无法读取该模型的音色目录。' + catalog.error);
+          return {...catalog, voices:(catalog.voices || []).map(v => ({...v, id:JSON.stringify([modelId,v.id]),
+            source:'provider', url:/^https?:\/\//i.test(v.demo) || /^\/media\//.test(v.demo) ? v.demo : '',
+            profile:{modelId, voice:v.id}}))};
+        },
+        async mine() {
+          const result = await request('/api/assets');
+          return (result.assets || []).filter(a => a.kind === 'audio' && !a.shared && a.name?.startsWith(prefix) && a.mediaUrl).map(fromAsset).reverse();
+        },
+        async history(offset=0) {
+          const scope = projectId ? '&projectId='+encodeURIComponent(projectId) : '&unassignedOnly=1';
+          const result = await request('/api/jobs?kind=audio&view=role-voices&limit=50&offset='+offset+scope);
+          const entries = await Promise.all((result.jobs || []).map(async job => {
+            if (job.status === 'running' || job.status === 'queued') {
+              job = (await request('/api/jobs/' + encodeURIComponent(job.id))).job || job;
+            }
+            return {id:job.id, name:job.roleVoiceName || job.audioName || '项目音频', profile:job.roleVoiceProfile,
+              url:job.audioUrl, status:job.status, error:job.error, createdAt:job.createdAt,
+              description:job.roleVoiceProfile?.description || job.prompt || '', progress:job.progress};
+          }));
+          return {entries,total:result.total || 0};
+        },
+        async save(name, url, jobId, metadata) {
+          if (!/^\/media\/[\w.-]+$/.test(url)) throw Error('音色文件尚未保存到本机。');
+          const result = await request('/api/assets', {method:'POST', body:JSON.stringify({
+            kind:'audio', name:prefix + name, mediaId:url.slice(7), origin:'generated', roleVoiceJobId:jobId, roleVoiceMetadata:metadata,
+          })});
+          if (!result.asset) throw Error('音色保存失败。');
+          return fromAsset(result.asset);
+        },
+        async generate(modelId, description, line, roleVoiceName, baseVoice) {
+          const model = catalogModels.find(item => item.id === modelId && item.design);
+          if (!model) throw Error('请在供应商设置中接入支持声音描述的语音模型。');
+          const selected = currentAudioModel()?.id === modelId ? audioVoiceId() : '';
+          const voice = baseVoice || model.defaultVoice || selected || (model.directed ? 'Zephyr' : 'alloy');
+          const sampleText = model.roleVoiceRegistration ? '你好，很高兴认识你。今天想和你聊聊接下来的计划。我们可以先从眼前的小事开始，慢慢展开新的故事。走过街角的时候，记得看看橱窗里的倒影，也听听身边人的声音。等到太阳落山，我们再回到这里，分享一路上遇见的风景，以及那些值得珍藏的瞬间。' : line;
+          const submitted = await request('/api/ai/tts', {method:'POST', body:JSON.stringify({
+            ...roleVoicePayload(model, voice, description, sampleText), asyncTask:true, projectId:projectId || null, roleVoiceName, roleVoiceDescription:description,
+          })});
+          let job = submitted.job;
+          if (job?.status === 'failed') throw Error(job.error || '声音生成失败。');
+          if (submitted.jobId && job?.status !== 'completed') {
+            job = await pollGenerationJob(submitted.jobId, {headers, kind:'audio', isActive:active, mediaOnly:true});
+            check();
+          }
+          if (!job?.audioUrl?.startsWith('/media/')) throw Error(job?.audioPersistError || '没有收到已保存的音频文件。');
+          if (model.roleVoiceRegistration && !job.roleVoiceProfile?.previewId) job=(await request('/api/jobs/'+encodeURIComponent(job.id||submitted.jobId))).job;
+          return {id:job.id || submitted.jobId, url:job.audioUrl, status:'completed', name:job.roleVoiceName || roleVoiceName,
+            profile:job.roleVoiceProfile || {modelId, voice, description}};
+        },
+      };
+    };
+
     let box3DStarting=false;
     async function box3DEditor(node, options={}) {
       const projectId=state.projectId,headers=JSON.stringify(workspaceHeader());
@@ -17070,7 +17942,7 @@ const nodeTypeNames = { prompt: '文本节点', image: '图片节点', audio: '�
       state.lastRefsSig = null;
       // The canvas must be visible before the graph is applied, otherwise ports measure 0x0 and edges land at the origin.
       openCanvas(); updateTransform();
-      if (Array.isArray(project.nodes) && project.nodes.length) applyGraph(project); else resetCanvasNodes();
+      if (Array.isArray(project.nodes) && project.nodes.length) applyGraph(project); else resetCanvasNodes(project.roleSnapshots);
       if (Array.isArray(project.edges)) setGraphEdges(project.edges);
       $('#projectName').textContent = state.projectName; updateNodeCount(); resetHistoryBaseline();
       window.CanvasFlowConnections?.draw?.();
@@ -17162,7 +18034,7 @@ const nodeTypeNames = { prompt: '文本节点', image: '图片节点', audio: '�
       // 撤销可能改掉了当前选中节点的文案；不同步的话 Dock 里还留着旧文本，敲一个键就把撤销吃掉了。
       const activeNode = $$('.flow-node').find(item => item.dataset.nodeId === state.activeNodeId);
       if (activeNode) syncInspectorToNode(activeNode);
-      else { state.modelPrompt = ''; if (promptInput) promptInput.value = ''; renderPromptHighlight(); }
+      else { state.modelPrompt = snapshot.modelPrompt || ''; if (promptInput) promptInput.value = state.modelPrompt; renderPromptHighlight(); }
     }
 
     function undo() {
@@ -17531,8 +18403,9 @@ authenticatedUser=user; applyIdentity();
 
     function applyCanvasPrefsFromSettings(prefs) {
       const value = prefs || window.CanvasFlowSettings?.canvasPrefs?.() || {};
-      const miniMap = $('.mini-map');
-      if (miniMap) miniMap.hidden = value.miniMap === false;
+      const showMiniMap = value.miniMap !== false;
+      $('#canvasMiniMap').hidden = !showMiniMap;
+      $('#toggleMiniMapBtn').setAttribute('aria-expanded', String(showMiniMap));
       const grid = $('.canvas-grid');
       if (grid) grid.hidden = value.gridVisible === false;
       state.gridSnap = Boolean(value.gridSnap);
@@ -18885,12 +19758,13 @@ const active=currentWorkspace();
       promptHighlight = $('#promptHighlight') || promptHighlight;
       if (!promptInput || !promptHighlight) return;
       const source = String(promptInput.value || '');
+      const owner = $('.flow-node.selected');
+      const tokens = [];
       let output = '';
       let cursor = 0;
       source.replace(PROMPT_TOKEN_PATTERN, (full, type, label, offset) => {
-        output += escapeHtml(source.slice(cursor, offset));
         let tokenType;
-        let tokenLabel = label;
+        let tokenLabel = type === '角色' ? roleToken(label).name : label;
         if (type === '运镜') {
           tokenType = '<i class="prompt-token__ico" aria-hidden="true">🎬</i>';
         } else if (type === '表情' || type === '表情变化') {
@@ -18899,10 +19773,23 @@ const active=currentWorkspace();
         } else {
           tokenType = `<span>${escapeHtml(type)}</span>`;
         }
-        output += `<mark class="prompt-token">${tokenType}${escapeHtml(tokenLabel)}</mark>`;
-        cursor = offset + full.length;
+        tokens.push({ start: offset, end: offset + full.length, markup: tokenType + escapeHtml(tokenLabel) });
         return full;
       });
+      if (owner?.dataset.mediaPromptMentions) {
+        for (const mention of JSON.parse(owner.dataset.mediaPromptMentions)) {
+          const ref = $(`[data-node-id="${CSS.escape(mention.nodeId)}"]`, stage);
+          const image = ref?.dataset.previewMedia || ref?.querySelector('.media-preview')?.dataset.previewData || '';
+          const thumbnail = /^(?:\/media\/|data:image\/|https?:\/\/)/i.test(image)
+            ? `<img class="prompt-ref-thumb" alt="" src="${escapeHtml(image)}">` : '';
+          tokens.push({ ...mention, markup: thumbnail + escapeHtml(source.slice(mention.start, mention.end)) });
+        }
+      }
+      for (const token of tokens.sort((a, b) => a.start - b.start)) {
+        if (token.start < cursor || token.end > source.length) continue;
+        output += escapeHtml(source.slice(cursor, token.start)) + `<mark class="prompt-token">${token.markup}</mark>`;
+        cursor = token.end;
+      }
       promptHighlight.classList.toggle('has-prompt-tokens', cursor > 0);
       promptHighlight.innerHTML = cursor > 0 ? output + escapeHtml(source.slice(cursor)) : '';
       syncPromptHighlightScroll();
@@ -19009,19 +19896,39 @@ const active=currentWorkspace();
     function bindPromptInput() {
       if (!promptInput || promptInput.dataset.inputBound) return;
       promptInput.dataset.inputBound = '1';
-      promptInput.addEventListener('input', () => {
+      promptInput.addEventListener('input', event => {
+        const owner = $$('.flow-node').find(item => item.dataset.nodeId === state.activeNodeId);
+        if (owner?.dataset.mediaPromptMentions && !event?.detail?.reflectOnly && !state.isRestoring) {
+          updateMediaMentionsAfterEdit(owner, promptInput.value);
+        }
         // 说明文字跟着输入内容走：一写东西就收起来（胶囊本身**常驻**，不因输入而消失）。
         syncPresetDescVisibility();
         renderPromptHighlight();
         const counter = $('#charCount');
         if (counter) counter.textContent = `${promptInput.value.length} 字`;
         if (state.isRestoring) return;
-        const owner = $$('.flow-node').find(item => item.dataset.nodeId === state.activeNodeId);
+        const nowEmpty = !promptInput.value.trim();
+        if (nowEmpty !== lastPromptEmpty) {
+          lastPromptEmpty = nowEmpty;
+          syncVideoGenModeState();
+        }
+        if (event?.detail?.reflectOnly) return;
         const copy = owner?.querySelector('.node-copy');
         // 自带提示词编辑区的节点（文本 / 脚本）在节点内有独立输入框，
         // 底部输入框不回写它们——回写会把节点里已有的文案清掉。
         const hasLocalPromptField = Boolean(owner && { prompt: 1, script: 1 }[owner.dataset.node]);
-        if (owner?.dataset.node === 'prompt') {
+        if (owner && ['image', 'output', 'model'].includes(owner.dataset.node)) {
+          if (owner.dataset.mediaPrompt !== promptInput.value) {
+            delete owner.dataset.mediaPromptAbsent;
+            owner.dataset.mediaPrompt = promptInput.value;
+            scheduleSave();
+          }
+        } else if (owner?.dataset.node === 'script') {
+          if (owner.dataset.scriptTheme !== promptInput.value) {
+            owner.dataset.scriptTheme = promptInput.value;
+            scheduleSave();
+          }
+        } else if (owner?.dataset.node === 'prompt') {
           if ((owner.dataset.textInstruction || '') !== promptInput.value) {
             owner.dataset.textInstruction = promptInput.value;
             scheduleSave();
@@ -19030,17 +19937,6 @@ const active=currentWorkspace();
         else if (!copy && state.modelPrompt !== promptInput.value) {
           state.modelPrompt = promptInput.value;
           scheduleSave();
-        }
-        // ★★★ r833：提示词本身是**混参类模式（全能参考 / 超长视频）与文生视频的合法输入之一**，
-        //   所以「有/无提示词」一翻转就必须重算模式闸门 —— `syncVideoGenModeState()` 只挂在
-        //   「选中节点 / 连线变化 / 改设置」上，**没有挂在输入上**。
-        //   漏了它的症状：选中一个空视频节点（按钮因「文生视频需要填写提示词」被禁）→ 再打字 →
-        //   按钮一直点不动，用户以为坏了。
-        //   ★ 只在翻转时跑（闸门只看真假，重算要遍历全画布节点），见 `lastPromptEmpty` 注释。
-        const nowEmpty = !promptInput.value.trim();
-        if (nowEmpty !== lastPromptEmpty) {
-          lastPromptEmpty = nowEmpty;
-          syncVideoGenModeState();
         }
       });
       promptInput.addEventListener('keydown', event => {
@@ -19059,6 +19955,10 @@ const active=currentWorkspace();
           && $('.flow-node.selected')?.dataset.presetScene) {
           if (removeDockPreset()) { event.preventDefault(); return; }
         }
+        if (event.key === 'Backspace' || event.key === 'Delete') {
+          const mentions = $('.flow-node.selected')?.dataset.mediaPromptMentions;
+          if (mentions && deleteTokenRangesOnKey(event, JSON.parse(mentions), { inside: true })) return;
+        }
         deleteWholeTokens(event, PROMPT_TOKEN_PATTERN);
       });
       promptInput.addEventListener('scroll', () => syncPromptHighlightScroll());
@@ -19071,6 +19971,89 @@ const active=currentWorkspace();
       $('#promptPresetChip')?.addEventListener('click', () => toggleDockPresetExpanded());
       renderPromptHighlight();
       bindAudioDock();
+    }
+    function nodeGenerationProfile(node) {
+      if (!node?.dataset?.generationProfile) return null;
+      try {
+        const profile = JSON.parse(node.dataset.generationProfile);
+        return profile?.model && Array.isArray(profile.specs) ? profile : null;
+      } catch { return null; }
+    }
+    function syncNodeProfileControls(node) {
+      const holder = $('#nodeProfileControls');
+      if (!holder) return;
+      const profile = nodeGenerationProfile(node);
+      const active = !!profile && !profile.useWorkspace;
+      $('#promptDock')?.classList.toggle('has-source-profile', active);
+      holder.hidden = !profile;
+      if (!profile) return;
+      const sound = typeof profile.audio === 'boolean' ? (profile.audio ? '有声' : '无声') : '';
+      const summary = $('#nodeProfileSummary');
+      summary.textContent = [profile.operation, profile.model, profile.mode, ...profile.specs, sound].filter(Boolean).join(' · ');
+      summary.hidden = !active;
+      const toggle = $('#nodeProfileToggle');
+      toggle.textContent = active ? '更改设置' : '使用原参数';
+      toggle.onclick = () => {
+        remember();
+        if (active) profile.useWorkspace = true;
+        else delete profile.useWorkspace;
+        node.dataset.generationProfile = JSON.stringify(profile);
+        syncDockVisibility(node);
+        syncGenerationControls();
+        scheduleSave();
+      };
+    }
+    function sourceTextModelPlan(node) {
+      const profile = nodeGenerationProfile(node);
+      if (!profile || profile.useWorkspace) return null;
+      const model = findSourceGenerationModel(profile, textModelsCache);
+      return model ? {model} : {error: '尚未接入原模型「' + profile.model + '」，可点「更改设置」选择本机模型。'};
+    }
+    function findSourceGenerationModel(profile, models) {
+      const normalize = value => String(value ?? '').trim().toLowerCase().replace(/\s+/g, '');
+      return (models || []).find(m => [m.name, m.model].some(v => normalize(v) === normalize(profile.model)));
+    }
+    function sourceVideoMode(profile, imageCount) {
+      const modes = {'全能参考':'mixed2video','首帧':'singleImage2video','首尾帧':'frames2video','文生视频':'text2video','图片参考':'image2video','视频参考':'video2video'};
+      if (profile.mode === '首尾帧' && profile.firstFrameOnly && imageCount === 1) return 'singleImage2video';
+      return modes[profile.mode];
+    }
+    function sourceGenerationPlan(node, image) {
+      const profile = nodeGenerationProfile(node);
+      if (!profile || profile.useWorkspace) return null;
+      const unsupported = detail => ({error: detail + '。可点「更改设置」选择本机参数。'});
+      if (profile.operation) return unsupported('此节点使用' + profile.model + '的' + profile.operation);
+      const normalize = value => String(value ?? '').trim().toLowerCase().replace(/\s+/g, '');
+      const models = image ? state.t2iModels : state.videoModels;
+      const model = findSourceGenerationModel(profile, models);
+      if (!model) return unsupported('尚未接入原模型「' + profile.model + '」');
+      const target = {};
+      if (!image) {
+        target.referenceMode = sourceVideoMode(profile, videoReferenceInputs(node).images);
+        if (!target.referenceMode) return unsupported('当前模型无法识别原参考模式「' + profile.mode + '」');
+        if (typeof profile.audio === 'boolean') target.generateAudio = profile.audio;
+      }
+      const quality = {'标准画质':'standard','低画质':'low','高画质':'high','超高画质':'xhigh','极致画质':'max'};
+      for (const part of profile.specs) {
+        if (/^\d+:\d+$/.test(part)) target.aspectRatio = part;
+        else if (/^\d+(?:\.\d+)?[PK]$/i.test(part)) target.resolution = part;
+        else if (/^\d+s$/.test(part)) target.duration = part.slice(0,-1);
+        else if (/^\d+[个张]$/.test(part)) target.count = part.slice(0,-1);
+        else if (quality[part]) target.quality = quality[part];
+        else if (part !== '智能模式') return unsupported('当前模型无法识别原参数「' + part + '」');
+      }
+      const adapter = image ? createStudioImageAdapter(model) : createStudioVideoAdapter(model);
+      const fields = image ? adapter.fields : adapter.fieldsFor(target);
+      for (const [key,value] of Object.entries(target)) {
+        const field = fields.find(f => f.key === key);
+        if (!field && key === 'count' && value === '1') continue;
+        if (!field || (field.options?.length && !field.options.some(o => normalize(o.value) === normalize(value)))) {
+          return unsupported('已接入的「' + profile.model + '」不支持原参数 ' + (field?.label || key) + ' ' + value);
+        }
+      }
+      const settings = image ? target : adapter.normalize(target);
+      if (!image && target.duration && Number(settings.duration) !== Number(target.duration)) return unsupported('当前模型不支持原时长 ' + target.duration + 's');
+      return {model, adapter, settings};
     }
     function modelOptionById(id) {
       // 视频模型与偏好设置 · 供应商设置注册表保持一致；未接入的旧项目 ID 显示占位而非假模型。
@@ -19169,18 +20152,25 @@ const active=currentWorkspace();
       scheduleDockQuote();
       $$('.flow-node[data-node="model"] .model-settings, .flow-node[data-node="output"] .model-settings').forEach(row => {
         const pills = row.querySelectorAll('span');
-        if (pills[0]) pills[0].textContent = settings.aspectRatio;
+        const profile = nodeGenerationProfile(row.closest('.flow-node'));
+        if (pills[0]) pills[0].textContent = profile && !profile.useWorkspace ? profile.specs.join(' · ') : settings.aspectRatio;
       });
       $$('.flow-node[data-node="model"] .model-name, .flow-node[data-node="output"] .model-name').forEach(nodeName => {
         const logo = nodeName.querySelector('.model-logo');
         const name = nodeName.querySelector('strong');
         const description = nodeName.querySelector('span:not(.chevron)');
-        if (logo) logo.textContent = model.logo;
-        if (name) name.textContent = model.name;
-        if (description && description !== name) description.textContent = `${model.description} · ${settings.duration?String(settings.duration).replace(' 秒','s'):'时长由素材决定'}`;
+        const profile = nodeGenerationProfile(nodeName.closest('.flow-node'));
+        const active = profile && !profile.useWorkspace;
+        if (logo) logo.textContent = active ? profile.model[0] : model.logo;
+        if (name) name.textContent = active ? profile.model : model.name;
+        if (description && description !== name) description.textContent = active ? (profile.mode || profile.operation || '')
+          : `${model.description} · ${settings.duration?String(settings.duration).replace(' 秒','s'):'时长由素材决定'}`;
       });
       // The preview badge used to be a hardcoded "Seedance 2.0" that contradicted the chosen model.
-      $$('.flow-node[data-node="model"] .media-preview > .media-badge, .flow-node[data-node="output"] .media-preview > .media-badge').forEach(badge => { badge.textContent = model.name; });
+      $$('.flow-node[data-node="model"] .media-preview > .media-badge, .flow-node[data-node="output"] .media-preview > .media-badge').forEach(badge => {
+        const profile = nodeGenerationProfile(badge.closest('.flow-node'));
+        badge.textContent = profile && !profile.useWorkspace ? profile.model : model.name;
+      });
     }
 
     // 输出卡标题不再按上游连线自动拼凑：新建即「视频节点」，用户改名后永久保留。
@@ -19384,6 +20374,8 @@ const active=currentWorkspace();
       }
       if (group === 'audioModel') {
         if (value === '__none') return closeChoiceMenu();
+        const node = $('.flow-node.selected[data-node="audio"]');
+        if (node?.dataset.roleVoice) { remember(); delete node.dataset.roleVoice; scheduleSave(); }
         localStorage.setItem('canvasflow-audio-model', value);
         updateAudioDockLabels();
         closeChoiceMenu();
@@ -19622,7 +20614,7 @@ const active=currentWorkspace();
       const sourceTitle = nodeLabel(origin);
       // ★ 过统一清洗：源节点若是图片节点，copy 就是「AI生成图片 · …」**结果命名** ——
       //   抄进新节点正文会让污染顺着"引用"继续传播（下游再读新节点正文就中招）。
-      const sourceCopy = sanitizePromptSource(origin.querySelector('.node-copy')?.textContent);
+      const sourceCopy = origin.dataset.mediaPrompt ?? sanitizePromptSource(textNodeText(origin));
       const derivedCopy = target.dataset.portMenuCopy || (sourceCopy ? `引用「${sourceTitle}」：${sourceCopy}` : '');
       // 标题一律用该节点类型的固定名称（之后可双击就地重命名），不再拼接「源节点 · 新节点类型」。
       const derivedTitle = target.dataset.portMenuTitle || undefined;
@@ -19751,6 +20743,15 @@ const active=currentWorkspace();
       value: `${name}，详见角色全身图、面部特写、表情九宫格与人物呈现板。`,
       images: [1, 2, 3, 4].map(slot => `${LIBTV_ROLE_IMAGE_BASE}${code}-${slot}.jpg`),
     }));
+    const officialRoleIds = new Set(LIBTV_ROLES.map(role => role.id));
+    const officialSourceIds = new Set();
+    for (const entry of window.CanvasFlowOfficialRoleAdditions || []) {
+      const id = 'libtv-' + entry.number;
+      if (!entry.sourceId || officialSourceIds.has(entry.sourceId) || officialRoleIds.has(id)) continue;
+      officialSourceIds.add(entry.sourceId);
+      officialRoleIds.add(id);
+      LIBTV_ROLES.push({id, name:entry.name, tags:entry.tags, value:entry.description, images:entry.images});
+    }
 
 
     const LIBTV_ROLES_MERGED_KEY = 'canvasflow-libtv-roles-merged';
@@ -19795,114 +20796,617 @@ const active=currentWorkspace();
     function saveLocalHiddenPresetRoles() {
       try { localStorage.setItem(HIDDEN_PRESET_ROLES_KEY, JSON.stringify([...localHiddenPresetRoles])); } catch { /* private mode */ }
     }
-    /** 拉取角色库（服务端已按账号合并好：全局 + 该账号私有的那份，另回一个 `mine` 便于前端分库）。 */
-    async function loadGlobalRoles() {
-      const data = await api('/api/preset-roles').catch(() => null);
-      presetRolesDeleted = new Set((Array.isArray(data?.deleted) ? data.deleted : []).map(String));
-      presetRoleOverrides = (data && typeof data.overrides === 'object' && data.overrides) || {};
-      presetRolesCustom = Array.isArray(data?.custom) ? data.custom : [];
-      const mine = (data && typeof data.mine === 'object' && data.mine) || {};
-      presetRolesMine = {
-        deleted: Array.isArray(mine.deleted) ? mine.deleted.map(String) : [],
-        overrides: (mine.overrides && typeof mine.overrides === 'object') ? mine.overrides : {},
-        custom: Array.isArray(mine.custom) ? mine.custom : [],
-      };
-      const globalBucket = (data && typeof data.global === 'object' && data.global) || {};
-      presetRolesGlobal = {
-        deleted: Array.isArray(globalBucket.deleted) ? globalBucket.deleted.map(String) : [],
-        overrides: (globalBucket.overrides && typeof globalBucket.overrides === 'object') ? globalBucket.overrides : {},
-        custom: Array.isArray(globalBucket.custom) ? globalBucket.custom : [],
-      };
-      return data;
+    function updateRoleBuckets(mine, globalBucket) {
+      presetRolesMine = mine || { deleted: [], overrides: {}, custom: [] };
+      presetRolesGlobal = globalBucket || { deleted: [], overrides: {}, custom: [] };
+      presetRolesDeleted = new Set([...presetRolesGlobal.deleted, ...presetRolesMine.deleted]);
+      presetRoleOverrides = { ...presetRolesGlobal.overrides, ...presetRolesMine.overrides };
+      presetRolesCustom = [...presetRolesGlobal.custom, ...presetRolesMine.custom];
     }
-    /**
-     * 把当前角色列表按作用域回写服务端（r796）。
-     *   · **官方角色库**那批（预置卡 + 管理员新增的全局卡）：
-     *       管理员 → `?scope=global`（**对所有账号**生效）；
-     *       普通用户 / VIP → `?scope=mine`（只对自己可见，别人看到的仍是官方原版）。
-     *   · **我的角色库**那批（我账号自建的卡）：一律 `?scope=mine`（账号私有）。
-     * ★★ 两个作用域**分两次 PUT** —— 服务端 `write_scoped_preset_roles` 只替换该作用域那一批，
-     *   所以"官方那批"不会把"我的那批"冲掉（反之亦然），也不会碰到别的账号的私有那份。
-     */
-    async function syncRolesToServer(list) {
-      const roles = (list || []).map(normalizeCharacter).filter(Boolean);
-      const myIds = new Set(presetRolesMine.custom.map(role => String(role?.id || '')));
-      // ★★ 只把**真的被改过**的预置卡放进覆盖层（与"官方原版"逐字段比）。
-      //   不加这道判断，任何一次保存都会把 24 张预置卡全部冻成自己的旧副本 ——
-      //   管理员之后更新官方卡，这个账号就再也受影响不到了。
-      const baseline = new Map();
-      LIBTV_ROLES.map(normalizeCharacter).forEach(role => { if (role) baseline.set(role.id, role); });
-      Object.values(presetRolesGlobal.overrides || {}).map(normalizeCharacter).forEach(role => {
-        if (role) baseline.set(role.id, role);
-      });
-      const presetOverrides = {};
-      roles.forEach(role => {
-        if (!isPresetRoleId(role.id)) return;
-        const base = baseline.get(role.id);
-        if (!base || JSON.stringify(base) !== JSON.stringify(role)) presetOverrides[role.id] = role;
-      });
-      const myCustom = roles.filter(role => !isPresetRoleId(role.id) && myIds.has(String(role.id)));
-      const globalCustom = roles.filter(role => !isPresetRoleId(role.id) && !myIds.has(String(role.id)));
-      // ① 我自己的那份：自建卡 + （非管理员的）官方卡私有改动 + 我的删除记录
-      const minePayload = {
-        deleted: [...new Set([...presetRolesMine.deleted, ...localHiddenPresetRoles])],
-        // ★ 管理员改官方卡 = 全局改动（走 ②），所以这里不再往私有覆盖层里塞一份
-        overrides: isAdminUser() ? { ...presetRolesMine.overrides } : presetOverrides,
-        custom: myCustom,
-      };
-      const mineResult = await api('/api/preset-roles?scope=mine', { method: 'PUT', body: JSON.stringify(minePayload) }).catch(() => null);
-      if (mineResult?.ok) presetRolesMine = { deleted: minePayload.deleted, overrides: minePayload.overrides, custom: myCustom };
-      else if (mineResult?.error) showToast(mineResult.message || '角色保存失败', '×');
-      // ② 官方那份：只有管理员能写
-      if (isAdminUser()) {
-        await api('/api/preset-roles?scope=global', {
-          method: 'PUT',
-          body: JSON.stringify({ deleted: [...presetRolesDeleted], overrides: presetOverrides, custom: globalCustom }),
-        }).catch(() => null);
+
+    let roleImageLineageVersion = 0;
+    async function loadGlobalRoles(throwOnError = false) {
+      const data = await api('/api/preset-roles', {throwOnError});
+      if (data?.mine && data?.global) {
+        roleImageLineageVersion = Number(data.imageLineageVersion) || 0;
+        updateRoleBuckets(data.mine, data.global);
+        if (document.querySelector('#roleLibraryModal')) { renderRoleLibraryBody(); renderRoleStrip(); }
       }
-      return mineResult;
+    }
+
+    function localRoleRecords() {
+      try {
+        const saved = JSON.parse(localStorage.getItem('canvasflow-characters') || 'null');
+        return purgeRetiredCharacters((Array.isArray(saved) ? saved : CHARACTER_SEED).map(normalizeCharacter).filter(Boolean))
+          .filter(role => !isPresetRoleId(role.id));
+      } catch { return []; }
     }
 
     const characterStorage = {
       get() {
-        let local = [];
-        try {
-          const saved = JSON.parse(localStorage.getItem('canvasflow-characters') || 'null');
-          local = Array.isArray(saved) ? saved.map(normalizeCharacter) : CHARACTER_SEED.map(normalizeCharacter);
-        } catch { local = CHARACTER_SEED.map(normalizeCharacter); }
-        // ★ 内置预置角色**不再靠"并入 localStorage"**，而是每次读的时候现拼 ——
-        //   这样管理员改了全局角色，别人一刷新就能看到（并入过一次就再也更新不了了）。
-        const builtin = LIBTV_ROLES.map(normalizeCharacter)
-          .filter(role => role && !isPresetRoleHidden(role.id))
-          .map(role => (presetRoleOverrides[role.id] ? normalizeCharacter({ ...role, ...presetRoleOverrides[role.id] }) : role));
-        // 服务端里"管理员新增的全局角色"
-        const globalCustom = presetRolesCustom
-          .map(normalizeCharacter)
-          .filter(role => role && !isPresetRoleHidden(role.id));
-        // 本机自己的角色：**排除内置预置**（那些一律以 builtin 为准，免得本地旧副本盖掉全局改动）
-        const localOnly = purgeRetiredCharacters(local.filter(Boolean)).filter(role => !isPresetRoleId(role.id));
         const merged = new Map();
-        [...builtin, ...globalCustom, ...localOnly].forEach(role => { if (role) merged.set(role.id, role); });
+        for (const item of [...LIBTV_ROLES, ...localRoleRecords(), ...presetRolesCustom]) {
+          if (!isPresetRoleHidden(item.id)) {
+            merged.set(item.id, normalizeCharacter({ ...item, ...presetRoleOverrides[item.id] }));
+          }
+        }
         return [...merged.values()];
-      },
-      set(list) {
-        try { localStorage.setItem('canvasflow-characters', JSON.stringify(list.map(normalizeCharacter))); } catch { /* private mode */ }
-        // ★★ r796：**所有账号**都要回写服务端（不再只限管理员）——
-        //    普通用户 / VIP 的增删改落到自己账号的私有作用域（`?scope=mine`），
-        //    只有管理员改官方角色库时才落到全局（`?scope=global`）。见 `syncRolesToServer`。
-        void syncRolesToServer((list || []).map(normalizeCharacter).filter(Boolean));
       },
     };
 
+    const roleMediaImage = /^\/media\/media-[0-9a-f]{32}\.(?:png|jpe?g|webp|gif|bmp|heic|tiff)$/;
+    async function uploadRoleStudioFile(file) {
+      if (isStandaloneFile()) {
+        if (file.size > 1024 * 1024) throw new Error('离线模式请选择 1 MB 以内的图片');
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error('读取图片失败，请重新选择'));
+          reader.readAsDataURL(file);
+        });
+      }
+      const media = await uploadMediaFile(file, {throwOnError: true});
+      if (!roleMediaImage.test(media?.url || '')) throw new Error('参考图未保存到本机，请重新选择图片');
+      return media.url;
+    }
+
+    function roleMarkLibrary() {
+      const key = 'canvasflow.custom-role-marks.' + (currentUser()?.id || 'local');
+      const offlineMarks = () => {
+        const saved = JSON.parse(localStorage.getItem(key) || '[]');
+        return Array.isArray(saved) ? saved : [];
+      };
+      const endpoint = '/api/preset-roles/marks';
+      return {
+        async list() {
+          if (isStandaloneFile()) return offlineMarks();
+          return (await api(endpoint, {throwOnError:true})).marks;
+        },
+        async add(url, name) {
+          if (isStandaloneFile()) {
+            const marks = offlineMarks();
+            const prior = marks.find(item=>item.url===url);
+            if (prior) return prior;
+            const mark = {url, name};
+            localStorage.setItem(key, JSON.stringify([mark, ...marks]));
+            return mark;
+          }
+          return (await api(endpoint, {method:'PUT', body:JSON.stringify({url}), throwOnError:true})).mark;
+        },
+      };
+    }
+
+    async function pickRoleStudioReference(source, limit, onPick) {
+      const headers = workspaceHeader();
+      const request = path => isStandaloneFile() ? Promise.resolve({materials: []}) : api(path, {headers, throwOnError:true});
+      const canvasRows = Array.from(document.querySelectorAll('.flow-node.image-node')).filter(nodeHasUsableImage).map((node, index) => {
+        const handles = nodeImageHandles(node);
+        return {
+          node, kind: 'image',
+          name: node.querySelector('.node-title,.node-name')?.textContent?.trim() || '图片节点 ' + (index + 1),
+          thumbnail: handles.previewMedia || handles.previewData || '',
+        };
+      });
+      const rows = await window.CanvasFlowGenerationStudio.pickImageReference(canvasRows, request, {source,limit,projectId:state.projectId});
+      for (const row of rows || []) onPick(await resolveRoleStudioReference(row, request));
+    }
+    async function resolveRoleStudioReference(selected, request) {
+      let url = selected.url;
+      if (selected.node) url = nodeImageHandles(selected.node).previewMedia || await resolveNodeImageData(selected.node);
+      else if (selected.deferred) url = (await request('/api/workspace/materials/' + encodeURIComponent(selected.id))).material?.url;
+      if (!url) throw new Error('这张图片暂时无法读取，请选择其他参考图');
+      const source = new URL(url, document.baseURI);
+      if (!isStandaloneFile() && source.origin === location.origin && roleMediaImage.test(source.pathname)) return source.pathname;
+      if (!['http:', 'https:', 'data:', 'blob:', 'file:'].includes(source.protocol) || source.username || source.password) throw new Error('参考图地址无效');
+      const data = await fetchMediaUrlAsDataUrl(url);
+      if (!/^data:image\/(?:png|jpeg|webp|gif);base64,/i.test(data)) throw new Error('无法读取参考图，请从本机上传 PNG、JPEG、WebP 或 GIF 图片');
+      const file = dataUrlToFile(data, selected.name || '服装参考图');
+      if (!file) throw new Error('参考图读取失败，请重新选择');
+      return uploadRoleStudioFile(file);
+    }
+    const customRoleMark = 'features.marks.customImage';
+    const roleMarkItems = 'features.marks.items';
+    function parseRoleMarks(encoded) {
+      let items;
+      try { items = JSON.parse(encoded); } catch { return null; }
+      if (!Array.isArray(items)) return null;
+      const ids = new Set();
+      const geometry = {x:[0,100], y:[0,100], size:[3,80], turn:[-180,180]};
+      const allowed = new Set(['id','preset','src','view',...Object.keys(geometry)]);
+      for (const item of items) {
+        if (!item || typeof item !== 'object' || Object.keys(item).some(key => !allowed.has(key))) return null;
+        if (typeof item.id !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(item.id) || ids.has(item.id)) return null;
+        ids.add(item.id);
+        if (typeof item.preset !== 'string' || !item.preset.trim() || item.preset.length > 100) return null;
+        if (item.preset === '自定义' || item.src) {
+          if (item.preset !== '自定义' || typeof item.src !== 'string' || !(roleMediaImage.test(item.src)
+            || (item.src.startsWith('data:image/') && roleSourceImage(item.src)))) return null;
+        }
+        if (item.view !== undefined && !['half','full'].includes(item.view)) return null;
+        for (const [key,[low,high]] of Object.entries(geometry)) {
+          if (!Number.isFinite(item[key]) || item[key] < low || item[key] > high) return null;
+        }
+      }
+      return items;
+    }
+    function roleSourceImage(url) {
+      if (typeof url !== 'string' || !url) return '';
+      if (roleMediaImage.test(url)) return url;
+      if (url.length <= 5600000 && /^data:image\/(?:png|jpeg|webp|gif|bmp|heic|tiff);base64,[A-Za-z0-9+/]+=*$/.test(url)) return url;
+      let path = url;
+      if (url.startsWith('file:') || url.startsWith(location.origin + '/') || url.startsWith('/media/')) {
+        try { path = new URL(url, location.href).pathname; } catch { return ''; }
+        if (roleMediaImage.test(path)) return path;
+      }
+      const bundled = path.match(/(?:^|\/)(role-library|_libtv_roles)\/web\/(\d{3}-[1-4]\.jpg)$/);
+      return bundled ? 'role-library/web/' + bundled[2] : '';
+    }
+    function validOutfitImage(url) {
+      return typeof url === 'string' && (roleMediaImage.test(url)
+        || isStandaloneFile() && url.length <= 1400000 && /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+=*$/.test(url));
+    }
     function normalizeCharacter(item) {
       if (!item || typeof item !== 'object') return null;
-      return {
-        id: item.id || `char-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-        name: String(item.name || '').slice(0, 40),
-        value: String(item.value || item.prompt || ''),
+      const role = {
+        id: item.id || `char-${crypto.randomUUID()}`,
+        name: String(item.name || '').trim().slice(0, 40),
+        value: String(item.value ?? item.prompt ?? ''),
         tags: Array.isArray(item.tags) ? item.tags.slice(0, 8) : [],
-        images: Array.isArray(item.images) ? item.images.slice(0, 4).map(img => typeof img === 'string' ? img : '') : ['', '', '', ''],
+        images: Array.from({length: 4}, (_, slot) => typeof item.images?.[slot] === 'string' ? item.images[slot] : ''),
       };
+      if (item.styling?.version === 1) {
+        const controls = {};
+        for (const [key, value] of Object.entries(item.styling.controls || {})) {
+          if (!/^[A-Za-z0-9_.-]{1,120}$/.test(key) || ['__proto__', 'constructor', 'prototype'].includes(key)) continue;
+          if (typeof value === 'boolean' || typeof value === 'string') controls[key] = value;
+          else if (Number.isFinite(value)) controls[key] = Math.max(-100, Math.min(100, value));
+        }
+        role.styling = { version: 1, controls, prompt: String(item.styling.prompt || '') };
+        if (/^[a-f\d-]{36}$/i.test(item.styling.derivativeBatchId || '')) role.styling.derivativeBatchId=item.styling.derivativeBatchId;
+        const modelId = item.styling.renderModelId;
+        if (typeof modelId === 'string' && modelId.length && modelId.length <= 200) role.styling.renderModelId = modelId;
+        if (/^[0-9a-f]{32}$/.test(item.styling.renderBasisKey || '')) role.styling.renderBasisKey = item.styling.renderBasisKey;
+        const models = item.styling.renderSlotModels;
+        if (Array.isArray(models) && models.length === 4 && models.every(m => typeof m === 'string' && m.length <= 200)) role.styling.renderSlotModels = models.slice();
+        if (Array.isArray(item.styling.renderReadySlots)) role.styling.renderReadySlots = [0,1,2,3].filter(i => role.images[i] && item.styling.renderReadySlots.includes(i));
+        if (Array.isArray(item.styling.sourceImages)) {
+          role.styling.sourceImages = Array.from({length:4}, (_, i) => roleSourceImage(item.styling.sourceImages[i]));
+          role.styling.renderedSlots = [0,1,2,3].filter(i => role.images[i] && Array.isArray(item.styling.renderedSlots) && item.styling.renderedSlots.includes(i));
+          role.styling.halfPreviewOnly = item.styling.halfPreviewOnly === true && role.styling.renderedSlots.includes(1);
+          const halfPreview = roleSourceImage(item.styling.halfPreviewUrl);
+          if (halfPreview) {
+            role.styling.halfPreviewUrl = halfPreview;
+            role.styling.halfPreviewModel = String(item.styling.halfPreviewModel || '').slice(0,200);
+          }
+        }
+        if (controls[customRoleMark] && !roleSourceImage(controls[customRoleMark])) delete controls[customRoleMark];
+        if (Object.hasOwn(controls, roleMarkItems) && !parseRoleMarks(controls[roleMarkItems])) delete controls[roleMarkItems];
+        let outfit = item.styling.outfitUrl;
+        if (Array.isArray(item.styling.outfitUrls)) {
+          role.styling.outfitUrls = [...new Set(item.styling.outfitUrls.filter(validOutfitImage))].slice(0,16);
+          outfit = role.styling.outfitUrls[0];
+        }
+        if (validOutfitImage(outfit)) role.styling.outfitUrl = outfit;
+      }
+      return role;
+    }
+
+    function roleToken(label) {
+      const suffix = label.match(/(?:\|id=([^|]+))?(?:\|ref=([a-f\d-]{36}))?$/i);
+      const ref = suffix[2] || '';
+      const snapshot = state.roleSnapshots.get(ref);
+      return {name:snapshot?.name || label.slice(0, suffix.index), id:suffix[1], ref, snapshot};
+    }
+    function snapshotsForText(text) {
+      if (typeof text !== 'string' || !text.includes('|ref=')) return [];
+      const refs = new Set(Array.from(text.matchAll(/\[\[角色:[^\]]*?\|ref=([a-f\d-]{36})\]\]/gi), m => m[1]));
+      return [...refs].map(ref => state.roleSnapshots.get(ref)).filter(Boolean);
+    }
+    function nodeRoleSnapshots(node) {
+      if (!state.roleSnapshots.size || !node) return [];
+      const attached = state.roleSnapshots.get(node.dataset.roleSnapshotRef);
+      const tokens = [node?.dataset.mediaPrompt, node?.dataset.textInstruction, textNodeText(node),
+        node?.querySelector('.script-source')?.value].flatMap(snapshotsForText);
+      const voice = node?.dataset.roleVoice?.includes('snapshotRef') && readRoleVoice(node.dataset.roleVoice);
+      return [...new Set([attached, state.roleSnapshots.get(voice?.snapshotRef), ...tokens].filter(Boolean))];
+    }
+    function nodeRoleReferenceFields(node) {
+      const snapshots = nodeRoleSnapshots(node);
+      if (!snapshots.length) return {};
+      const ref = node.dataset.roleSnapshotRef;
+      return {roleSnapshots:snapshots, ...(state.roleSnapshots.has(ref) ? {roleAsset:{ref,slot:Number(node.dataset.roleSnapshotSlot)}} : {})};
+    }
+    function restoreRoleSnapshots(list) {
+      for (const s of Array.isArray(list) ? list : []) {
+        if (!s || !/^[a-f\d-]{36}$/i.test(s.ref) || typeof s.roleId !== 'string' || !s.roleId || typeof s.prompt !== 'string'
+          || typeof s.version !== 'string' || !Array.isArray(s.images)) continue;
+        if (state.roleSnapshots.has(s.ref)) continue;
+        const images = Array.from({length:4},(_,i) => roleSourceImage(s.images[i]));
+        state.roleSnapshots.set(s.ref,{ref:s.ref,roleId:s.roleId,version:s.version,name:String(s.name || ''),
+          stateId:'default',stateName:'默认状态',originalPrompt:String(s.originalPrompt || ''),prompt:s.prompt,
+          images,mainReferenceImageUrl:images.find(Boolean) || '',voice:typeof s.voice === 'string' ? s.voice : '',
+          ...(/^[a-f\d-]{36}$/i.test(s.derivativeBatchId || '') ? {derivativeBatchId:s.derivativeBatchId} : {})});
+        if (state.roleSnapshots.get(s.ref).derivativeBatchId) queueMicrotask(()=>watchRoleDerivatives(s.derivativeBatchId));
+      }
+    }
+    function canvasRoleVersion(role) {
+      const revision = !isStandaloneFile() && roleRevision(role.id,roleScopeOf(role));
+      if (revision) return revision;
+      // Bundled and file-mode cards have no server revision.
+      const value = JSON.stringify(role);
+      let hash = 2166136261;
+      for (let i=0;i<value.length;i++) hash = Math.imul(hash ^ value.charCodeAt(i),16777619);
+      return 'local-' + (hash >>> 0).toString(16);
+    }
+    function captureCanvasRole(role, ref) {
+      const version = canvasRoleVersion(role);
+      if (!ref) {
+        const existing = [...state.roleSnapshots.values()].find(s => s.roleId === role.id && s.version === version);
+        if (existing) return existing;
+      }
+      const images = Array.from({length:4},(_,i) => roleSourceImage(role.images?.[i]));
+      const voice = role.styling?.controls?.['voice.selection'];
+      const snapshot = {ref:ref || crypto.randomUUID(),roleId:role.id,name:role.name,version,stateId:'default',stateName:'默认状态',
+        originalPrompt:role.value || '',prompt:resolvePromptTokens(rolePromptText(role)),images,
+        mainReferenceImageUrl:images.find(Boolean) || '',voice:typeof voice === 'string' ? voice : '',
+        ...(role.styling?.derivativeBatchId ? {derivativeBatchId:role.styling.derivativeBatchId} : {})};
+      state.roleSnapshots.set(snapshot.ref,snapshot);
+      return snapshot;
+    }
+    const roleDerivativeViews=new Map();
+    function roleBatchContext() {return JSON.stringify([currentUser()?.id || '',currentWorkspaceId()]);}
+    function applyRoleDerivativeView(batch) {
+      let changed=false;
+      for (const snapshot of state.roleSnapshots.values()) {
+        if (snapshot.derivativeBatchId!==batch.id || snapshot.roleId!==batch.roleId) continue;
+        for (const row of batch.items) {
+          const slot=row.slot, url=roleSourceImage(row.imageUrl);
+          if (![1,2,3].includes(slot))continue;
+          const old=snapshot.images[slot];
+          const completed=row.status==='completed' && !!url;
+          if (completed && old===url)continue;
+          if (completed) {snapshot.images[slot]=url;changed=true;}
+          for (const node of $$('.image-node[data-role-snapshot-ref]')) {
+            if (node.dataset.roleSnapshotRef!==snapshot.ref || Number(node.dataset.roleSnapshotSlot)!==slot) continue;
+            const handles=nodeImageHandles(node);
+            if (old ? handles.previewMedia!==old && handles.previewData!==old : nodeHasUsableImage(node)) continue;
+            const badge=node.querySelector('.media-badge');
+            if(badge)badge.textContent=completed?'角色库':roleDerivativeLabel({batch},slot);
+            if(!completed)continue;
+            setMediaNodeImageUrl(node,url,snapshot.name+'-'+ROLE_CANVAS_LABELS[slot],'','角色库');
+            changed=true;
+          }
+        }
+        if(batch.revision && snapshot.version!==batch.revision) {snapshot.version=batch.revision;changed=true;}
+      }
+      if(changed) scheduleSave();
+    }
+    function watchRoleDerivatives(id) {
+      if(!id || isStandaloneFile()) return;
+      const context=roleBatchContext(), key=context+'|'+id;
+      let entry=roleDerivativeViews.get(key);
+      if(entry) {
+        if(entry.batch) applyRoleDerivativeView(entry.batch);
+        return entry;
+      }
+      entry={};roleDerivativeViews.set(key,entry);
+      const poll=async()=>{
+        if(roleBatchContext()!==context){roleDerivativeViews.delete(key);return;}
+        try {
+          const batch=await api('/api/preset-roles/derivatives?id='+encodeURIComponent(id),{throwOnError:true});
+          if(roleBatchContext()!==context || batch?.id!==id || !Array.isArray(batch.items)){roleDerivativeViews.delete(key);return;}
+          entry.batch=batch;entry.error='';entry.failures=0;
+          applyRoleDerivativeView(batch);
+          const activeRole=characterStorage.get().find(r=>r.id===batch.roleId);
+          const priorRevision=roleRevision(batch.roleId,'mine');
+          if(activeRole?.styling?.derivativeBatchId===id && priorRevision!==batch.revision) {
+            const data=await api('/api/preset-roles',{throwOnError:true});
+            if(roleBatchContext()!==context){roleDerivativeViews.delete(key);return;}
+            const latest=data?.mine?.custom?.find(r=>r.id===batch.roleId);
+            if(latest && roleRevision(batch.roleId,'mine')===priorRevision) {
+              const custom=presetRolesMine.custom.map(r=>r.id===batch.roleId ? latest : r);
+              const recordRevisions={...presetRolesMine.recordRevisions,[batch.roleId]:data.mine.recordRevisions[batch.roleId]};
+              updateRoleBuckets({...presetRolesMine,custom,recordRevisions},presetRolesGlobal);
+            }
+          }
+          if(document.querySelector('#roleLibraryModal')) {renderRoleLibraryBody();renderRoleStrip();}
+          if(['completed','failed','superseded'].includes(batch.status))return;
+        } catch(error) {
+          if(roleBatchContext()!==context){roleDerivativeViews.delete(key);return;}
+          entry.error=error.message || '暂时无法读取资产生成进度';
+          if(document.querySelector('#roleLibraryModal'))renderRoleLibraryBody();
+          if([401,403,404].includes(error.status))return;
+          entry.failures=(entry.failures||0)+1;
+        }
+        setTimeout(poll,Math.min(30000,2000*(1+(entry.failures||0))));
+      };
+      void poll();
+      return entry;
+    }
+    function roleDerivativeLabel(entry,slot) {
+      const row=entry?.batch?.items.find(item=>item.slot===slot);
+      if(row?.status==='failed')return row.error || '资产生成失败';
+      if(row?.status==='superseded')return '已被新版本替代';
+      if(row?.status==='running')return '正在生成';
+      if(row?.status==='queued')return '等待生成';
+      return '';
+    }
+    function roleInputsForGeneration(node) {
+      if (!state.roleSnapshots.size) return [];
+      const own = node ? nodeRoleSnapshots(node) : [];
+      const selected = node && node.dataset.nodeId === state.activeNodeId;
+      const dock = snapshotsForText(selected ? promptInput?.value : !node ? state.modelPrompt : '');
+      const upstreamIds = new Set((window.CanvasFlowConnections?.getEdges?.() || []).filter(e => e.target === node?.dataset.nodeId).map(e => e.source));
+      const upstream = $$('.flow-node').filter(n => upstreamIds.has(n.dataset.nodeId) && ['prompt','image','script'].includes(n.dataset.node)).flatMap(nodeRoleSnapshots);
+      return [...new Set([...own,...dock,...upstream])];
+    }
+    function usedCanvasRoles() {
+      return [...new Set([...snapshotsForText(state.modelPrompt),...$$('.flow-node').flatMap(nodeRoleSnapshots)])];
+    }
+    function canvasRoleNeedsUpdate(role) {
+      const version = canvasRoleVersion(role);
+      return usedCanvasRoles().some(s => s.roleId === role.id && s.version !== version);
+    }
+    function refreshCanvasRole(roleId) {
+      const role = characterStorage.get().find(item => item.id === roleId);
+      if (!role) return;
+      const updates = usedCanvasRoles().filter(s => s.roleId === role.id && s.version !== canvasRoleVersion(role));
+      if (!updates.length) return;
+      remember();
+      for (const previous of updates) {
+        const current = captureCanvasRole(role, previous.ref);
+        for (const node of $$('.flow-node')) {
+          const voice = node.dataset.roleVoice?.includes('snapshotRef') && readRoleVoice(node.dataset.roleVoice);
+          if (voice?.snapshotRef === current.ref) {
+            const next = readRoleVoice(current.voice);
+            if (next) node.dataset.roleVoice = JSON.stringify({...next,roleId:current.roleId,roleName:current.name,snapshotRef:current.ref});
+            else delete node.dataset.roleVoice;
+          }
+          if (node.dataset.roleSnapshotRef !== current.ref) continue;
+          if (node.dataset.mediaPrompt === previous.prompt) node.dataset.mediaPrompt = current.prompt;
+          const slot = Number(node.dataset.roleSnapshotSlot);
+          const title = nodeLabelEl(node);
+          const oldTitle = previous.name + ' ' + ROLE_CANVAS_LABELS[slot];
+          if (title && !node.dataset.titleCustom && [oldTitle,oldTitle + ' 副本'].includes(title.textContent)) {
+            title.textContent = current.name + title.textContent.slice(previous.name.length);
+          }
+          const source = current.images[slot], old = previous.images[slot];
+          const handles = nodeImageHandles(node);
+          if (source === old || !old || (handles.previewData !== old && handles.previewMedia !== old)) continue;
+          if (source) {
+            const setImage = source.startsWith('data:') ? setMediaNodeImage : setMediaNodeImageUrl;
+            setImage(node,source,role.name + '-' + ROLE_CANVAS_LABELS[slot],'','角色库');
+          } else {
+            const preview = node.querySelector('.media-preview');
+            if (preview) {
+              delete preview.dataset.previewData; delete preview.dataset.previewMedia;
+              preview.classList.remove('has-image'); preview.style.backgroundImage = '';
+              preview.querySelector('.media-art')?.removeAttribute('hidden');
+            }
+            for (const key of ['previewData','previewMedia','previewAsset','previewName']) delete node.dataset[key];
+          }
+        }
+      }
+      const active = $('.flow-node.selected');
+      if (active) syncInspectorToNode(active);
+      renderPromptHighlight(); renderRoleLibraryBody(); scheduleSave();
+      showToast('已更新画布中的角色引用','✓');
+    }
+    function rolePromptText(role) {
+      return [role?.value, role?.styling?.prompt].filter(Boolean).join('\n');
+    }
+
+    function roleRevision(id, scope) {
+      if (!id) return '';
+      if (isStandaloneFile()) {
+        const role = localRoleRecords().find(item => item.id === id);
+        return role ? JSON.stringify(role) : '';
+      }
+      const bucket = scope === 'official' ? presetRolesGlobal : presetRolesMine;
+      return bucket.recordRevisions?.[id] || '';
+    }
+    async function checkRoleBeforeGeneration(role, expectedRevision) {
+      if (!isStandaloneFile()) {
+        await loadGlobalRoles(true);
+        if (!presetRolesMine.recordRevisions) throw new Error('请重启本地服务，以安全保存角色版本。');
+      }
+      if (roleRevision(role.id, roleScopeOf(role)) !== expectedRevision) {
+        const error = new Error('当前角色已有新版本，请将本次编辑另存为新角色。');
+        error.payload={error:'role_revision_conflict'};
+        throw error;
+      }
+    }
+
+    let roleWriteQueue = Promise.resolve();
+    function writeRoleRecord(scope, operation) {
+      const write = async () => {
+        if (isStandaloneFile()) {
+          const saveLocal = () => {
+            if (roleRevision(operation.id, scope) !== operation.expectedRevision) {
+              const error = new Error('角色已在其他窗口更新。当前编辑仍保留，可另存为新角色。');
+              error.payload = {error:'role_revision_conflict'};
+              throw error;
+            }
+            const records = localRoleRecords().filter(role => role.id !== operation.id);
+            if (operation.record) records.unshift(operation.record);
+            localStorage.setItem('canvasflow-characters', JSON.stringify(records));
+            if (operation.remove && isPresetRoleId(operation.id)) {
+              localHiddenPresetRoles.add(operation.id);
+              saveLocalHiddenPresetRoles();
+            }
+          };
+          if (navigator.locks) return navigator.locks.request('canvasflow-characters', saveLocal);
+          return saveLocal();
+        }
+        // A running older development backend discards original identity images.
+        const style = operation.record?.styling;
+        const hasNewFields = ['outfitUrls','renderBasisKey','renderReadySlots','renderSlotModels'].some(k => Object.hasOwn(style || {}, k));
+        const requiredVersion = operation.derivatives ? 5 : style?.halfPreviewUrl ? 4 : hasNewFields ? 3 : Object.hasOwn(style?.controls || {}, roleMarkItems) ? 2 : style?.sourceImages ? 1 : 0;
+        if (roleImageLineageVersion < requiredVersion) {
+          await loadGlobalRoles();
+          if (roleImageLineageVersion < requiredVersion) throw new Error('请重启 CanvasFlow 本地服务，以保存角色原图、贴图与生成记录');
+        }
+        if (!presetRolesMine.recordRevisions) {
+          await loadGlobalRoles();
+          if (!presetRolesMine.recordRevisions) throw new Error('请重启本地服务，以安全保存角色版本。');
+        }
+        const result = await api('/api/preset-roles/record?scope=' + (scope === 'official' ? 'global' : 'mine'), {
+          method: 'PUT', body: JSON.stringify(operation), throwOnError: true,
+        }).catch(async error => {
+          if (error.payload?.error === 'role_revision_conflict') await loadGlobalRoles();
+          throw error;
+        });
+        if (!result?.ok || !Array.isArray(result.custom)) throw new Error('请重新启动开发服务后再保存角色');
+        const bucket = {deleted: result.deleted, overrides: result.overrides, custom: result.custom, recordRevisions:result.recordRevisions};
+        if (scope === 'official') updateRoleBuckets(presetRolesMine, bucket);
+        else updateRoleBuckets(bucket, presetRolesGlobal);
+        // 旧版本在浏览器缓存了服务端角色。移除已同步记录，防止后续删除后被旧副本重新显示。
+        try {
+          const local = localRoleRecords();
+          if (local.some(role => role.id === operation.id)) {
+            localStorage.setItem('canvasflow-characters', JSON.stringify(local.filter(role => role.id !== operation.id)));
+          }
+        } catch { /* 服务端已保存 */ }
+      };
+      const result = roleWriteQueue.then(write);
+      roleWriteQueue = result.catch(() => {});
+      return result;
+    }
+
+    function updateProfileImageLineage(record, source) {
+      const slots = [0,1,2,3];
+      const changed = slots.filter(i => record.images[i] !== source.images[i]);
+      if (!changed.length) return;
+      const previous = source.styling || {};
+      const style = record.styling ||= {version:1, controls:{}, prompt:''};
+      const renderer = window.createRoleStudioRenderer({role:source});
+      const outfits = previous.outfitUrls ?? previous.outfitUrl;
+      const frame = renderer.capture(style.controls,outfits);
+      const ready = new Set(slots.filter(i => frame.assets[i]));
+      const generated = new Set(frame.generated);
+      const sourceImages = (previous.sourceImages || source.images).map(roleSourceImage);
+      const models = slots.map(i => previous.renderSlotModels?.[i] ?? (previous.renderedSlots?.includes(i) ? previous.renderModelId || '' : ''));
+      // A replacement full body determines the face and both derivative sheets.
+      // A new face also invalidates both sheets. Explicitly supplied slots win after invalidation.
+      const dependent = changed.includes(0) ? [1,2,3] : changed.includes(1) ? [2,3] : [];
+      for (const i of [...changed,...dependent]) { ready.delete(i); generated.delete(i); }
+      for (const i of changed) {
+        sourceImages[i] = roleSourceImage(record.images[i]);
+        models[i] = '';
+        if (record.images[i]) ready.add(i);
+      }
+      style.sourceImages = sourceImages;
+      style.renderBasisKey = renderer.basisKey(style.controls,outfits);
+      style.renderReadySlots = slots.filter(i => ready.has(i));
+      style.halfPreviewOnly = false;
+      if (previous.halfPreviewOnly && !changed.includes(1)) {
+        record.images[1]=sourceImages[1] || '';
+        models[1]='';
+      }
+      if (changed.includes(0)) { delete style.halfPreviewUrl; delete style.halfPreviewModel; }
+      else if(frame.half) {style.halfPreviewUrl=frame.half;style.halfPreviewModel=frame.halfModel;}
+      style.renderedSlots = slots.filter(i => generated.has(i));
+      style.renderSlotModels = models;
+      const model = models.find(Boolean);
+      if (model) style.renderModelId = model;
+      else delete style.renderModelId;
+    }
+
+    async function finishRoleEditorSave(target,operation,onPrepared) {
+      try { await writeRoleRecord(target,operation); }
+      catch(error) {
+        if(error.payload?.error!=='copy_shared_role_references' || !operation.derivatives)throw error;
+        const urls=error.payload.references;
+        if(!Array.isArray(urls) || !urls.length || !urls.every(url=>roleMediaImage.test(url)))throw error;
+        const copies=new Map(), context=roleBatchContext();
+        for (const url of urls) {
+          const data=await fetchMediaUrlAsDataUrl(url);
+          if(!data || roleBatchContext()!==context)throw Error('公开角色参考图暂时无法读取，请重新打开角色。');
+          copies.set(url,await storeRoleImage(data,'公开角色参考图'));
+        }
+        if(roleBatchContext()!==context)throw Error('工作区已切换，请重新打开角色。');
+        operation=structuredClone(operation);
+        for (const {payload} of operation.derivatives.items) {
+          if(payload.referenceImages)payload.referenceImages=payload.referenceImages.map(url=>copies.get(url)||url);
+          if(copies.has(payload.referenceImage))payload.referenceImage=copies.get(payload.referenceImage);
+        }
+        onPrepared?.(operation);
+        await writeRoleRecord(target,operation);
+      }
+      const saved=characterStorage.get().find(role=>role.id===operation.id) || operation.record;
+      if (saved.styling?.derivativeBatchId) watchRoleDerivatives(saved.styling.derivativeBatchId);
+      return {record:saved,scope:target};
+    }
+    async function persistRoleEditorRecord(draft, {sourceId = '', scope = 'mine', asNew = false, expectedRevision, sourceRecord,derivatives,copyId,onPrepared} = {}) {
+      await roleLibraryLoaded;
+      let source = sourceRecord || (sourceId ? characterStorage.get().find(role => role.id === sourceId) : null);
+      if (sourceId && !source) throw new Error('源角色已删除，请重新选择');
+      const batchId=source?.styling?.derivativeBatchId;
+      if (sourceId && batchId && !draft.styling && !asNew && !isStandaloneFile()) {
+        // The profile form carries all four images. Rebase untouched slots on completed background work.
+        await loadGlobalRoles(true);
+        const latestRevision=roleRevision(sourceId,'mine');
+        if (latestRevision && expectedRevision && latestRevision!==expectedRevision) {
+          const latest=characterStorage.get().find(r=>r.id===sourceId);
+          const batch=await api('/api/preset-roles/derivatives?id='+encodeURIComponent(batchId),{throwOnError:true});
+          if (latest?.styling?.derivativeBatchId===batchId && batch?.revision===latestRevision && batch.status!=='superseded') {
+            if(draft.images)draft={...draft,images:draft.images.map((img,i)=>img===source.images[i]?latest.images[i]:img)};
+            expectedRevision=latestRevision;source=latest;
+          }
+        }
+      }
+      const target = !source && scope === 'official' && isAdminUser() && !isStandaloneFile() ? 'official' : 'mine';
+      const record = normalizeCharacter({ ...source, ...draft, id: !asNew && source && roleScopeOf(source) === 'mine' ? source.id : copyId });
+      if (!record.name) throw new Error('请填写角色名称');
+      if (draft.styling?.sourceImages?.some((url,i) => url && !record.styling?.sourceImages?.[i])) {
+        throw new Error('原始身份图无效，请先上传本地参考图');
+      }
+      if (Object.hasOwn(draft.styling?.controls || {}, roleMarkItems) && !Object.hasOwn(record.styling?.controls || {}, roleMarkItems)) {
+        throw new Error('特征贴图列表无效，请重新选择本地图片');
+      }
+      if (draft.styling?.controls?.[customRoleMark] && !record.styling?.controls?.[customRoleMark]) {
+        throw new Error('自定义特征图无效，请重新选择本地图片');
+      }
+      if (Object.hasOwn(draft.styling || {}, 'outfitUrls')) {
+        const urls = draft.styling.outfitUrls;
+        if (!Array.isArray(urls) || urls.length > 16 || !urls.every(validOutfitImage)) throw new Error('服装参考图无效，请选择最多 16 张本地图片');
+      } else if (draft.styling?.outfitUrl && !record.styling?.outfitUrl) {
+        throw new Error(isStandaloneFile() ? '独立文件模式请使用不超过 1 MB 的 PNG、JPEG、WebP 或 GIF 服装图片' : '服装参考图无效，请重新上传本地图片');
+      }
+      if (!isStandaloneFile()) {
+        const stored = new Map();
+        async function persistImage(image, label) {
+          if (!image?.startsWith('data:image/')) return image;
+          if (stored.has(image)) return stored.get(image);
+          const file = dataUrlToFile(image, record.name + '-' + label);
+          if (!file) throw new Error('参考图读取失败，请重新选择图片');
+          const media = await uploadMediaFile(file, {throwOnError: true});
+          if (!media?.url) throw new Error('参考图保存失败，请重试');
+          stored.set(image, media.url);
+          return media.url;
+        }
+        for (const [slot, image] of record.images.entries()) record.images[slot] = await persistImage(image, slot + 1);
+        if (record.styling?.halfPreviewUrl) record.styling.halfPreviewUrl = await persistImage(record.styling.halfPreviewUrl, '半身预览');
+        if (record.styling?.sourceImages) {
+          for (const [slot, image] of record.styling.sourceImages.entries()) {
+            record.styling.sourceImages[slot] = await persistImage(image, '身份图' + (slot + 1));
+          }
+        }
+        const controls = record.styling?.controls;
+        if (controls?.[customRoleMark]) controls[customRoleMark] = await persistImage(controls[customRoleMark], '特征贴图');
+        if (controls && Object.hasOwn(controls, roleMarkItems)) {
+          const marks = parseRoleMarks(controls[roleMarkItems]);
+          for (const mark of marks) {
+            if (mark.src) mark.src = await persistImage(mark.src, '特征贴图');
+          }
+          controls[roleMarkItems] = JSON.stringify(marks);
+        }
+      }
+      if (!draft.styling && source && draft.images) updateProfileImageLineage(record, source);
+      if (record.styling) delete record.styling.derivativeBatchId;
+      const operation={id:record.id,record,expectedRevision:record.id===sourceId ? expectedRevision ?? roleRevision(sourceId,target) : '',...(derivatives ? {derivatives} : {})};
+      if(derivatives) onPrepared?.(operation);
+      return finishRoleEditorSave(target,operation,onPrepared);
     }
 
     function closeDockToolMenu() {
@@ -19910,12 +21414,14 @@ const active=currentWorkspace();
     }
     const DOCK_TOKEN_TYPES = { marker: '标记', effect: '特效', character: '角色', camera: '运镜' };
     const DOCK_TOKEN_TO_TOOL = { '标记': 'marker', '特效': 'effect', '角色': 'character', '运镜': 'camera' };
-    function appendDockToken(tool, label) {
+    function appendDockToken(tool, label, roleId = '') {
       promptInput = $('#promptInput') || promptInput;
       const type = DOCK_TOKEN_TYPES[tool];
-      const cleanLabel = String(label || '').trim();
+      const cleanLabel = String(label || '').trim().replace(/]/g,'］');
       if (!promptInput || !type || !cleanLabel) return;
-      const token = `${type}:${cleanLabel}`;
+      const role = tool === 'character' && characterStorage.get().find(item => roleId ? item.id === roleId : item.name === cleanLabel);
+      const snapshot = role ? captureCanvasRole(role) : null;
+      const token = `${type}:${cleanLabel}${roleId ? '|id=' + encodeURIComponent(roleId) : ''}${snapshot ? '|ref=' + snapshot.ref : ''}`;
       const wrappedToken = `[[${token}]]`;
       const current = promptInput.value.trim();
       if (current.includes(wrappedToken)) return showToast(`已添加过「${cleanLabel}」`, '⊞');
@@ -19976,8 +21482,10 @@ const active=currentWorkspace();
         const tool = DOCK_TOKEN_TO_TOOL[type];
         if (!tool) return full;
         if (tool === 'character') {
-          const character = characterStorage.get().find(item => item.name === label);
-          return character ? resolvePromptTokens(character.value, depth + 1) : label;
+          const {name, id, snapshot, ref} = roleToken(label);
+          if (ref) return snapshot?.prompt || name;
+          const character = characterStorage.get().find(item => id ? encodeURIComponent(item.id) === id : item.name === name);
+          return character ? resolvePromptTokens(rolePromptText(character), depth + 1) || name : name;
         }
         // ★ r832：运镜优先走「运镜广场」那张可编辑的表（管理员在「提示词编辑」里改过的正文）。
         //   以前 `[[运镜:固定镜头]]` 在 DOCK_TOOL_LIBRARY.camera.items 里查不到 → 直接落回短名，
@@ -20038,8 +21546,8 @@ const active=currentWorkspace();
     function roleScopeOf(role) {
       const id = String(role?.id || '');
       if (isPresetRoleId(id)) return 'official';
-      if (presetRolesMine.custom.some(item => String(item?.id || '') === id)) return 'mine';
-      return 'official';
+      if (presetRolesGlobal.custom.some(item => String(item?.id || '') === id)) return 'official';
+      return 'mine';
     }
     function getFilteredRoles() {
       const all = characterStorage.get();
@@ -20103,6 +21611,7 @@ const active=currentWorkspace();
         button.addEventListener('click', () => setRoleLibraryScope(button.dataset.roleScope));
       });
       syncRoleAddButton();
+      if (!isStandaloneFile()) loadGlobalRoles();
       requestAnimationFrame(() => wrap.classList.add('open'));
 
       wrap.querySelector('#roleSearchInput')?.addEventListener('input', event => {
@@ -20165,6 +21674,7 @@ const active=currentWorkspace();
         return;
       }
       main.className = 'role-library-main';
+      const derivatives=watchRoleDerivatives(role.styling?.derivativeBatchId);
       const tagText = (role.tags || []).join(' ');
       main.innerHTML = `
         <div class="role-library-active-meta">
@@ -20177,15 +21687,20 @@ const active=currentWorkspace();
         <div class="role-library-resources">
           ${ROLE_IMAGE_SLOTS.map(slot => {
             const img = (role.images || [])[slot.key];
+            const resultLabel=roleDerivativeLabel(derivatives,slot.key);
             return `<div class="role-resource-card" data-role-resource="${slot.key}" title="${escapeHtml(slot.title)}">
               ${img ? `<img src="${escapeHtml(img)}" alt="" loading="lazy" decoding="async" />` : `<div class="role-resource-empty">${ROLE_RESOURCE_ICONS[slot.key]}</div>`}
-              <span>${escapeHtml(slot.title)}</span>
+              <span>${escapeHtml(slot.title+(resultLabel ? ' · '+resultLabel : ''))}</span>
             </div>`;
           }).join('')}
         </div>
         <div class="role-library-description">
-          <span>${escapeHtml(role.value || `${role.name}，可作为画布参考角色资源。`)}</span>
-          <button type="button" data-role-apply="${escapeHtml(role.id)}">${ROLE_SVG.plus} 应用至画布</button>
+          <span>${escapeHtml(derivatives?.error || role.value || `${role.name}，可作为画布参考角色资源。`)}</span>
+          <div class="role-library-use-actions">
+            <button type="button" class="role-studio-launch" data-role-style="${escapeHtml(role.id)}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 3.3A9 9 0 1 0 21 13.5M7.8 14.2c1.8 3 5.8 3.4 8.1-.1"/><circle cx="8.5" cy="10" r=".75" fill="currentColor"/><circle cx="14" cy="10" r=".75" fill="currentColor"/><path d="m18.5 1.8 1.1 3.1 3.1 1.1-3.1 1.1-1.1 3.1-1.1-3.1L14.3 6l3.1-1.1Z" fill="currentColor" stroke="none"/></svg>编辑角色</button>
+            ${canvasRoleNeedsUpdate(role) ? `<button type="button" data-role-refresh="${escapeHtml(role.id)}">有新版本 · 更新画布引用</button>` : ''}
+            <button type="button" data-role-apply="${escapeHtml(role.id)}">${ROLE_SVG.plus} 应用至画布</button>
+          </div>
         </div>`;
       // 资源卡点击 = 上传对应槽位（复用编辑器上传管线）
       main.querySelectorAll('[data-role-resource]').forEach(card => {
@@ -20263,12 +21778,15 @@ const active=currentWorkspace();
     const ROLE_CANVAS_LABELS = ['角色立绘', '脸部近景', '表情参考', '三视图'];
     // 角色参考卡片整体缩放：1 = 与普通图片节点同尺寸（374 基准）。想整体放大/缩小改这里即可。
     const ROLE_NODE_SCALE = 0.6;
-    // 「应用至画布」：4 张参考图落成图片节点 → 立绘/脸部近景/表情参考 排一行、三视图单独一行铺满整行宽 → **不成组、不预选**，4 张各自独立。
+    // 同一角色的参考图排入一个资产组，后台生成的图位在原组内更新。
     function applyRoleToCanvas(roleId) {
       const role = characterStorage.get().find(item => item.id === roleId);
       if (!role) return;
-      appendDockToken('character', role.name);
-      const images = (role.images || []).filter(Boolean);
+      const snapshot = captureCanvasRole(role);
+      appendDockToken('character', role.name.replace(/]/g, '］'), role.id);
+      const batch=watchRoleDerivatives(snapshot.derivativeBatchId)?.batch;
+      const images = snapshot.images.map((url, slot) => ({url, slot})).filter(({url,slot})=>url ||
+        (snapshot.derivativeBatchId && slot>0 && (batch ? batch.items.some(row=>row.slot===slot) : !role.styling.renderReadySlots?.includes(slot))));
       if (!images.length) {
         showToast(`已添加角色标记：${role.name}`, '✦');
         closeRoleLibrary();
@@ -20282,8 +21800,9 @@ const active=currentWorkspace();
       const viewCenterY = ((viewH / 2) - state.panY) / (state.zoom || 1);
       const origin = { left: Math.round(viewCenterX - 600), top: Math.round(viewCenterY - 420) };
       const created = [];
-      images.slice(0, 4).forEach((img, i) => {
-        const label = ROLE_CANVAS_LABELS[i] || ROLE_IMAGE_SLOTS[i]?.title || `参考图 ${i + 1}`;
+      const group = {id:"group-"+crypto.randomUUID(), name:role.name, color:GROUP_COLORS[0], collapsed:false};
+      images.forEach(({url: img, slot}, i) => {
+        const label = ROLE_CANVAS_LABELS[slot] || ROLE_IMAGE_SLOTS[slot]?.title || `参考图 ${i + 1}`;
         // 先粗排，等图片撑开卡片后再按实测尺寸精确排布。
         const node = addNode('image', {
           near: { left: origin.left + (i % 2) * 380, top: origin.top + Math.floor(i / 2) * 360 },
@@ -20297,7 +21816,16 @@ const active=currentWorkspace();
 
 
 
-        setMediaNodeImageUrl(node, img, `${role.name}-${label}`, '', '角色库');
+        if(img) {
+          const setImage = img.startsWith('data:') ? setMediaNodeImage : setMediaNodeImageUrl;
+          setImage(node, img, `${role.name}-${label}`, '', '角色库');
+        } else {
+          const badge=node.querySelector('.media-badge');
+          if(badge)badge.textContent=roleDerivativeLabel({batch},slot) || '等待生成';
+        }
+        node.dataset.roleSnapshotRef = snapshot.ref;
+        node.dataset.roleSnapshotSlot = String(slot);
+        if (snapshot.prompt) node.dataset.mediaPrompt = snapshot.prompt;
         const probe = new Image();
         probe.onload = () => {
           if (!probe.naturalWidth || !probe.naturalHeight) return;
@@ -20308,11 +21836,13 @@ const active=currentWorkspace();
           node.dataset.roleImgRatio = String(probe.naturalHeight / probe.naturalWidth);
           layout();
         };
-        probe.src = img;
+        if(img) probe.src = img;
         created.push(node);
       });
       closeRoleLibrary();
       if (!created.length) return showToast('角色参考图加入画布失败', '×');
+      state.groups = [...(state.groups || []),group];
+      created.forEach(node=>{node.dataset.groupId=group.id;});
       // 4 张卡作为一个整体去找空位（而不是每张各自抢视角）；落定后把 layout 的基准点一起挪过去，
       // 否则图片加载完 layout() 会把卡片拉回原处。
       placeNewNode(created);
@@ -20321,12 +21851,16 @@ const active=currentWorkspace();
       // 整批一起选中并进入多选态：底部工具栏的「删除选中 N」等批量入口才会跟着出现。
       // （addNode 内部的 selectNode 每次都会把 multiSelection 清空，所以必须在这里重新设一次。）
       setMultiSelection(created, created[0]);
+      state.activeGroupId = group.id;
       // 图片节点的盒子尺寸由 --cf-node-w/--cf-node-h 决定（基准 374px，见 styles.css）。
       const NODE_BASE = 374;
       // 实测排布：前 3 张一行；三视图换行，尺寸按「整行宽 × 图片比例」定，正好铺满整行。
       // 两张尺寸都走 dataset.nodeScale（节点级缩放），这样画布比例变化重算时也不会被打回原大小。
       // 落点固定用 origin（视口中心对应的 flow 坐标），不再做整块避让。
       const layout = () => {
+        if (created.some(node=>!node.isConnected || node.dataset.groupId!==group.id)) return;
+        origin.left=parseFloat(created[0].style.left);
+        origin.top=parseFloat(created[0].style.top);
         const gap = 28;
         const row = created.slice(0, 3);
         const wide = created[3];
@@ -20355,33 +21889,12 @@ const active=currentWorkspace();
         }
         renderGroups();
         window.CanvasFlowConnections?.draw?.();
-        // 图片尺寸是异步确定的，layout() 重排后整块可能比粗排时更大。整块顶出视口就按最终尺寸
-        // 重新落位；**不要**在这里调 revealNode —— 它只保证「刚好完整可见」，会把卡片拉回贴底，
-        // 覆盖掉 placeNewNode 定好的「垂直 45%」位置（用户反馈过「太靠下」）。
-        const settled = nodeBlockBounds(created);
-        const viewNow = viewportRectInFlow(26);
-        const overflowed = settled && viewNow && (
-          settled.left < viewNow.left || settled.top < viewNow.top
-          || settled.right > viewNow.left + viewNow.width || settled.bottom > viewNow.top + viewNow.height
-        );
-        if (overflowed) placeNewNode(created);
       };
       layout();
       requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(() => {
         layout();
-        // 落地的参考图「不成组、也不预选」：4 张保持完全独立的卡片，点哪张选哪张。
-        // （不预选是有意的：多选状态下单击其中一张不会收敛为单选，会挡住「挑一张单独用」的常见操作；
-        //   需要整体搬运时用户自己框选或 Ctrl+G 建组即可。）
-        const settledNow = nodeBlockBounds(created);
-        const viewNow = viewportRectInFlow(26);
-        const overflowedNow = settledNow && viewNow && (
-          settledNow.left < viewNow.left || settledNow.top < viewNow.top
-          || settledNow.right > viewNow.left + viewNow.width || settledNow.bottom > viewNow.top + viewNow.height
-        );
-        // 图片尺寸是异步确定的，重排后整块可能变大 → 顶出视口就按最终尺寸重新落位。
-        // **不要**在这里调 revealBounds / revealNode：它们只保证「刚好完整可见」，
-        // 会把整块拉回贴底、覆盖掉 placeNewNode 定好的位置（用户反馈过「太靠下」）。
-        if (overflowedNow) placeNewNode(created);
+        if (!created[0].isConnected) return;
+        if (state.activeGroupId===group.id) zoomToNode(stage.querySelector('.group-frame[data-group-id="'+group.id+'"]'));
         state.nodeCount = $$('.flow-node').length;
         updateNodeCount();
         syncNodeOverlays();
@@ -20393,23 +21906,25 @@ const active=currentWorkspace();
     function pickRoleImageFile(slotKey, roleId) {
       const input = document.createElement('input');
       input.type = 'file'; input.accept = 'image/*';
+      const role = characterStorage.get().find(item => item.id === roleId);
+      const expectedRevision = roleRevision(roleId, roleScopeOf(role));
       input.onchange = () => {
         const file = input.files?.[0];
         if (!file || !file.type.startsWith('image/')) return showToast('请选择图片文件', '×');
         if (file.size > 4 * 1024 * 1024) return showToast('图片请压缩到 4MB 以内', '×');
         const reader = new FileReader();
-        reader.onload = () => {
-          const data = String(reader.result || '');
-          if (!data.startsWith('data:image/')) return showToast('图片读取失败', '×');
-          const list = characterStorage.get();
-          const role = list.find(item => item.id === roleId);
+        reader.onerror = () => showToast('图片读取失败', '×');
+        reader.onload = async () => {
           if (!role) return;
-          role.images = [...(role.images && role.images.length === 4 ? role.images : ['', '', '', ''])];
-          role.images[slotKey] = data;
-          characterStorage.set(list);
-          roleLibraryState.selectedId = roleId;
-          renderRoleLibraryBody();
-          showToast(`已更新「${role.name}」的${ROLE_IMAGE_SLOTS[slotKey]?.title || '图片'}`, '↥');
+          const images = [...role.images];
+          images[slotKey] = String(reader.result || '');
+          try {
+            const saved = await persistRoleEditorRecord({images}, {sourceId:roleId, sourceRecord:role, expectedRevision});
+            roleLibraryState.selectedId = saved.record.id;
+            roleLibraryState.scope = saved.scope;
+            openRoleLibrary();
+            showToast(`已更新「${role.name}」的${ROLE_IMAGE_SLOTS[slotKey]?.title || '图片'}`, '↥');
+          } catch (error) { showToast(error.message || '图片保存失败', '×'); }
         };
         reader.readAsDataURL(file);
       };
@@ -20419,7 +21934,7 @@ const active=currentWorkspace();
     function openRoleEditor(existingId = '') {
       const role = existingId ? characterStorage.get().find(item => item.id === existingId) : null;
       roleEditorState = {
-        editingId: role?.id || '',
+        editingId: role?.id || '', expectedRevision:roleRevision(role?.id, roleScopeOf(role)), sourceRecord:role,
         name: role?.name || '',
         prompt: role?.value || '',
         tags: new Set(role?.tags || []),
@@ -20485,40 +22000,38 @@ const active=currentWorkspace();
       const counter = modal.querySelector('.role-editor-images-title span');
       if (counter) counter.textContent = `角色图片 (${roleEditorState.images.filter(Boolean).length}/4)`;
     }
-    function saveRoleEditor() {
-      const name = roleEditorState.name.trim();
+    async function saveRoleEditor() {
+      const editor = roleEditorState;
+      const name = editor.name.trim();
       if (!name) return showToast('给角色起个名字再保存', '×');
-      const record = normalizeCharacter({
-        id: roleEditorState.editingId || undefined,
-        name, value: roleEditorState.prompt.trim(), tags: [...roleEditorState.tags],
-        images: roleEditorState.images,
-      });
-      const list = characterStorage.get();
-      const idx = record.id ? list.findIndex(item => item.id === record.id) : -1;
-      const editing = idx >= 0 ? list[idx] : null;
-      if (idx >= 0) list[idx] = record; else list.unshift(record);
-      // ★★ 这张卡落到哪个库（r796）：
-      //   · 编辑已有卡 → 跟着它原来的归属（官方卡：管理员=全局改动，其他人=只对自己可见的私有覆盖）；
-      //   · 新建卡 → 落在**当前页签**对应的库里；官方角色库只有管理员能加（非管理员按钮已置灰）。
-      const target = editing
-        ? roleScopeOf(editing)
-        : (roleLibraryState.scope === 'official' && isAdminUser() ? 'official' : 'mine');
-      if (!isPresetRoleId(record.id)) {
-        if (target === 'mine') {
-          // 乐观登记成"我自己的卡" → 紧接着的同步就会把它归到私有作用域
-          if (!presetRolesMine.custom.some(item => String(item?.id || '') === record.id)) {
-            presetRolesMine.custom = [...presetRolesMine.custom, record];
-          }
-        } else {
-          presetRolesCustom = [...presetRolesCustom.filter(item => String(item?.id || '') !== record.id), record];
+      if (editor.saving) return;
+      editor.saving = true;
+      const modal = document.querySelector('#roleEditorModal');
+      const button = modal?.querySelector('[data-role-editor-save]');
+      if (button) button.disabled = true;
+      try {
+        const saved = await persistRoleEditorRecord({
+          name, value: editor.prompt.trim(), tags: [...editor.tags], images: editor.images,
+        }, {sourceId:editor.editingId, scope:roleLibraryState.scope, asNew:!!editor.asNew, expectedRevision:editor.expectedRevision, sourceRecord:editor.sourceRecord});
+        if (modal && modal === document.querySelector('#roleEditorModal') && modal.classList.contains('open')) {
+          roleLibraryState.scope = saved.scope;
+          roleLibraryState.selectedId = saved.record.id;
+          roleLibraryState.search = '';
+          roleLibraryState.tags.clear();
+          closeRoleEditor();
+          openRoleLibrary();
         }
+        showToast(`已保存角色「${name}」`, '☻');
+      } catch (error) {
+        if (error.payload?.error === 'role_revision_conflict') {
+          editor.asNew = true;
+          if (button) button.textContent = '另存为新角色';
+          showToast('角色已有更新。这里的资料仍保留，可另存为新角色。', '×');
+        } else showToast(error.message || '角色保存失败', '×');
+      } finally {
+        editor.saving = false;
+        if (button) button.disabled = false;
       }
-      characterStorage.set(list);
-      roleLibraryState.scope = target;
-      roleLibraryState.selectedId = record.id;
-      closeRoleEditor();
-      openRoleLibrary();
-      showToast(idx >= 0 ? `已更新角色「${name}」` : `已保存角色「${name}」`, '☻');
     }
     function refreshRoleEditorSlot(slotKey) {
       const modal = document.querySelector('#roleEditorModal');
@@ -20545,28 +22058,19 @@ const active=currentWorkspace();
 
 
 
-    function deleteRoleWithPolicy(id) {
-      if (!isPresetRoleId(id)) { showToast('已删除该角色', '⌫'); return; }
-      if (isAdminUser()) {
-        // 管理员：加进全局删除列表 → 紧接着的 `characterStorage.set()` 会把它同步到全局作用域
-        presetRolesDeleted.add(String(id));
-        showToast('已删除该预置角色（所有人都不再看到）', '⌫');
-      } else {
-        // 普通/VIP：写自己账号的私有删除列表 → 只有自己看不到，别人照旧可见
-        presetRolesMine.deleted = [...new Set([...presetRolesMine.deleted, String(id)])];
-        localHiddenPresetRoles.add(String(id));
-        saveLocalHiddenPresetRoles();
-        showToast('已从你的角色库移除（其他用户仍然可见）', '⌫');
-      }
-    }
-    function removeRoleRecord(roleId) {
-      // ★ 顺序要紧：**先记删除策略**（管理员要先把这个 id 放进全局删除列表），
-      //   再 `set()` 回写 —— 否则同步到服务端的 deleted 会少这一条。
-      deleteRoleWithPolicy(roleId);
-      const list = characterStorage.get().filter(item => item.id !== roleId);
-      characterStorage.set(list);
-      if (roleLibraryState.selectedId === roleId) roleLibraryState.selectedId = list[0]?.id || '';
-      openRoleLibrary();
+    async function removeRoleRecord(roleId, expectedRevision) {
+      await roleLibraryLoaded;
+      const role = characterStorage.get().find(item => item.id === roleId);
+      if (!role) return;
+      const target = roleScopeOf(role) === 'official' && isAdminUser() ? 'official' : 'mine';
+      try {
+        await writeRoleRecord(target, {id:roleId, remove:true, expectedRevision:expectedRevision ?? roleRevision(roleId,target)});
+        if (roleLibraryState.selectedId === roleId) roleLibraryState.selectedId = '';
+        if (document.querySelector('#roleEditorModal')) closeRoleEditor();
+        if (document.querySelector('#roleLibraryModal')) openRoleLibrary();
+        refreshDockToolMenu();
+        showToast('已移除该角色', '⌫');
+      } catch (error) { showToast(error.message || '角色删除失败', '×'); }
     }
     function collectNothing() {}
     function handleRoleFilePick(file, slotKey) {
@@ -20592,7 +22096,7 @@ const active=currentWorkspace();
       if (tool === 'character') {
         const list = characterStorage.get();
         const rows = list.length
-          ? list.map(item => `<button type="button" class="dock-tool-option" data-dock-token-tool="character" data-dock-token-label="${escapeHtml(item.name)}"><span class="dock-tool-copy"><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.value)}</small></span><em class="dock-tool-remove" data-dock-character-remove="${escapeHtml(item.id)}" role="button" tabindex="0" title="删除这个角色">×</em></button>`).join('')
+          ? list.map(item => `<button type="button" class="dock-tool-option" data-dock-token-tool="character" data-dock-token-label="${escapeHtml(item.name.replace(/]/g, '］'))}" data-dock-role-id="${escapeHtml(item.id)}"><span class="dock-tool-copy"><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.value)}</small></span><em class="dock-tool-remove" data-dock-character-remove="${escapeHtml(item.id)}" role="button" tabindex="0" title="删除这个角色">×</em></button>`).join('')
           : '<div class="dock-tool-empty">还没有保存任何角色，先在提示词里写好人物设定再保存。</div>';
         return `<div class="dock-tool-head"><strong>角色库</strong><small>点击插入蓝色角色标记，生成时自动展开为人物设定。</small></div><div class="dock-tool-list">${rows}</div><button type="button" class="dock-tool-action" id="dockSaveCharacterBtn">＋ 把当前提示词保存为角色</button>`;
       }
@@ -20632,20 +22136,11 @@ const active=currentWorkspace();
       if (!value) return showToast('先在提示词里写好人物设定', '×');
       const name = await askText({ title: '保存角色', message: '给这个角色一个好记的名字，之后可以一键插入提示词。', value: '', placeholder: '例如：霓虹雨夜少女' });
       if (!name) return;
-      const list = characterStorage.get();
-      list.unshift({ id: `char-${Date.now().toString(36)}`, name, value });
-      characterStorage.set(list);
-      refreshDockToolMenu();
-      showToast(`已保存角色「${name}」`, '☻');
-    }
-    function removeCharacter(id) {
-      const list = characterStorage.get();
-      const next = list.filter(item => item.id !== id);
-      if (next.length === list.length) return;
-      // ★ 先记删除策略再回写（同 `removeRoleRecord` 的顺序要求）
-      deleteRoleWithPolicy(id);
-      characterStorage.set(next);
-      refreshDockToolMenu();
+      try {
+        await persistRoleEditorRecord({name, value});
+        refreshDockToolMenu();
+        showToast(`已保存角色「${name}」`, '☻');
+      } catch (error) { showToast(error.message || '角色保存失败', '×'); }
     }
 
     // 参考 attaches a real uploaded image to the active node instead of opening an empty placeholder.
@@ -20672,7 +22167,7 @@ const active=currentWorkspace();
         } else if (src.dataset.node === 'prompt') {
           // 上游文本节点：引用它的正文。带 text 标记，生成链路只把它当提示词，不会误当参考图。
           // ★ 同样过统一清洗 —— 与 `collectUpstreamInputs()` 保持同一份判据，两处不能有分歧。
-          const copy = sanitizePromptSource(src.querySelector('.node-copy')?.textContent);
+          const copy = sanitizePromptSource(textNodeText(src));
           if (!copy) return;
           refs.push({ id: `linked-${src.dataset.nodeId}`, linked: true, text: true, sourceNodeId: src.dataset.nodeId, name: nodeLabel(src) || '上游文本', data: copy });
         } else if (src.dataset.node === 'output' || src.dataset.node === 'model') {
@@ -20683,15 +22178,14 @@ const active=currentWorkspace();
           refs.push({ id: `linked-${src.dataset.nodeId}`, linked: true, video: true, sourceNodeId: src.dataset.nodeId, name: nodeLabel(src) || '上游视频', data: url });
         }
       });
-      return refs.slice(0, 6);
+      return refs;
     }
     // 手动参考 + 连线自动参考，按「自动在前」合并；生成链路统一读这个。
     // ★ 带 `ownerNodeId` 的手动参考是**某个工具给自己那个节点加的**（如「情绪调节」把裁出来的人脸
     //   塞进参考），**只在那个节点被选中时才生效** —— 否则它会跟着用户切到别的节点上，
     //   看起来就是"我都不做情绪调节了，那张参考图怎么还在"（用户实测报过）。
     //   用户自己用「＋ 参考」加的没有这个字段 → 行为完全不变（项目级，跟着当前节点走）。
-    function activeReferences() {
-      const current = state.activeNodeId || '';
+    function activeReferences(current = state.activeNodeId || '') {
       const manual = (Array.isArray(state.references) ? state.references : [])
         .filter(ref => !ref?.ownerNodeId || ref.ownerNodeId === current);
       return [...(state.linkedRefs || []), ...manual];
@@ -20797,7 +22291,7 @@ const active=currentWorkspace();
       const result = await api(`/api/assets/${encodeURIComponent(assetId)}`);
       return result?.asset?.data || '';
     }
-    function setMediaNodeImage(node, data, name, assetId = '', badgeLabel = '已上传') {
+    function setMediaNodeImage(node, data, name, assetId = '', badgeLabel = '已上传', preserveCaption = false) {
       if (!node || !data || !node.matches('.image-node')) return;
       const preview = node.querySelector('.media-preview');
       if (!preview) return;
@@ -20831,7 +22325,7 @@ const active=currentWorkspace();
       const badge = preview.querySelector('.media-badge');
       if (badge) badge.textContent = badgeLabel;
       const copy = node.querySelector('.media-copy');
-      if (copy && name) copy.textContent = name;
+      if (copy && name && !preserveCaption) copy.textContent = name;
       node.dataset.previewName = name || '';
       node.dataset.previewAsset = assetId || '';
       // Uploads and asynchronous restores can finish after the empty node was selected.
@@ -20844,7 +22338,7 @@ const active=currentWorkspace();
     // 而这个字段的语义是「内联 data URI」—— 分享摘要、编辑/切分取源图、历史记录
     // 都按 data URI 消费它，塞一个 URL 进去它们会拿到坏数据。所以这里另开一个渲染口。
     // 好处：静态文件直链，不走需要鉴权的 `/api/assets/<id>`，也不用把几 MB base64 解出来塞 DOM。
-    function setMediaNodeImageUrl(node, url, name, fallbackAssetId = '', badgeLabel = 'AI生成') {
+    function setMediaNodeImageUrl(node, url, name, fallbackAssetId = '', badgeLabel = 'AI生成', preserveCaption = false) {
       if (!node || !url || !node.matches('.image-node')) return;
       const preview = node.querySelector('.media-preview');
       if (!preview) return;
@@ -20865,7 +22359,7 @@ const active=currentWorkspace();
       if (badge && !badge.textContent) badge.textContent = badgeLabel;
       if (name) {
         const copy = node.querySelector('.media-copy');
-        if (copy) copy.textContent = name;
+        if (copy && !preserveCaption) copy.textContent = name;
         node.dataset.previewName = name;
       }
       const probe = new Image();
@@ -20881,7 +22375,7 @@ const active=currentWorkspace();
       probe.onerror = () => {
         if (fallbackAssetId && document.contains(node) && preview.dataset.previewMedia === url) {
           node.dataset.previewAsset = fallbackAssetId;
-          queuePreviewAssetRestore(node, fallbackAssetId, name || '');
+          queuePreviewAssetRestore(node, fallbackAssetId, name || '', preserveCaption);
         }
       };
       probe.src = url;
@@ -20978,7 +22472,7 @@ const active=currentWorkspace();
       }
       const preview = output.querySelector('.output-preview');
       if (preview) {
-        preview.querySelector('.output-video-element')?.remove();
+        preview.querySelector('.output-video-surface')?.remove();
         if (!preview.querySelector('.media-art')) {
           const art = document.createElement('div'); art.className = 'media-art video-art'; preview.prepend(art);
         }
@@ -20992,6 +22486,7 @@ const active=currentWorkspace();
         preview.style.setProperty('--job-progress', '0%');
       }
       delete output.dataset.videoUrl;
+      delete output.dataset.previewMedia;
       delete output.dataset.jobId;
       output.dataset.generated = 'false';
       const stateText = output.querySelector('.output-state');
@@ -21117,10 +22612,24 @@ const active=currentWorkspace();
         showToast('图片下载已开始', '↓');
       } catch (error) { showToast(error.message || '图片下载失败', '×'); }
     }
+    async function recoverDepthJob(output, jobId) {
+      const context = generationContext(output);
+      try {
+        const {job} = await api('/api/jobs/' + encodeURIComponent(jobId), {headers:context.headers, throwOnError:true});
+        if (!generationContextActive(context)) return;
+        if (!job?.recoverable) return showToast(job?.error || '此任务无法继续取回，请从源视频重新发起提取。', 'ⓘ');
+        const result = await api('/api/media-tools/depth/recover', {method:'POST',headers:context.headers,
+          throwOnError:true,body:JSON.stringify({jobId})});
+        if (!generationContextActive(context)) return;
+        if (output && result?.job) trackBatchVideoJob(output, result.job);
+        showToast('正在取回原任务的深度视频。', '↻');
+      } catch (error) { if (generationContextActive(context)) showToast(error.message || '取回失败，请稍后重试。', '×'); }
+    }
     async function retryOutputJob(output) {
       if (!output?.dataset.jobId) return showToast('这个视频还没有可重试的任务', '×');
       const jobId = output.dataset.jobId;
       const outputId = output.dataset.nodeId || '';
+      if (output.dataset.videoTool === 'depth') return recoverDepthJob(output, jobId);
       try {
         const result = await api(`/api/jobs/${encodeURIComponent(jobId)}/retry`, { throwOnError: true, method: 'POST', body: JSON.stringify({ outputId }) });
         const job = result?.job;
@@ -21139,6 +22648,7 @@ const active=currentWorkspace();
       const source = (state.jobHistory || []).find(item => item.id === jobId);
       const outputId = source?.outputId || '';
       const output = outputId ? document.querySelector(`[data-node-id="${CSS.escape(outputId)}"]`) : null;
+      if (source?.providerProtocol === 'mediakit-depth' || output?.dataset.videoTool === 'depth') return recoverDepthJob(output, jobId);
       try {
         const result = await api(`/api/jobs/${encodeURIComponent(jobId)}/retry`, { throwOnError: true, method: 'POST', body: JSON.stringify({ outputId }) });
         const job = result?.job;
@@ -21190,7 +22700,7 @@ const active=currentWorkspace();
       const deleteWorkspaceHit = clicked?.closest?.('[data-delete-workspace]');
       if (deleteWorkspaceHit) { event.preventDefault(); event.stopPropagation(); return void deleteWorkspace(deleteWorkspaceHit.dataset.deleteWorkspace); }
       const characterRemoveHit = clicked?.closest?.('[data-dock-character-remove]');
-      if (characterRemoveHit) { event.preventDefault(); event.stopPropagation(); return removeCharacter(characterRemoveHit.dataset.dockCharacterRemove); }
+      if (characterRemoveHit) { event.preventDefault(); event.stopPropagation(); return removeRoleRecord(characterRemoveHit.dataset.dockCharacterRemove); }
       const refRemoveHit = clicked?.closest?.('[data-dock-ref-remove]');
       if (refRemoveHit) { event.preventDefault(); event.stopPropagation(); return removeReference(refRemoveHit.dataset.dockRefRemove); }
        const coverEdit = clicked?.closest?.('[data-edit-project-cover]');
@@ -21273,7 +22783,37 @@ const active=currentWorkspace();
       if (target.matches('[data-role-close]') || event.target?.id === 'roleLibraryModal') return closeRoleLibrary();
       if (target.dataset.roleAdd !== undefined && target.hasAttribute('data-role-add')) return openRoleEditor();
       if (target.dataset.roleEdit) { collectNothing(); return openRoleEditor(target.dataset.roleEdit); }
+      if (target.dataset.roleStyle) {
+        const role = characterStorage.get().find(item => item.id === target.dataset.roleStyle);
+        if (!role) return;
+        window.CanvasFlowRoleStudio.open({
+          role, sourceRevision:roleRevision(role.id, roleScopeOf(role)), official: roleScopeOf(role) === 'official', escapeHtml, exitLibrary: closeRoleLibrary, notify:showToast,
+          workspaceKey: JSON.stringify([currentUser()?.id || 'local', currentWorkspaceId(), role.id]),
+          paletteKey: JSON.stringify([currentUser()?.id || 'local', currentWorkspaceId()]),
+          refreshPrompts: loadDockPrompts,
+          editPrompts: isAdminUser() ? (tab, parentDialog) => openDockPromptEditor('roleStudio', {
+            tab, parentDialog,
+            onError: message => {
+              if (parentDialog.open) parentDialog.querySelector('.rs-status').textContent = message;
+            },
+          }) : undefined,
+          upload: uploadRoleStudioFile, pickReference: pickRoleStudioReference, markLibrary:roleMarkLibrary(),
+          checkVersion:revision=>checkRoleBeforeGeneration(role,revision),
+          persist: (draft, options = {}) => persistRoleEditorRecord(draft, {sourceId:role.id, ...options}),
+          resumeSave: (operation,onPrepared)=>finishRoleEditorSave('mine',operation,onPrepared),
+          saved: ({record, scope}, addToCanvas) => {
+            roleLibraryState.scope = scope;
+            roleLibraryState.selectedId = record.id;
+            roleLibraryState.search = '';
+            roleLibraryState.tags.clear();
+            if (addToCanvas) applyRoleToCanvas(record.id);
+            else { openRoleLibrary(); showToast(`已保存角色「${record.name}」`, '☻'); }
+          },
+        });
+        return;
+      }
       if (target.dataset.roleRemove) return removeRoleRecord(target.dataset.roleRemove);
+      if (target.dataset.roleRefresh) return refreshCanvasRole(target.dataset.roleRefresh);
       if (target.dataset.roleApply) return applyRoleToCanvas(target.dataset.roleApply);
       if (target.dataset.roleSelect) {
         roleLibraryState.selectedId = target.dataset.roleSelect;
@@ -21291,7 +22831,7 @@ const active=currentWorkspace();
       if (target.dataset.roleFilterTag) return applyRoleFilterChange(target.dataset.roleFilterTag);
       if (target.closest('.role-filter-popover') || target.closest('[data-role-filter-toggle]')) { /* 点击弹层内部不冒泡关闭 */ }
       else document.querySelector('.role-filter-popover')?.remove();
-      if (target.dataset.roleEditorDelete) return removeRoleRecord(target.dataset.roleEditorDelete);
+      if (target.dataset.roleEditorDelete) return removeRoleRecord(target.dataset.roleEditorDelete, roleEditorState?.expectedRevision);
       if (target.hasAttribute('data-role-editor-close') || target.hasAttribute('data-role-editor-cancel')) return closeRoleEditor();
       if (target.hasAttribute('data-role-editor-save')) { collectRoleEditorFields(); return saveRoleEditor(); }
       if (target.dataset.roleTag) {
@@ -21313,7 +22853,7 @@ const active=currentWorkspace();
       if (target.dataset.dockTokenTool && target.dataset.dockTokenLabel) {
         event.preventDefault();
         closeDockToolMenu();
-        return appendDockToken(target.dataset.dockTokenTool, target.dataset.dockTokenLabel);
+        return appendDockToken(target.dataset.dockTokenTool, target.dataset.dockTokenLabel, target.dataset.dockRoleId);
       }
       if (id === 'dockSaveCharacterBtn') { event.preventDefault(); return void saveCurrentPromptAsCharacter(); }
       // ★ r810：判据用**数据属性**而不是类名 —— 落点菜单的项为了复用端口菜单的样式，
@@ -21351,6 +22891,7 @@ const active=currentWorkspace();
       if (id === 'assetLibraryBtn') return toggleLibraryDrawer();
       if (id === 'assetManagerBtn') return toggleAssetPanel();
       if (id === 'assetPanelClose') return setAssetPanelOpen(false);
+      if (id === 'toggleMiniMapBtn') return window.CanvasFlowSettings.setCanvasPref({ miniMap: $('#canvasMiniMap').hidden });
       if (id === 'toggleEdgesBtn') return toggleEdgeVisibility();
       if (id === 'toggleSnapBtn') return toggleGridSnap();
       if (id === 'assetRatingBtn') return toggleAssetRatingMenu();
@@ -21645,6 +23186,7 @@ const active=currentWorkspace();
         if (action === 'output-retry') return void retryOutputJob(owner);
         if (action === 'delete') return void deleteNode(owner);
         if (action === 'delete-selected') return void deleteSelectedNodes();
+        if (action === 'role-refresh') return refreshCanvasRole(target.dataset.updateRoleId);
         if (action === 'duplicate') return duplicateNode(owner);
         if (action === 'bring-front') { bringNodeToFront(owner); return showToast('已置于顶层', '⬆'); }
         if (action === 'send-back') { sendNodeToBack(owner); return showToast('已置于底层', '⬇'); }
@@ -21951,8 +23493,7 @@ const active=currentWorkspace();
       const copy=output.querySelector('.node-copy');if(copy)copy.textContent=duration.toFixed(2)+' 秒 · '+width+' × '+height+' · 机位预演';
       output.dataset.previewName=name;output.dataset.sourceDirectorId=node?.dataset.nodeId||'';
       if(posterUrl)output.dataset.previewMedia=posterUrl;
-      setOutputVideoPreview(output,url);
-      if(!posterUrl&&posterDataUrl){const video=output.querySelector('video');if(video)video.poster=posterDataUrl;}
+      setOutputVideoPreview(output,url,posterUrl || posterDataUrl);
       output.dataset.generated='true';output.dataset.jobStatus='completed';output.dataset.mediaRatio=String(height/width);
       const preview=output.querySelector('.output-preview');preview?.classList.add('generated');
       const status=output.querySelector('.output-state');if(status)status.textContent='预演完成 · '+duration.toFixed(2)+'s';
@@ -22011,7 +23552,7 @@ const active=currentWorkspace();
         if (node.dataset.node === 'prompt') {
           // ★ 过统一清洗：上游文本节点的正文一般不会被污染，但「引用该节点生成」会把源节点的
           //   copy（可能正是结果命名）抄进新节点正文 —— 这里兜一道，别让污染顺着连线传下去。
-          const copy = sanitizePromptSource(node.querySelector('.node-copy')?.textContent);
+          const copy = resolvePromptTokens(sanitizePromptSource(textNodeText(node)));
           if (copy) { texts.push(copy); labels.push('提示词'); inputs.push(`提示词：${copy.slice(0, 60)}`); }
           else { labels.push('提示词（空）'); inputs.push('提示词：（空白）'); }
         } else if (node.dataset.node === 'image') {
@@ -22033,7 +23574,9 @@ const active=currentWorkspace();
       });
       // `includeDock: false` 供图片生成用：图片/音频节点被选中时输入框会被 `.node-copy` 回填
       // （`syncInspectorToNode`），那不是"用户这次写的提示词"——混进来会把上游正文顶掉。
-      const inspectorText = options.includeDock === false ? '' : resolvePromptTokens(promptInput?.value?.trim());
+      const ownPrompt = output?.dataset.mediaPromptAbsent ? '' : output?.dataset.mediaPrompt ?? (output && output.dataset.nodeId !== state.activeNodeId
+        ? state.modelPrompt : promptInput?.value);
+      const inspectorText = options.includeDock === false || !ownPrompt?.trim() ? '' : resolvePromptTokens(ownPrompt);
       // The dock textarea is the prompt itself, not an upstream card: it feeds generation but is
       // never listed in the card's input summary (only wired cards are).
       if (inspectorText && !texts.some(text => text === inspectorText)) texts.unshift(inspectorText);
@@ -22101,7 +23644,7 @@ const active=currentWorkspace();
             // Lengthy provider jobs still need their result. Poll less often after ten minutes.
             binding.nextPollAt = Date.now() - startedAt > 600000 ? Date.now() + 5000 : 0;
             output.dataset.jobId = job.id || binding.jobId;
-            if (renderJobProgress(output, job)) { binding.done = true; binding.failed = job.status === 'failed'; }
+            if (renderJobProgress(output, job)) { binding.done = true; binding.failed = job.status === 'failed'; binding.missingVideo = !binding.failed && !job.videoUrl; }
           }
           if (bindings.every(item => item.done)) {
             stopJobPolling();
@@ -22115,7 +23658,8 @@ const active=currentWorkspace();
             scheduleSave();
             if (!silent) {
               const failed = bindings.some(item => item.failed);
-              showToast(failed ? '视频模型生成失败，可右键输出卡片重试' : '视频已生成，可右键输出卡片下载', failed ? '×' : '✓');
+              const completedText = bindings.some(item => item.missingVideo) ? '视频任务已完成，打开预览可取回成片' : '视频已生成，可右键输出卡片下载';
+              showToast(failed ? '视频模型生成失败，可右键输出卡片重试' : completedText, failed ? '×' : '✓');
             }
           }
         } finally { polling = false; }
@@ -22134,7 +23678,7 @@ const active=currentWorkspace();
       return Math.max(0, Math.round((Date.now() - created) / 1000));
     }
 
-    function renderJobProgress(output, job) {
+    function renderJobProgress(output, job, { preserveTrim = false } = {}) {
       output.dataset.jobStatus = job?.status || '';
       if (job?.error) output.dataset.jobError = String(job.error).slice(0, 500);
       else delete output.dataset.jobError;
@@ -22145,9 +23689,10 @@ const active=currentWorkspace();
         if (job.status === 'completed') {
           output.dataset.generated = 'true';
           preview?.classList.remove('generating');
+          preview?.classList.add('generated');
           setModelJobState(output, null);
-          if (job.videoUrl) setModelNodeVideo(output, job.videoUrl);
-          else setModelJobState(output, '已完成，但供应商未返回视频地址');
+          if (job.videoUrl) setModelNodeVideo(output, job.videoUrl, preserveTrim);
+          else setModelJobState(output, '成片尚未取回 · 打开预览可重试');
           return true;
         }
         if (job.status === 'failed') {
@@ -22178,11 +23723,13 @@ const active=currentWorkspace();
       const time = output.querySelector('.node-time');
       const preview = output.querySelector('.output-preview');
       const previewText = preview?.querySelector('.output-state');
+      const depth = output.dataset.videoTool === 'depth';
+      if (depth) preview?.querySelector('.cv-depth-recover')?.remove();
       if (job.status === 'completed') {
         if (pill) { pill.textContent = '已完成'; pill.className = 'status-pill ready'; }
         if (time) time.textContent = '刚刚完成';
-        if (job.videoUrl) setOutputVideoPreview(output, job.videoUrl);
-        if (previewText) previewText.textContent = job.videoUrl ? '生成完成 · 右键菜单可放大播放' : '已完成，但供应商未返回视频地址';
+        if (job.videoUrl) setOutputVideoPreview(output, job.videoUrl, undefined, preserveTrim);
+        if (previewText) previewText.textContent = job.videoUrl ? '生成完成 · 右键菜单可放大播放' : '成片尚未取回 · 打开预览可重试';
         preview?.classList.add('generated');
         preview?.classList.remove('generating');
         output.dataset.generated = 'true';
@@ -22190,8 +23737,21 @@ const active=currentWorkspace();
         return true;
       }
       if (job.status === 'failed') {
-        if (pill) { pill.textContent = '生成失败'; pill.className = 'status-pill error'; }
-        if (time) time.textContent = '可右键重试';
+        if (pill) { pill.textContent = depth ? '提取失败' : '生成失败'; pill.className = 'status-pill error'; }
+        if (time) time.textContent = depth ? (job.recoverable ? '可继续取回' : '请检查来源视频或服务配置') : '可右键重试';
+        if (depth && job.recoverable && preview && job.id) {
+          const recover = document.createElement('button');
+          recover.type = 'button';
+          recover.className = 'cv-depth-recover';
+          recover.textContent = '继续取回';
+          recover.onpointerdown = event => event.stopPropagation();
+          recover.onclick = async event => {
+            event.stopPropagation();
+            recover.disabled = true;
+            try { await recoverDepthJob(output, job.id); } finally { recover.disabled = false; }
+          };
+          preview.append(recover);
+        }
         if (previewText) previewText.textContent = job.error || '供应商生成失败';
         preview?.classList.remove('generated', 'generating');
         output.dataset.generated = 'false';
@@ -22211,7 +23771,10 @@ const active=currentWorkspace();
       const outElapsed = jobElapsedSeconds(job);
       if (pill) { pill.textContent = job.status === 'queued' ? '排队中' : '生成中'; pill.className = 'status-pill ready'; }
       if (time) time.textContent = job.status === 'queued' ? '已提交供应商任务' : (outHasProgress ? ('生成中 ' + progress + '%') : `生成中 · 已用 ${outElapsed}s`);
-      if (previewText) previewText.textContent = outHasProgress ? ('视频模型生成中 ' + progress + '%') : `视频模型生成中 · 已用 ${outElapsed}s`;
+      if (previewText) {
+        const processing = depth ? '深度提取中' : '视频模型生成中';
+        previewText.textContent = outHasProgress ? (processing + ' ' + progress + '%') : `${processing} · 已用 ${outElapsed}s`;
+      }
       return false;
     }
 
@@ -22359,6 +23922,17 @@ const active=currentWorkspace();
 
     function openAudioVoiceDialog() {
       $('.audio-voice-layer')?.remove();
+      const audioNode = $('.flow-node.selected[data-node="audio"]');
+      const pinnedVoices = audioNode ? usedCanvasRoles().flatMap(s => {
+        const voice = readRoleVoice(s.voice);
+        return voice ? [{value:'snapshot:' + s.ref,name:s.name,description:voice.name,meta:['画布角色版本'],
+          demo:voice.url,choice:{...voice,roleId:s.roleId,roleName:s.name,snapshotRef:s.ref}}] : [];
+      }) : [];
+      const roleVoices = audioNode ? [...pinnedVoices,...characterStorage.get().flatMap(role => {
+        const choice = readRoleVoice(role.styling?.controls?.['voice.selection']);
+        return choice ? [{value:'role:' + role.id, name:role.name, description:choice.name, meta:['角色音色'],
+          demo:choice.url, choice:{...choice, roleId:role.id, roleName:role.name}}] : [];
+      })] : [];
       const catalog = audioVoiceCatalog();
       const voiceRow = audioVoiceRow();
       const builtinOnly = catalog.source === 'builtin';
@@ -22391,6 +23965,7 @@ const active=currentWorkspace();
       // 自由文本音色的保存（只在「拉不到音色表 且 登记行没有选项」时才会出现）。
       const saveFreeform = value => {
         const text = String(value || '').trim();
+        if (audioNode?.dataset.roleVoice) { remember(); delete audioNode.dataset.roleVoice; scheduleSave(); }
         if (voiceRow) setAudioSpecValue(voiceRow.key, text);
         else localStorage.setItem('canvasflow-audio-voice', text);
         updateAudioDockLabels();
@@ -22399,6 +23974,7 @@ const active=currentWorkspace();
       };
       /** 列表条目：远端 → 登记表 → 内置库，形状统一成 `{value,name,description,meta,demo,raw}`。 */
       const items = () => {
+        if (tab === 'roles') return roleVoices;
         if (remote.voices.length) {
           return remote.voices.map(voice => ({
             value: voice.id,
@@ -22440,6 +24016,7 @@ const active=currentWorkspace();
       };
       const activeFilterCount = () => Object.values(filters).filter(Boolean).length;
       const emptyText = () => {
+        if (tab === 'roles') return '请先在角色编辑器中选择音色并保存角色。';
         if (remote.loading) return '正在读取该模型的音色…';
         if (tab === 'favorites') return favorites.length ? '没有符合筛选条件的收藏音色' : '还没有收藏音色';
         if (tab === 'recent') return '还没有使用记录（选过一次就会出现在这里）';
@@ -22449,6 +24026,16 @@ const active=currentWorkspace();
       const selectVoice = value => {
         const text = String(value || '').trim();
         if (!text) return;
+        if (tab === 'roles') {
+          const role = roleVoices.find(item => item.value === text);
+          if (!role || !audioNode?.isConnected) return;
+          remember();
+          audioNode.dataset.roleVoice = JSON.stringify(role.choice);
+          scheduleSave(); updateAudioDockLabels();
+          showToast('此配音节点已使用「' + role.name + '」的音色', '♪');
+          return close();
+        }
+        if (audioNode?.dataset.roleVoice) { remember(); delete audioNode.dataset.roleVoice; scheduleSave(); }
         if (voiceRow) setAudioSpecValue(voiceRow.key, text);
         else localStorage.setItem('canvasflow-audio-voice', text);
         rememberAudioVoice(text);
@@ -22467,7 +24054,8 @@ const active=currentWorkspace();
           .join('')}</div></div>`;
       };
       const rowHtml = item => {
-        const isCurrent = item.value === audioVoiceId();
+        const chosenRole = readRoleVoice(audioNode?.dataset.roleVoice);
+        const isCurrent = chosenRole ? item.value === 'role:' + chosenRole.roleId : item.value === audioVoiceId();
         const isFav = favorites.includes(item.value);
         const playing = previewing === item.value;
         return `<div class="audio-voice-row${isCurrent ? ' is-selected' : ''}">
@@ -22527,6 +24115,7 @@ const active=currentWorkspace();
         layer.innerHTML = `<section class="audio-voice-dialog" role="dialog" aria-modal="true" aria-label="音色">
           <header><strong>音色</strong><button type="button" class="audio-voice-close" title="关闭" aria-label="关闭">${AUDIO_VOICE_ICONS.close}</button></header>
           <div class="audio-voice-controls">
+            ${roleVoices.length ? '<button type="button" class="spec-btn" data-voice-tab="roles">角色音色</button>' : ''}
             <label class="audio-voice-search">${AUDIO_VOICE_ICONS.speaker}
               <input type="text" data-voice-freeform placeholder="填写上游要求的音色 ID（留空 = 用模型默认）" value="${escapeHtml(value)}" spellcheck="false" />
             </label>
@@ -22544,7 +24133,7 @@ const active=currentWorkspace();
       };
       const render = () => {
         // 自由文本 + 拉不到音色表 → 保持输入框（r860 的行为）；一旦拿到音色表就升级成列表。
-        if (!remote.loading && !remote.voices.length && catalog.freeform) return renderFreeform();
+        if (tab !== 'roles' && !remote.loading && !remote.voices.length && catalog.freeform) return renderFreeform();
         const list = visibleItems();
         const totalPages = Math.max(1, Math.ceil(list.length / pageSize));
         if (page > totalPages) page = totalPages;
@@ -22556,6 +24145,7 @@ const active=currentWorkspace();
           <div class="audio-voice-controls">
             <div class="audio-voice-tabs" role="tablist" aria-label="音色分类">
               <button type="button" role="tab" aria-selected="${tab === 'library'}" class="${tab === 'library' ? 'is-active' : ''}" data-voice-tab="library">音色库</button>
+              ${audioNode ? '<button type="button" role="tab" aria-selected="' + (tab === 'roles') + '" class="' + (tab === 'roles' ? 'is-active' : '') + '" data-voice-tab="roles">角色音色</button>' : ''}
               <button type="button" role="tab" aria-selected="${tab === 'recent'}" class="${tab === 'recent' ? 'is-active' : ''}" data-voice-tab="recent">最近使用 <span>${recents.length}</span></button>
               <button type="button" role="tab" aria-selected="${tab === 'favorites'}" class="${tab === 'favorites' ? 'is-active' : ''}" data-voice-tab="favorites">收藏音色 <span>${favorites.length}</span></button>
             </div>
@@ -22725,6 +24315,8 @@ const active=currentWorkspace();
     /** 底栏音色标签：登记表里显示选项的**显示名**，自由文本行显示**音色名**（拉过表就有），
      *  内置库显示值本身。 */
     function audioVoiceLabel() {
+      const role = readRoleVoice($('.flow-node.selected[data-node="audio"]')?.dataset.roleVoice);
+      if (role) return (role.roleName ? role.roleName + ' · ' : '') + role.name;
       const value = audioVoiceId();
       const row = audioVoiceRow();
       if (!row) return audioVoiceDisplayName(value);
@@ -23061,8 +24653,14 @@ const active=currentWorkspace();
     function audioVoiceSupported() {
       // 登记表里有 voice 行 → 支持（**没有 options 也算**：那是上游声明成自由文本的音色 id，
       // 前端渲染成输入框 —— 实测 `doubao-tts-2.0` / `gem-3.1-tts` 的 `voice_id` 都是这种）。
-      if (audioVoiceRow()) return true;
-      return audioModelSpecRows() === null;
+      if (audioVoiceRow() || audioModelSpecRows() === null) return true;
+      // A saved character voice brings its own TTS model, even if the current dock model is for music.
+      if (!$('.flow-node.selected[data-node="audio"]')) return false;
+      const choices = [...usedCanvasRoles().map(s => s.voice),...characterStorage.get().map(role => role.styling?.controls?.['voice.selection'])];
+      return choices.some(voice => {
+        const id = readRoleVoice(voice)?.profile?.modelId;
+        return id && state.audioModels?.some(model => model.id === id);
+      });
     }
     /** 音色候选 + 来源：登记表有就用它的选项（那才是上游真认的值），否则内置音色库。 */
     function audioVoiceCatalog() {
@@ -23236,6 +24834,8 @@ const active=currentWorkspace();
     }
     function currentAudioModel() {
       const models = state.audioModels || [];
+      const pinned = readRoleVoice($('.flow-node.selected[data-node="audio"]')?.dataset.roleVoice)?.profile?.modelId;
+      if (pinned) return models.find(item => item.id === pinned) || null;
       return models.find(item => item.id === audioModelId()) || models[0] || null;
     }
     function updateAudioDockLabels() {
@@ -23378,6 +24978,7 @@ const active=currentWorkspace();
       const text = collectGenerationPrompt(node, [promptInput?.value?.trim() || '']);
       if (!text) return showToast('请先在下面的输入框写下要朗读的文本，或连接一个文本节点', '✦');
       if (isStandaloneFile()) return showToast('请通过 server.py 启动本地服务后使用文字转语音', '×');
+      const roleVoice = readRoleVoice(node.dataset.roleVoice);
       const model = currentAudioModel();
       if (!model) return showToast('还没有可用的音频模型，请在偏好设置 · 供应商设置中配置文字转语音模型', '×');
       const button = $('#generateAudioBtn');
@@ -23390,14 +24991,15 @@ const active=currentWorkspace();
       showToast('正在合成配音…', '♪');
       const context = generationContext(node);
       try {
-        const audio = await runAudioGenerationJob({
+        const payload = roleVoice ? canvasRoleVoicePayload(roleVoice, text) : {
           modelId: model.id, text, mode: audioModeId(), voice: audioVoiceId(),
           speed: audioSpeed(), pitch: audioPitch(), volume: audioVolume(),
           // ★ 音频规格面板的选值（schema 驱动，键名 = **上游字段名**，见 AUDIO_SPEC_SCHEMAS）。
           //   `audioSpecPayload()` 负责把面板属性名映射成上游字段名（如 sampleRate → sample_rate）。
           //   服务端 create_audio_job 会把 spec 原样透传给 call_tts。
           spec: audioSpecPayload(),
-        }, { preview, node, context });
+        };
+        const audio = await runAudioGenerationJob(payload, { preview, node, context });
         if (!generationContextActive(context)) return;
         if (!audio) throw new Error('配音失败，请检查音频模型配置');
         applyGeneratedAudio(node, audio, text);
@@ -23642,7 +25244,12 @@ const active=currentWorkspace();
       if (button) { button.disabled = true; button.innerHTML = '<span class="spinner image-spinner"></span>'; }
       showToast('正在调用大模型生成文本…', '✦');
       const payload = { prompt: instruction };
-      const modelId = textModelId();
+      const modelPlan = sourceTextModelPlan(node);
+      if (modelPlan?.error) {
+        if (button) { button.disabled = false; button.textContent = '✦'; }
+        return showToast(modelPlan.error, '⚠');
+      }
+      const modelId = modelPlan?.model?.id || textModelId();
       if (modelId && modelId !== '__none') payload.modelId = modelId;
       let result = null;
       try {
@@ -23754,14 +25361,17 @@ const active=currentWorkspace();
       const kind = options.kind === 'audio' ? 'audio' : 'image';
       const label = preview?.querySelector('.node-gen__label') || null;
       let job = null;
+      const active = () => (!options.context || generationContextActive(options.context))
+        && (!options.isActive || options.isActive());
       // 轮询上限与视频一致：700ms × 900 ≈ 10.5 分钟（服务端另有总等待超时兜底）。
       for (let tick = 0; tick < 900; tick += 1) {
         await new Promise(resolve => setTimeout(resolve, 700));
-        if (options.context && !generationContextActive(options.context)) return null;
-        const poll = await api(`/api/jobs/${encodeURIComponent(jobId)}`, { headers: options.context?.headers });
-        if (options.context && !generationContextActive(options.context)) return null;
+        if (!active()) return null;
+        const poll = await api(`/api/jobs/${encodeURIComponent(jobId)}`, { headers: options.headers || options.context?.headers });
+        if (!active()) return null;
         job = poll?.job || job;
         if (!job) continue;
+        options.onProgress?.(job);
         // 已用时间以**服务端 createdAt** 为准：刷新页面/重新打开项目后仍然准确
         // （前端计时器在恢复场景会从 0 重新开始，那样就假了）。
         const elapsedSeconds = Math.max(1, jobElapsedSeconds(job));
@@ -23792,6 +25402,7 @@ const active=currentWorkspace();
           }
         }
         if (job.status === 'completed') {
+          if (options.mediaOnly) return job;
           if (kind === 'audio') {
             const audioUrl = String(job.audioUrl || '');
             if (!audioUrl) throw new Error('已完成，但服务端没有返回音频地址');
@@ -23905,8 +25516,17 @@ const active=currentWorkspace();
         if (job?.id === generationJobId && job.outputId === nodeId && job.kind === node.dataset.node) latest.set(nodeId, job);
       }
       await Promise.allSettled(Array.from(latest.values(), async job => {
-        if (!generationContextActive(context) || !job.id || job.status === 'failed') return;
+        if (!generationContextActive(context) || !job.id) return;
         const node = document.querySelector(`.flow-node[data-node-id="${CSS.escape(String(job.outputId))}"]`);
+        if (job.status === 'failed') {
+          if (job.providerProtocol === 'mediakit-depth' && node?.dataset.videoTool === 'depth'
+            && (!node.dataset.jobId || node.dataset.jobId === job.id)) {
+            node.dataset.jobId = node.dataset.generationJobId = job.id;
+            renderJobProgress(node, job);
+            scheduleSave();
+          }
+          return;
+        }
         if (job.kind === 'video' && node && ['output', 'model'].includes(node.dataset.node)) {
           if (node.dataset.videoSubmitting === 'true' || (state.jobBindings || []).some(item => item.jobId === job.id)) return;
           if (node.dataset.generationJobId && node.dataset.generationJobId !== 'pending' && node.dataset.generationJobId !== job.id) return;
@@ -23969,6 +25589,29 @@ const active=currentWorkspace();
       if (IMAGE_RESULT_NAME_PREFIX.test(value)) return '';
       return value;
     }
+    function mediaNodePrompt(node) {
+      if (node.dataset.mediaPromptAbsent) return '';
+      if (node.dataset.mediaPrompt !== undefined) return node.dataset.mediaPrompt;
+      if (node.dataset.node !== 'image') return state.modelPrompt || '';
+      const legacy = node.querySelector('.node-copy')?.textContent || '';
+      return legacy !== node.dataset.previewName && sanitizePromptSource(legacy) ? legacy : '';
+    }
+    function updateMediaMentionsAfterEdit(node, next) {
+      const previous = node.dataset.mediaPrompt || '';
+      if (previous === next) return;
+      let start = 0, tail = 0;
+      const shorter = Math.min(previous.length, next.length);
+      while (start < shorter && previous[start] === next[start]) start++;
+      while (tail < shorter - start && previous[previous.length - 1 - tail] === next[next.length - 1 - tail]) tail++;
+      const delta = next.length - previous.length;
+      const surviving = JSON.parse(node.dataset.mediaPromptMentions).flatMap(mention => {
+        if (mention.end <= start) return [mention];
+        if (mention.start < previous.length - tail) return [];
+        return [{ ...mention, start: mention.start + delta, end: mention.end + delta }];
+      });
+      if (surviving.length) node.dataset.mediaPromptMentions = JSON.stringify(surviving);
+      else delete node.dataset.mediaPromptMentions;
+    }
     /**
      * 生成入口的提示词**统一收集**（唯一来源）。
      *
@@ -23989,10 +25632,18 @@ const active=currentWorkspace();
       const upstream = resolvePromptTokens(collectUpstreamInputs(node, { includeDock: false }).prompt);
       const parts = upstream ? [upstream] : [];
       const seen = new Set(parts);
+      // A saved media prompt belongs to this node, even when the visible dock belongs to another one.
+      const hasMediaPrompt = node?.dataset?.mediaPrompt !== undefined || Boolean(node?.dataset?.mediaPromptAbsent);
+      if (hasMediaPrompt) ownSources = [node.dataset.mediaPrompt];
+      else if (node?.dataset.node === 'image') {
+        ownSources = [mediaNodePrompt(node)];
+        if (node.dataset.nodeId === state.activeNodeId) ownSources.unshift(promptInput?.value);
+      }
       ownSources.forEach(raw => {
-        const value = sanitizePromptSource(resolvePromptTokens(String(raw || '').trim()));
+        const resolved = resolvePromptTokens(String(raw || ''));
+        const value = hasMediaPrompt ? resolved : sanitizePromptSource(resolved);
         // 去重：选中节点时输入框会被 `.node-copy` 回填，两边同值，不去重就会拼两遍。
-        if (!value || seen.has(value)) return;
+        if (!value?.trim() || seen.has(value)) return;
         seen.add(value);
         parts.push(value);
       });
@@ -24010,10 +25661,8 @@ const active=currentWorkspace();
      *   否则又会退回"各入口各写一份"的老路。
      */
     function collectImagePrompt(node) {
-      const base = collectGenerationPrompt(node, [
-        promptInput?.value?.trim() || '',
-        node.querySelector('.node-copy')?.textContent?.trim() || '',
-      ]);
+      const base = collectGenerationPrompt(node);
+      if (node?.dataset?.generationProfile && !nodeGenerationProfile(node)?.useWorkspace) return base;
       // ★★★ 摄像机（相机 / 镜头 / 焦距 / 光圈）的正文**必须拼进提示词**。
       //   2026-09-25 实测发现：`cameraControlPromptText()` 只被**定义**、**从未被任何地方调用** ——
       //   于是面板选得好好的、底栏 tooltip 也显示「摄像机：Arri Alexa 35, Helios, 35mm, ƒ/4」，
@@ -24052,6 +25701,7 @@ const active=currentWorkspace();
         if (ref.ownerNodeId && ref.ownerNodeId !== targetId) continue;
         await add(ref.data);
       }
+      for (const s of roleInputsForGeneration(node)) if (s.mainReferenceImageUrl) await add(s.mainReferenceImageUrl);
       return images;
     }
 
@@ -24076,23 +25726,33 @@ const active=currentWorkspace();
         const imageSettings = state.imageGenerationSettings = normalizeImageGenerationSettings(state.imageGenerationSettings);
 
 
+        const sourcePlan = node.dataset.generationProfile && !options.modelId && !options.settingsOverride && !options.autoMode
+          ? sourceGenerationPlan(node, true) : null;
+        if (sourcePlan?.error) return showToast(sourcePlan.error, '×');
         const runSettings = JSON.parse(JSON.stringify({ ...imageSettings, ...options.settingsOverride }));
         const imageMode = options.autoMode
           ? (IMAGE_MODE_OPTIONS.find(option => option.id === options.autoMode) || IMAGE_MODE_OPTIONS[0])
           : (IMAGE_MODE_OPTIONS.find(option => option.id === runSettings.mode) || IMAGE_MODE_OPTIONS[0]);
         const modelId = options.modelId || t2iModelId();
         const enabledModels = state.t2iModels || [];
-        const chosen = enabledModels.find(option => option.id === modelId) || enabledModels[0] || null;
+        const chosen = sourcePlan?.model || enabledModels.find(option => option.id === modelId) || enabledModels[0] || null;
         if (!chosen) return showToast('还没有可用的生图模型，请在偏好设置 · 供应商设置中配置并启用', '×');
         // The references displayed for this target must be sent, regardless of the legacy mode toggle.
         let referenceImages;
         try { referenceImages = await collectImageReferenceImages(node, options.referenceOverride); }
         catch (error) { return showToast(error.message || '参考图片读取失败', '×'); }
         if (!generationContextActive(context)) return;
-        if (!referenceImages.length && imageMode.id === 'image-to-image') {
+        if (!sourcePlan && !referenceImages.length && imageMode.id === 'image-to-image') {
           return showToast('图生图需要参考图：请先点「＋ 参考」上传，或连接一张图片节点', '✦');
         }
-        const count = options.single === true ? 1 : Math.max(1, Number(runSettings.count) || 1);
+        let sourcePayload;
+        if (sourcePlan) {
+          const refs = {referenceImages: referenceImages.map(url => ({kind:'image', url}))};
+          const issue = sourcePlan.adapter.validate(sourcePlan.settings, refs, prompt);
+          if (issue) return showToast(issue, '×');
+          sourcePayload = sourcePlan.adapter.payload(sourcePlan.settings, refs, prompt);
+        }
+        const count = options.single === true ? 1 : Math.max(1, Number(sourcePlan ? sourcePlan.settings.count : runSettings.count) || 1);
         // 节点级分辨率覆盖（如「720全景图」节点自带 21:9 · 2K），否则跟随画布全局图片设置。
         const nodeSize = node.dataset.aspectRatio && node.dataset.resolution
           ? aspectToResolution(node.dataset.aspectRatio, node.dataset.resolution)
@@ -24128,9 +25788,9 @@ const active=currentWorkspace();
               saveProject();
             }
             const result = await runImageGenerationJob({
-              modelId: chosen.id, prompt, size: generateSize,
-              quality: runSettings.quality,
-              modelOptions: runSettings.modelOptions || {}, referenceImages,
+              modelId: chosen.id, prompt,
+              ...(sourcePayload || {size: generateSize, quality: runSettings.quality,
+                modelOptions: runSettings.modelOptions || {}, referenceImages}),
               presetScene: presetScene || undefined,
             }, { preview: output.querySelector('.media-preview'), node: output, context: { ...context, node: output } });
             // Switching canvases stops the remaining batch. The submitted task is
@@ -24202,9 +25862,15 @@ const active=currentWorkspace();
       const byId = new Map($$('.flow-node').map(node => [node.dataset.nodeId, node]));
       const handles = edges.filter(edge => edge.target === output?.dataset.nodeId)
         .map(edge => byId.get(edge.source)).filter(node => node?.dataset.node === 'image').map(nodeImageHandles);
-      for (const ref of activeReferences()) {
+      for (const ref of activeReferences(output?.dataset.nodeId)) {
         if (ref?.linked || ref?.text || ref?.video || ref?.audio || typeof ref?.data !== 'string' || !ref.data) continue;
         handles.push(ref.data.startsWith('/media/') ? { previewMedia:ref.data } : { previewData:ref.data });
+      }
+      for (const s of roleInputsForGeneration(output)) {
+        const url = s.mainReferenceImageUrl;
+        if (!url || handles.some(h => h.previewMedia === url || h.previewData === url)) continue;
+        if (url.startsWith('/media/')) handles.push({previewMedia:url});
+        else handles.push({previewData:url.startsWith('data:') ? url : await fetchMediaUrlAsDataUrl(url)});
       }
       // Resolve each frame in connection order, including frames restored from the asset library.
       for (const frame of handles) {
@@ -24223,17 +25889,16 @@ const active=currentWorkspace();
     }
 
     // ★★★ r873：「源视频」收集 —— 视频超分 / 视频编辑这类模型**必传**一段源视频。
-    //   数据来源与参考图同一条路（上游连线的视频节点 / 生成结果），但**只取 http(s) 直链**：
-    //   上游明确「视频文件仍需传 URL」（base64 只对图片/音频开放），且我们自己的 `/media/xxx.mp4`
-    //   是内网相对路径，上游服务器够不到 —— 那两类一律丢掉，宁可不发让服务端报缺参，
-    //   也不要发一个必被拒的值（用户看到的会是一句看不懂的参数错误）。
+    //   收集上游视频的直链。支持文件上传的线路也能接收本地 /media/ 句柄，由后端上传。
     //   ★ 与 `collectVideoReferenceImages` 分开：那个收 data:/http(s) 且只认图片节点，
     //     混在一起会把图片当视频发，或把源视频塞进 referenceImages 撑爆请求体。
-    function collectVideoSourceVideos(output) {
+    function collectVideoSourceVideos(output, model = currentVideoModelEntry(), onDepth) {
       const videos = [];
       const add = value => {
         const data = String(value || '').trim();
-        if ((data.startsWith('http://') || data.startsWith('https://')) && !videos.includes(data)) videos.push(data);
+        const local = (model?.videoProfile === 'zhongheng-video' || model?.requestProfile === 'zhongheng-video' || model?.videoLocalReferences)
+          && /^\/media\/[\w.-]+$/.test(data);
+        if ((local || /^https?:\/\//i.test(data)) && !videos.includes(data)) videos.push(data);
       };
       const edges = window.CanvasFlowConnections?.getEdges?.() || [];
       const byId = new Map($$('.flow-node').map(node => [node.dataset.nodeId, node]));
@@ -24253,7 +25918,9 @@ const active=currentWorkspace();
         const isVideoNode = kind === 'video' || mediaKind === 'video';
         if (!isVideoNode && !(kind === 'model' || kind === 'output')) continue;
         if (!isVideoNode && !String(node.dataset.videoUrl || preview?.dataset?.videoUrl || '').trim()) continue;
-        add(node.dataset.videoUrl || preview?.dataset?.videoUrl);
+        const url = node.dataset.videoUrl || preview?.dataset?.videoUrl;
+        if (node.dataset.videoTool === 'depth') onDepth?.(url);
+        add(url);
       }
       return videos;
     }
@@ -24265,21 +25932,34 @@ const active=currentWorkspace();
       if (!output) return showToast('请先选中一张模型卡，或添加视频节点', '×');
       if (output.dataset.videoSubmitting === 'true') return;
       if ((state.jobBindings || []).some(binding => binding.outputId === output.dataset.nodeId && !binding.done)) return showToast('这个节点已有视频任务正在生成', 'ⓘ');
+      const sourcePlan = output.dataset.generationProfile ? sourceGenerationPlan(output, false) : null;
+      if (sourcePlan?.error) return showToast(sourcePlan.error, '×');
       const upstream = collectUpstreamInputs(output);
       const prompt = upstream.prompt;
-      if (!prompt && !currentModelContract(currentVideoModelEntry())?.promptOptional) return showToast('请先填写提示词再生成', '×');
+      if (!prompt && !currentModelContract(sourcePlan?.model || currentVideoModelEntry())?.promptOptional) return showToast('请先填写提示词再生成', '×');
       const context = generationContext(output);
-      const settings = JSON.parse(JSON.stringify(state.generationSettings || defaultGenerationSettings()));
-      const advancedSettings = JSON.parse(JSON.stringify(state.advancedSettings || {}));
+      const settings = sourcePlan ? sourcePlan.settings : JSON.parse(JSON.stringify(state.generationSettings || defaultGenerationSettings()));
+      const advancedSettings = sourcePlan ? {} : JSON.parse(JSON.stringify(state.advancedSettings || {}));
       const nodes = JSON.parse(JSON.stringify(graphSnapshot().nodes));
       // ★★★ r873：源视频 —— 当前视频模型在登记表里声明了「必传源视频」时，从上游连线的
-      //   视频节点 / 生成结果取一个 http(s) 直链带上。**提前拦**比让上游回 400 强得多：
       //   上游那句参数错误用户完全看不懂，而"请先连接一个已生成的视频节点"是能自己解决的。
       //   ★ 判据用**模型能力**（登记表有没有源视频行），不用 `referenceMode`：模式是"想怎么用素材"，
       //     有没有源视频槽是"这个模型支不支持" —— 混在一起会出现「选了视频编辑但模型其实不吃视频」。
-      const sourceVideos = collectVideoSourceVideos(output);
-      const needsSourceVideo = videoModelNeedsSourceVideo();
-      if (needsSourceVideo && !sourceVideos.length) return showToast(`当前模型（${videoModelDisplayName()}）需要一段源视频：请先连接一个已生成的视频节点`, '×');
+      const depthReferences = [];
+      const sourceVideos = collectVideoSourceVideos(output, sourcePlan?.model, url => depthReferences.push(url));
+      if (depthReferences.length) {
+        if (depthReferences.some(url => !url)) return showToast('深度视频尚未就绪，请在提取完成后再生成', '×');
+        const model = sourcePlan?.model || currentVideoModelEntry();
+        const adapter = model && (sourcePlan?.adapter || createStudioVideoAdapter(model));
+        if (!adapter?.references(settings).some(slot => slot.kinds.includes('video'))) {
+          return showToast('已连接深度视频，请选择支持参考视频的模型和生成方式', '×');
+        }
+        if (depthReferences.some(url => !sourceVideos.includes(url))) {
+          return showToast('当前供应商需要 HTTPS 视频地址，请配置私有视频中转存储或选择支持直接上传的供应商', '×');
+        }
+      }
+      const needsSourceVideo = videoModelNeedsSourceVideo(sourcePlan?.model);
+      if (needsSourceVideo && !sourceVideos.length) return showToast(`当前模型（${sourcePlan?.model?.name || videoModelDisplayName()}）需要一段源视频：请先连接一个已生成的视频节点`, '×');
 
       const modeVerdict = evaluateVideoGenMode(settings.referenceMode, videoReferenceInputs(output), { prompt, duration: settings.duration });
       if (!modeVerdict.canGenerate) return showToast(modeVerdict.reasons[0], '×');
@@ -24306,6 +25986,22 @@ const active=currentWorkspace();
         ]);
         if (!generationContextActive(context)) return;
         if (!isKnownReferenceMode(settings.referenceMode) && settings.videoMode === 'image-to-video' && !images.length) return showToast('图生视频需要先上传参考图或连接图片节点', '×');
+        let sourcePayload;
+        if (sourcePlan) {
+          const media = {image:images, video:sourceVideos, audio:sourceAudios};
+          const refs = {};
+          for (const slot of sourcePlan.adapter.references(settings)) {
+            const kind = slot.kinds[0];
+            let urls = media[kind] || [];
+            if (slot.key === 'firstFrame') urls = urls.slice(0,1);
+            if (slot.key === 'lastFrame') urls = urls.slice(1,2);
+            refs[slot.key] = urls.map(url => ({kind,url}));
+          }
+          const issue = sourcePlan.adapter.validate(settings,refs,prompt);
+          if (issue) return showToast(issue, '×');
+          sourcePayload = sourcePlan.adapter.payload(settings,refs,prompt);
+          sourcePayload.generationSettings.generateCount = sourcePlan.adapter.submissionCount(settings);
+        }
         if (!await prepareGenerationSubmission(context)) return;
         resetOutputForNewJob(output);
         renderJobProgress(output, { status: 'queued', progress: 0 });
@@ -24313,7 +26009,7 @@ const active=currentWorkspace();
           throwOnError: true, method: 'POST', headers: context.headers,
           body: JSON.stringify({ projectId: context.projectId, outputId: output.dataset.nodeId, prompt,
             referenceImages: images, sourceVideos, sourceAudios, nodes, upstreamInputs: upstream.inputs,
-            generationSettings: settings, advancedSettings }),
+            generationSettings: settings, advancedSettings, ...sourcePayload }),
         });
         if (!generationContextActive(context)) return;
         const jobId = result?.job?.id;
@@ -24597,8 +26293,7 @@ const active=currentWorkspace();
       showToast(state.hideEdges ? '已隐藏节点连线' : '已显示节点连线', '◌');
     }
     function toggleGridSnap() {
-      state.gridSnap = !state.gridSnap;
-      syncAssetToolbarButtons();
+      window.CanvasFlowSettings.setCanvasPref({ gridSnap: !state.gridSnap });
       showToast(state.gridSnap ? '已开启网格吸附（40px）' : '已关闭网格吸附', '▦');
     }
     $('#assetSearchInput')?.addEventListener('input', event => { state.assetQuery = event.target.value; renderAssetPanel(); });
@@ -24994,7 +26689,7 @@ const ids=new Set(state.assetFavorites||readAssetFavorites());
     function closeShortcuts() { $('#shortcutsBackdrop')?.classList.remove('open'); }
     bindGroupFrames();
     bindGroupToolbar();
-    $('.mini-map-canvas')?.addEventListener('pointerdown', event => { event.preventDefault(); event.stopPropagation(); focusMiniMapPoint(event); });
+    bindMiniMap();
     let marqueeBox = null;
     function positionMarquee(x1, y1, x2, y2) {
       if (!marqueeBox) return;
@@ -27001,7 +28696,7 @@ const ids=new Set(state.assetFavorites||readAssetFavorites());
         id: node.dataset.nodeId,
         type: node.dataset.node,
         title: nodeLabel(node),
-        copy: (node.querySelector('.node-copy')?.textContent || '').trim(),
+        copy: node.dataset.mediaPrompt ?? textNodeText(node),
         // ★ 判定要认全三个句柄：Agent 自己生成的图刷新后只剩 previewMedia，
         //   以前这里只读 previewData → Agent 会以为那张卡是空的，转头又去重新生成一张。
         hasImage: Boolean(node.querySelector('.media-preview')?.dataset.previewData
@@ -28035,7 +29730,7 @@ const ids=new Set(state.assetFavorites||readAssetFavorites());
     // 文本模型列表：底栏的「文本模型」选择器与脚本节点的「合成提示词」都用它。
     void loadTextModels();
     // 预置角色的全局删除列表（管理员删过的）—— 所有账号都要读，读到了才不会再显示出来
-    void loadGlobalRoles();
+    const roleLibraryLoaded = loadGlobalRoles();
     document.documentElement.dataset.canvasflowReady = 'true';
     window.CanvasFlowStartup?.booted();
     if (isStandaloneFile()) window.CanvasFlowStartup?.ready();

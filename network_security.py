@@ -96,11 +96,15 @@ def http_origin(url):
 class SafeRedirect(request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         destination = http_origin(newurl)
+        if getattr(req, 'same_origin_only', False) and destination != http_origin(req.full_url):
+            raise error.URLError('音色目录的重定向必须与供应商同源')
         check_network_url(newurl)
         redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None and getattr(req, 'same_origin_only', False):
+            redirected.same_origin_only = True
         if redirected is not None and destination != http_origin(req.full_url):
             for name in list(redirected.headers) + list(redirected.unredirected_hdrs):
-                if name.lower() in {'authorization', 'proxy-authorization', 'x-api-key', 'api-key', 'cookie'}:
+                if name.lower() in {'authorization', 'proxy-authorization', 'x-api-key', 'xi-api-key', 'api-key', 'cookie'}:
                     redirected.remove_header(name)
         return redirected
 

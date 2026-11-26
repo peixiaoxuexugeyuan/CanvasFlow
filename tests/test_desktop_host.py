@@ -9,6 +9,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 import unittest
@@ -165,6 +166,66 @@ class DesktopHostTests(unittest.TestCase):
             self.assertTrue(online(owned['url'],owned['sessionToken']))
             self.finish(first)
             self.assert_stopped(owned['url'],owned['sessionToken'])
+
+    def test_owned_backend_drains_paid_submission_before_job_object_closes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            data = Path(folder)
+            from mediakit_depth import PROTOCOL
+            job = {'id': 'job-depth-test', 'userId': 'fixture', 'kind': 'video', 'status': 'queued',
+                   'stage': 'uploading', 'providerProtocol': PROTOCOL,
+                   'sourceVideos': ['https://example.invalid/fixture.mp4']}
+            (data / 'jobs.jsonl').write_text(json.dumps(job) + '\n', encoding='utf-8')
+            # Only this isolated child imports the stub. Uploaded media and network
+            # transport are replaced before the real server resumes its queued job.
+            fixture = data / 'sitecustomize.py'
+            fixture.write_text(textwrap.dedent("""
+                import os
+                from pathlib import Path
+                import sys
+                if Path(sys.argv[0]).name == 'server.py':
+                    from contextlib import nullcontext
+                    import time
+                    import mediakit_depth as depth
+                    work = Path(os.environ['CANVASFLOW_DATA_DIR'])
+                    depth.DepthService.credential = lambda *args: 'fixture'
+                    depth.source_video_file = lambda *args, **kw: nullcontext(work/'fixture.mp4')
+                    depth.selected_video_file = lambda source, *args: nullcontext(source)
+                    depth.validate_video = lambda *args: None
+                    depth.executable = lambda *args: None
+                    depth.upload_media = lambda *args: 'mediakit://fixture'
+                    def transport(key, path, payload=None):
+                        assert path == depth.SUBMIT
+                        (work/'accepted').touch()
+                        deadline = time.monotonic() + 20
+                        while not (work/'release').exists():
+                            if time.monotonic() > deadline: raise RuntimeError('fixture deadline')
+                            time.sleep(.02)
+                        return {'task_id':'paid-fixture'}
+                    depth.transport = transport
+                    original_close = depth.DepthService.close
+                    def close(service):
+                        (work/'draining').touch()
+                        original_close(service)
+                    depth.DepthService.close = close
+            """), encoding='utf-8')
+            def marker(name):
+                deadline = time.monotonic() + 8
+                while not (data / name).exists() and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertTrue((data/name).exists(), name)
+            with patch.dict(os.environ, PYTHONPATH=os.pathsep.join([folder, str(ROOT)])):
+                host, info = self.launch(folder, unused_port())
+            try:
+                self.assertFalse(info['reused'])
+                marker('accepted')
+                host.stdin.close()
+                marker('draining')
+                self.assertIsNone(host.poll())
+            finally:
+                (data/'release').touch()
+                self.finish(host)
+            journal = [json.loads(line) for line in (data/'jobs.jsonl').read_text(encoding='utf-8').splitlines()]
+            self.assertEqual(journal[-1]['providerJobId'], 'paid-fixture')
 
     @unittest.skipUnless(os.name=='nt','Windows Job Object integration')
     def test_supervisor_crash_closes_windows_job_and_server(self):

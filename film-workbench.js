@@ -215,36 +215,67 @@
     const search = el('input'); search.type = 'search'; search.placeholder = '搜索图片、视频、音频'; search.setAttribute('aria-label', '搜索成片素材');
     const list = el('div', '正在读取当前画布素材…', 'film-materials-list');
     const note = el('p', '仅显示当前画布的素材，复制到当前成片后即可剪辑。'); note.role = 'status';
-    const selected = new Set(); let rows = [];
+    const selected = new Set(), previews = new Map();
+    const kinds = {image:'图片', video:'视频', audio:'音频'};
+    let rows;
     const submit = button('导入所选', '导入所选素材', async () => {
       if (run !== epoch || !dialog.isConnected) return;
-      submit.disabled = true; note.textContent = '正在复制素材到成片…';
+      submit.disabled = true; list.inert = true; search.disabled = true;
+      note.textContent = '正在复制素材到成片…';
       try {
         const result = await localDeps.api('/api/film/import', {method:'POST', headers:scope.headers,
           body:JSON.stringify({...scopeBody(scope), materialIds:[...selected]}), throwOnError:true});
         if (run !== epoch || !dialog.isConnected) return;
         dialog.remove(); localDeps.toast(`已导入 ${result.imported} 项素材；从左侧素材区拖入时间轴即可剪辑`, '✓');
-      } catch (error) { if (dialog.isConnected) { note.textContent = error.message || '素材导入失败'; submit.disabled = !selected.size; } }
+      } catch (error) { if (dialog.isConnected) { note.textContent = error.message || '素材导入失败'; list.inert = false; search.disabled = false; submit.disabled = !selected.size || selected.size > 50; } }
     }); submit.disabled = true;
+    function previewUrl(value) {
+      if (!value) return '';
+      try {
+        const url = new URL(value, location.href);
+        return (url.origin === location.origin && url.pathname.startsWith('/media/')) || url.protocol === 'https:' ||
+          /^data:(image|video|audio)\//.test(value) ? url.href : '';
+      } catch { return ''; }
+    }
+    function renderPreview(row, preview) {
+      const source = previewUrl(row.url), thumb = previewUrl(row.thumbnail);
+      const unavailable = () => preview.replaceChildren(el('span', kinds[row.kind] + '暂不可预览'));
+      if (!source && !thumb) {
+        if (row.deferred) preview.textContent = '正在读取预览…';
+        else unavailable();
+        return;
+      }
+      if (row.kind === 'image' || (!source && thumb)) {
+        const img = el('img');
+        img.loading = 'lazy'; img.decoding = 'async'; img.alt = row.name;
+        img.onerror = () => {
+          if (source && source !== img.src) img.src = source;
+          else unavailable();
+        };
+        img.src = thumb || source;
+        preview.replaceChildren(img);
+        return;
+      }
+      const media = el(row.kind);
+      media.controls = true; media.preload = 'none'; media.src = source;
+      media.setAttribute('aria-label', '预览 ' + row.name);
+      if (row.kind === 'video') { media.playsInline = true; if (thumb) media.poster = thumb; else media.preload = 'metadata'; }
+      media.addEventListener('play', () => { for (const other of list.querySelectorAll('video,audio')) if (other !== media) other.pause(); });
+      media.addEventListener('error', unavailable, {once:true});
+      preview.replaceChildren(media);
+    }
     function paint() {
+      if (!rows) return;
       list.replaceChildren();
-      const shown = rows.filter(row => row.name.toLowerCase().includes(search.value.trim().toLowerCase()));
+      previews.clear();
+      const query = search.value.trim().toLowerCase();
+      const shown = rows.filter(row => (row.name + ' ' + kinds[row.kind]).toLowerCase().includes(query));
       if (!shown.length) list.append(el('p', rows.length ? '没有匹配的素材' : '当前画布没有图片、视频或音频素材。添加素材节点后再来导入。'));
       for (const row of shown) {
         const card = el('article','','film-material-card');
         const preview = el('div','','film-material-preview');
-        const url = value => { try {const u=new URL(value,location.href);return (u.origin===location.origin && u.pathname.startsWith('/media/')) || u.protocol==='https:' || /^data:(image|video|audio)\//.test(value) ? u.href : '';} catch{return '';} };
-        const source = url(row.url), thumb = url(row.thumbnail);
-        if (row.kind==='image') {
-          const img=el('img');img.src=source||thumb;img.alt=row.name;img.loading='lazy';img.decoding='async';preview.append(img);
-          img.addEventListener('error',()=>{preview.replaceChildren(el('span','图片暂不可预览'));},{once:true});
-        } else {
-          const media=el(row.kind==='video'?'video':'audio');media.controls=true;media.preload='none';media.src=source;
-          media.setAttribute('aria-label',`预览 ${row.name}`);
-          if (row.kind==='video') {media.playsInline=true;if(thumb)media.poster=thumb;else media.preload='metadata';}
-          media.addEventListener('play',()=>{for(const other of list.querySelectorAll('video,audio'))if(other!==media)other.pause();});
-          preview.append(media);
-        }
+        previews.set(row.id, preview);
+        renderPreview(row, preview);
         const label = el('label'); const check = el('input'); check.type = 'checkbox'; check.checked = selected.has(row.id);
         check.setAttribute('aria-label',`选择 ${row.name}`);
         check.addEventListener('change', () => {
@@ -252,7 +283,13 @@
           submit.disabled = !selected.size || selected.size > 50; submit.textContent = `导入所选（${selected.size}）`;
           note.textContent = selected.size > 50 ? '每次最多导入 50 项素材' : '复制素材到成片工程，原素材保持不变。';
         });
-        label.append(check, el('span', row.name), el('small', {image:'图片',video:'视频',audio:'音频'}[row.kind]));
+        if (row.kind === 'image') {
+          preview.classList.add('is-selectable');
+          preview.addEventListener('click', () => check.click());
+        }
+        const name = el('span', row.name);
+        name.title = row.name;
+        label.append(check, name, el('small', kinds[row.kind]));
         card.append(preview,label);list.append(card);
       }
     }
@@ -262,18 +299,23 @@
       const result = await localDeps.api('/api/workspace/materials?project='+encodeURIComponent(scope.projectId), {headers: scope.headers, throwOnError: true});
       if (run !== epoch || !dialog.isConnected) return;
       rows = (result.materials || []).filter(row => ['image','video','audio'].includes(row.kind) && (row.url||row.deferred) && row.projects?.some(p=>p.id===scope.projectId));
+      paint();
       // Old inline media are returned separately to keep catalog responses small.
       // Limit parallel reads and discard late results after project navigation.
       const pending=rows.filter(row=>row.deferred);
       await Promise.all(Array.from({length:Math.min(4,pending.length)},async()=>{
         while(pending.length && run===epoch && dialog.isConnected){
           const row=pending.shift();
-          const detail=await localDeps.api('/api/workspace/materials/'+encodeURIComponent(row.id),{headers:scope.headers,throwOnError:true});
-          if(detail.material?.projects?.some(p=>p.id===scope.projectId))row.url=detail.material.url;
+          try {
+            const detail=await localDeps.api('/api/workspace/materials/'+encodeURIComponent(row.id),{headers:scope.headers,throwOnError:true});
+            if(detail.material?.projects?.some(p=>p.id===scope.projectId)) row.url=detail.material.url;
+          } catch { /* Other cards remain available when a single preview cannot be loaded. */ }
+          if (run !== epoch || !dialog.isConnected) return;
+          row.deferred = false;
+          const preview = previews.get(row.id);
+          if (preview) renderPreview(row, preview);
         }
       }));
-      if (run !== epoch || !dialog.isConnected) return;
-      paint();
     } catch (error) { if (dialog.isConnected) list.textContent = error.message || '素材读取失败'; }
   }
   async function controls(selected='clips') {

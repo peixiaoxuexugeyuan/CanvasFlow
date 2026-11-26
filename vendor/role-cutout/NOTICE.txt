@@ -1,0 +1,13 @@
+Offline U²-Net portrait preview segmentation
+
+U²-Net small, pre-trained on salient objects. Original research and weights:
+Xuebin Qin and contributors, https://github.com/xuebinqin/U-2-Net
+Apache License 2.0; see LICENSE-U2NET.txt.
+Unmodified ONNX conversion distributed by rembg (renamed to u2netp.bin):
+https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx
+SHA-256: 309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8
+
+ONNX Runtime Web 1.22.0, Microsoft Corporation.
+MIT license; see LICENSE-ORT.txt and ThirdPartyNotices.txt.
+Unmodified WASM-only JS, Emscripten module and WASM binary from:
+https://registry.npmjs.org/onnxruntime-web/-/onnxruntime-web-1.22.0.tgz

@@ -14,7 +14,7 @@ function visit(node) {
 visit(acorn.parse(source, {ecmaVersion: 'latest'}));
 
 function fixture() {
-  const buttons = Array.from({length: 14}, () => ({hidden: false, disabled: true, hasAttribute: () => false}));
+  const buttons = Array.from({length: 14}, () => ({dataset: {}, hidden: false, disabled: true, hasAttribute: () => false}));
   const toolbar = {hidden: false, querySelector: () => null};
   function imageNode() {
     const preview = {dataset: {}, style: {}, classList: {add() {}}, querySelector: () => null};
@@ -28,7 +28,7 @@ function fixture() {
     $$: () => buttons, singleSelectedNode: () => scope.selected};
   vm.createContext(scope);
   vm.runInContext(['nodeImageHandles', 'nodeHasUsableImage', 'quickToolbarGroup',
-    'syncQuickToolbarLabels', 'refreshQuickToolbarState', 'setMediaNodeImage',
+    'syncQuickToolbarLabels', 'syncQuickToolAvailability', 'refreshQuickToolbarState', 'setMediaNodeImage',
     'setMediaNodeImageUrl'].map(name => functions[name]).join('\n'), scope);
   return {scope, node, buttons, imageNode};
 }

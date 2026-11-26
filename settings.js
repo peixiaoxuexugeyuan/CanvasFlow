@@ -387,6 +387,8 @@
     // 模型管理：画布所有选项面板的「登记表」都在这儿维护（音频规格 / 视频规格 / 摄像机库）。
     // ★ 全局一套、只有管理员 —— 它决定**所有人**看到的面板长什么样，VIP 也不能改。
     { id: 'modelRegistry', label: '模型管理', roles: ['admin'], icon: '<path d="M4 6.5h9M17.5 6.5H20M4 12h4M12.5 12H20M4 17.5h11M19.5 17.5H20"/><circle cx="15" cy="6.5" r="2.2"/><circle cx="10" cy="12" r="2.2"/><circle cx="17" cy="17.5" r="2.2"/>' },
+    { id: 'reversePrompt', label: '提示词反推模型配置', roles: null, icon: '<path d="M20 11V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h4"/><circle cx="8" cy="8" r="1.5"/><path d="m3 15 4-4 4 4m5 1-3 3 3 3m-3-3h6a2 2 0 0 0 2-2v-3"/>' },
+    { id: 'mediaKit', label: '深度动作捕捉', roles: null, icon: '<path d="M3 8V5a2 2 0 0 1 2-2h3m8 0h3a2 2 0 0 1 2 2v3m0 8v3a2 2 0 0 1-2 2h-3m-8 0H5a2 2 0 0 1-2-2v-3"/><path d="m7 14 5-7 5 7-5 3z"/>' },
     // 模型定价（r884，用户需求）：**位置由用户指定** —— 「模型管理下面、提示词编辑上面」。
     // 与「模型管理」同一条纪律：全局一套、只有管理员（它决定**所有人**被扣多少积分）。
     { id: 'pricing', label: '模型定价', roles: ['admin'], icon: '<path d="M20.4 13.6 13.6 20.4a2 2 0 0 1-2.8 0L3 12.6V3h9.6l7.8 7.8a2 2 0 0 1 0 2.8Z"/><circle cx="7.4" cy="7.4" r="1.7"/>' },
@@ -514,9 +516,136 @@ return TAB_DEFS.filter(tab => !['providers','pricing'].includes(tab.id));
     else if (activeTab === 'startup') renderStartupPane(pane);
     else if (activeTab === 'prompts') renderPromptsPane(pane);
     else if (activeTab === 'modelRegistry') renderModelRegistryPane(pane);
+    else if (activeTab === 'reversePrompt') renderReversePromptPane(pane);
+    else if (activeTab === 'mediaKit') renderMediaKitPane(pane);
     else if (activeTab === 'pricing') renderPricingPane(pane);
     else renderGeneralPane(pane);
     restorePaneScroll(want);
+  }
+
+  async function renderReversePromptPane(pane) {
+    const preferences = window.CanvasFlowReversePreferences;
+    const saved = preferences.read();
+    pane.innerHTML = `<div class="settings-pane-head"><div>
+      <h2 class="settings-pane-title">提示词反推模型配置</h2>
+      <p class="settings-pane-sub">此处的默认值适用于本机当前浏览器中的所有项目。每次反推时仍可选择提交方式和模型。</p>
+      </div></div>
+      <form class="settings-reverse" aria-label="提示词反推模型配置">
+        <div><label class="settings-label" for="reverseFrameCount">截取画面数</label>
+          <select name="frameCount" id="reverseFrameCount" aria-describedby="reverseCountHelp"><option value="">自动（按时长）</option></select>
+          <p class="settings-hint" id="reverseCountHelp">自动按每秒约 2 帧估算，共取 2–12 帧。也可指定 1–${preferences.maxFrames} 帧，在所选时段均匀截取。画面越多，上传量和模型费用可能越高。</p></div>
+        <div><label class="settings-label" for="reverseFrameModel">截取帧模型</label>
+          <select name="frameModelId" id="reverseFrameModel" disabled><option value="">正在读取模型…</option></select>
+          <p class="settings-hint">选择「截取帧」时，由此模型分析从视频中截取的画面。</p></div>
+        <div><label class="settings-label" for="reverseVideoModel">整段视频模型</label>
+          <select name="videoModelId" id="reverseVideoModel" disabled><option value="">正在读取模型…</option></select>
+          <p class="settings-hint">仅列出支持直接接收视频文件的模型。</p></div>
+        <div class="settings-reverse-save"><button class="settings-add-btn" type="submit">保存配置</button>
+          <span class="settings-hint" role="status"></span></div>
+      </form>`;
+    const form = pane.querySelector('form');
+    const {frameCount, frameModelId, videoModelId} = form.elements;
+    const status = form.querySelector('[role=status]');
+    let catalogLoaded = false;
+    for (let count = 1; count <= preferences.maxFrames; count++) {
+      frameCount.add(new Option(count + ' 帧', String(count)));
+    }
+    frameCount.value = saved.frameCount === null ? '' : String(saved.frameCount);
+
+    form.onchange = () => { status.textContent = ''; };
+    form.onsubmit = event => {
+      event.preventDefault();
+      try {
+        const current = preferences.read();
+        preferences.save({
+          frameCount: frameCount.value === '' ? null : Number(frameCount.value),
+          frameModelId: catalogLoaded ? frameModelId.value : current.frameModelId,
+          videoModelId: catalogLoaded ? videoModelId.value : current.videoModelId
+        });
+        status.textContent = '配置已保存';
+      } catch (error) {
+        status.textContent = '保存失败：' + error.message;
+      }
+    };
+
+    function showModels(select, models, preferredId) {
+      const choices = models.map(model => new Option(model.name || model.id, model.id));
+      select.replaceChildren(new Option(models.length ? '不指定默认模型' : '暂无兼容模型', ''), ...choices);
+      if (preferredId && !models.some(model => model.id === preferredId)) {
+        const stale = new Option('原模型已停用或移除 · ' + preferredId, preferredId);
+        stale.disabled = true;
+        select.add(stale);
+        select.options[0].textContent = '不指定默认模型';
+      }
+      select.value = preferredId;
+      select.disabled = !models.length && !preferredId;
+    }
+    try {
+      const result = await deps.api('/api/ai/models', {throwOnError:true});
+      if (!form.isConnected) return;
+      if (!result?.models) throw new Error('模型列表不可用');
+      showModels(frameModelId, result.models.i2t || [], saved.frameModelId);
+      showModels(videoModelId, result.models.videoUnderstanding || [], saved.videoModelId);
+      catalogLoaded = true;
+    } catch (error) {
+      if (!form.isConnected) return;
+      for (const select of [frameModelId, videoModelId]) {
+        select.disabled = true;
+        select.replaceChildren(new Option('模型列表读取失败', ''));
+      }
+      status.textContent = '读取模型失败：' + error.message + '。仍可保存截取画面数。';
+    }
+  }
+
+  async function renderMediaKitPane(pane) {
+    pane.innerHTML = `<div class="settings-pane-head"><div>
+      <h2 class="settings-pane-title">深度动作捕捉</h2>
+      <p class="settings-pane-sub">配置火山引擎 AI MediaKit 凭据，供画布的视频节点提取深度视频。</p>
+      </div></div>
+      <form class="settings-mediakit" aria-label="MediaKit 凭据">
+        <label class="settings-label" for="settingsMediaKitKey">MediaKit API Key</label>
+        <input id="settingsMediaKitKey" type="password" required disabled maxlength="4096" placeholder="输入火山引擎 AI MediaKit 密钥" autocomplete="off" spellcheck="false">
+        <p class="settings-hint" role="status">正在读取配置…</p>
+        <button class="settings-add-btn" type="submit" disabled>保存密钥</button>
+      </form>`;
+    const form = pane.querySelector('form');
+    const field = form.querySelector('input');
+    const save = form.querySelector('button');
+    const status = form.querySelector('[role=status]');
+    const endpoint = '/api/media-tools/depth/settings';
+    function showConfigured(configured) {
+      status.textContent = configured ? '已配置 MediaKit 凭据' : '尚未配置 MediaKit 凭据';
+      field.placeholder = configured ? '输入新密钥可替换现有密钥' : '输入火山引擎 AI MediaKit 密钥';
+    }
+    try {
+      const result = await deps.api(endpoint, {throwOnError:true});
+      if (typeof result?.configured !== 'boolean') throw new Error('请通过本地服务打开项目');
+      showConfigured(result.configured);
+    } catch (error) {
+      status.textContent = '读取配置失败：' + error.message;
+    }
+    if (!form.isConnected) return;
+    field.disabled = false;
+    function updateSave() { save.disabled = !field.value.trim() || field.disabled; }
+    updateSave();
+    field.addEventListener('input', updateSave);
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (save.disabled) return;
+      const apiKey = field.value.trim();
+      save.disabled = field.disabled = true;
+      try {
+        const result = await deps.api(endpoint, {method:'POST', throwOnError:true, body:JSON.stringify({apiKey})});
+        if (!result?.configured) throw new Error('凭据未保存');
+        field.value = '';
+        showConfigured(true);
+      } catch (error) {
+        status.textContent = '保存失败：' + error.message;
+      } finally {
+        field.disabled = false;
+        updateSave();
+      }
+    });
   }
 
   async function renderPrevisModelsPane(pane) {
@@ -586,8 +715,11 @@ return TAB_DEFS.filter(tab => !['providers','pricing'].includes(tab.id));
     const backdrop = $id('settingsBackdrop');
     $id('aboutUpdatesDialog')?.close();
     if (backdrop) backdrop.hidden = true;
+    const mediaKitField = $id('settingsMediaKitKey');
+    if (mediaKitField) mediaKitField.value = '';
     wizard = null;
     renderWizardLayer();
+    backdrop?.dispatchEvent(new Event('canvasflow:settings-closed'));
   }
 
   function bindShell() {
@@ -1113,7 +1245,13 @@ return TAB_DEFS.filter(tab => !['providers','pricing'].includes(tab.id));
   const BILLING_LABEL_OPTIONS = [['per-call', '按次'], ['per-token', '按 Token'], ['per-second', '按秒']];
 
   const MODEL_PARAM_FIELDS = {
-    text: [{ key: 'multimodal', kind: 'check', label: '多模态' }],
+    text: [
+      { key: 'multimodal', kind: 'check', label: '多模态' },
+      { key: 'videoInput', kind: 'select', label: '整段视频理解', inherit: '自动识别 Google Gemini',
+        options: [{ value: 'gemini-native', label: 'Gemini 原生接口' },
+          { value: 'chat-video', label: 'Chat Completions · video_url（内联视频）' },
+          { value: 'disabled', label: '关闭' }] }
+    ],
     image: [
       { key: 'transport', kind: 'select', label: '图片传输覆盖', inherit: '继承 Provider',
         options: IMAGE_TRANSPORT_OPTIONS.filter(option => option.value).map(option => ({ value: option.value, label: option.label })) },
@@ -3223,7 +3361,7 @@ return TAB_DEFS.filter(tab => !['providers','pricing'].includes(tab.id));
 
   // ---------------------------------------------------------------- 通用设置
 
-  function releaseNotesMarkup(id, version = '1.0.2') {
+  function releaseNotesMarkup(id, version = '1.0.3') {
     return `<dialog class="about-updates-dialog" id="${esc(id)}" aria-labelledby="${esc(id)}Title">
         <header class="about-updates-heading"><h3 id="${esc(id)}Title"><span aria-hidden="true">✧</span> 近期更新</h3>
           <button type="button" class="about-dismiss" aria-label="关闭近期更新" data-updates-close>×</button>
@@ -3231,6 +3369,16 @@ return TAB_DEFS.filter(tab => !['providers','pricing'].includes(tab.id));
         <div class="about-updates-scroll" tabindex="0" aria-label="版本更新记录">
           <section class="about-release">
             <header><h4>v${esc(version)}</h4><span class="about-release-status">当前版本</span></header>
+            <ul>
+              <li><span class="about-change-type">新增</span><span>角色库可编辑角色造型、选择图片模型、修改生成提示词，并为角色预览自动抠除背景。</span></li>
+              <li><span class="about-change-type">新增</span><span>画布支持图片和视频提示词反推。视频可选整段提交或截取最多 30 个画面，并可配置深度动作捕捉。</span></li>
+              <li><span class="about-change-type">改进</span><span>成片工作台可滚动预览画布素材。视频悬停与放大播放遵循截取范围，视频地址失效时可按原任务重新取回。</span></li>
+              <li><span class="about-change-type">修复</span><span>大画布重开能保留节点位置，移动项目可保留任务历史，连续更换参考图会保存最后一次选择。</span></li>
+              <li><span class="about-change-type">改进</span><span>桌面更新支持下载中断后续传，退出时会等待已受理的深度提取任务号保存。</span></li>
+            </ul>
+          </section>
+          <section class="about-release">
+            <header><h4>v1.0.2</h4></header>
             <ul>
               <li><span class="about-change-type">改进</span><span>图片和视频生成台可直接选用素材库参考，视频参数随模型切换，支持首尾帧、全能参考与超分。</span></li>
               <li><span class="about-change-type">修复</span><span>重开应用可继续查询已提交的生成任务，任务历史减少重复占用的磁盘空间。</span></li>
@@ -3368,7 +3516,7 @@ return TAB_DEFS.filter(tab => !['providers','pricing'].includes(tab.id));
         <div class="about-product">
           <div class="about-identity">
             <span class="about-logo" aria-hidden="true"><span class="brand-orb"></span></span>
-            <div><h3 class="cf-brand-prism">CanvasFlow</h3><p class="about-version" data-desktop-version>版本 1.0.2 · 浏览器预览</p></div>
+            <div><h3 class="cf-brand-prism">CanvasFlow</h3><p class="about-version" data-desktop-version>版本 1.0.3 · 浏览器预览</p></div>
           </div>
           <a class="about-link about-link-primary" href="https://video.zzzapi.xyz/" target="_blank" rel="noopener noreferrer">官方网站 <span aria-hidden="true">↗</span></a>
         </div>

@@ -10,7 +10,8 @@ const catalog = JSON.parse(fs.readFileSync(path.join(root,'upstream-model-contra
 const wanted = new Set(['createStudioVideoAdapter', 'modelDefaultSettings', 'currentModelContract', 'specRowValues',
   'parseDurationStepsParam','contractControlOptions','VIDEO_GEN_MODES','VIDEO_INPUT_SOURCE_KEYS','CAMERA_MOTION_PRESETS',
   'VIDEO_DURATION_MIN','VIDEO_DURATION_MAX','isKnownReferenceMode','normalizeReferenceMode','VIDEO_GEN_MODE_BY_KEY',
-  'FRAMES_MODE_SHORT_LABEL','DEFAULT_VIDEO_GEN_MODE']);
+  'FRAMES_MODE_SHORT_LABEL','DEFAULT_VIDEO_GEN_MODE','nodeGenerationProfile','findSourceGenerationModel',
+  'sourceVideoMode','sourceGenerationPlan']);
 const blocks = [];
 function visit(node) {
   if (!node || typeof node !== 'object') return;
@@ -48,6 +49,30 @@ test('Seedance frame order, motion expansion and required inputs agree with the 
   assert.deepEqual(json(body.sourceVideos),[]);
   assert.equal(body.generationSettings.modelOptions.mode,'shouweizhen');
   assert.equal(body.prompt,'拍摄 镜头向前推进');
+});
+test('imported video settings retain local model identity, duration, audio, and first-frame-only slots', () => {
+  const local = {id:'local-video', name:'2.0'};
+  const sound = {key:'generateAudio', field:'generate_audio', label:'生成音频', options:[], default:true};
+  const studio = adapter('seedance-2.0-guanfang', {id:'seedance-2.0-guanfang'}, {}, [sound]);
+  const ctx = vm.createContext({state:{videoModels:[{id:'other',name:'2.5'},local]},
+    videoReferenceInputs:() => ({images:1}), createStudioVideoAdapter:() => studio});
+  vm.runInContext(blocks.join('\n'),ctx);
+  ctx.createStudioVideoAdapter = () => studio;
+  const profile = {model:'2.0', mode:'首尾帧', specs:['16:9','720P','5s','1个'], audio:false, firstFrameOnly:true};
+  const node = {dataset:{generationProfile:JSON.stringify(profile)}};
+  const plan = ctx.sourceGenerationPlan(node,false);
+  assert.equal(plan.error,undefined);
+  assert.equal(plan.model.id,'local-video');
+  const body = plan.adapter.payload(plan.settings,{firstFrame:[item('image','/media/first.png')]},'原文');
+  assert.equal(body.generationSettings.referenceMode,'singleImage2video');
+  assert.equal(body.generationSettings.duration,'5');
+  assert.equal(body.generationSettings.generateAudio,false);
+  assert.deepEqual(Array.from(body.referenceImages),['/media/first.png']);
+  assert.equal(body.generationSettings.resolution.toLowerCase(),'720p');
+  node.dataset.generationProfile=JSON.stringify({...profile,specs:['16:9','720P','98s','1个']});
+  assert.match(ctx.sourceGenerationPlan(node,false).error,/不支持原/);
+  node.dataset.generationProfile=JSON.stringify({...profile,useWorkspace:true});
+  assert.equal(ctx.sourceGenerationPlan(node,false),null);
 });
 test('mixed mode supports all three media types and preserves local audio handles',async()=>{
   const a=adapter('seedance-2.5-guanfang');

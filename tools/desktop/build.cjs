@@ -6,7 +6,7 @@ const {packager} = require('@electron/packager');
 const product = require('./app/product.cjs');
 const version = require('./app/package.json').version;
 const root = path.resolve(__dirname,'../..');
-const out = path.resolve(process.argv[2] || path.join(root,`dist-v${version}`));
+const out = path.resolve(process.argv.slice(2).find(arg => !arg.startsWith('--')) || path.join(root,`dist-v${version}`));
 const appDir = path.join(out,'CanvasFlow-win32-x64');
 const isDevelopment = process.argv.includes('--current-project');
 const protectedBuild = process.argv.includes('--protect');
@@ -16,6 +16,13 @@ const runtimeBlender = process.env.CANVASFLOW_BLENDER_RUNTIME || path.join(root,
 if (out === root || !out.startsWith(root + path.sep)) throw Error('Desktop output must be a new directory inside the workspace');
 if (fs.existsSync(appDir)) throw Error('Output already exists; choose a new output directory rather than replacing a running app');
 if (protectedBuild && !fs.existsSync(path.join(nativeBackend,'CanvasFlowBackend.exe'))) throw Error('Build the native backend first');
+let nativeProof;
+if (protectedBuild) {
+  const receipt = path.join(nativeBackend, '..', 'native-proof.json');
+  if (!fs.existsSync(receipt)) throw Error('Native build receipt missing. Run tools/native/build.ps1 first.');
+  nativeProof = JSON.parse(fs.readFileSync(receipt, 'utf8'));
+  require('../native/build-proof.cjs').verify(root, path.join(nativeBackend, 'CanvasFlowBackend.exe'), nativeProof);
+}
 if (!protectedBuild && !fs.existsSync(path.join(runtimePython,'python.exe'))) throw Error('Bundled Python runtime missing');
 if (!fs.existsSync(path.join(__dirname,'app/icon.ico'))) throw Error('Run make-icon.cjs first');
 function copyRuntime(source, target) {
@@ -66,6 +73,6 @@ function copyRuntime(source, target) {
     executable:path.join(target,'CanvasFlow.exe'),selfContainedRuntime:true,developmentConfiguration:isDevelopment,
     dataBundled:false,protectedBuild,backendProtection:protectedBuild?'Nuitka native standalone':'source',builtAt:new Date().toISOString()};
   fs.writeFileSync(path.join(out,'desktop-build.json'),JSON.stringify(report,null,2));
-  fs.writeFileSync(path.join(target,'canvasflow-build.json'),JSON.stringify({version:report.version,buildNumber:report.buildNumber},null,2));
+  fs.writeFileSync(path.join(target,'canvasflow-build.json'),JSON.stringify({version:report.version,buildNumber:report.buildNumber,nativeProof},null,2));
   console.log(JSON.stringify(report));
 })().catch(error => {console.error(error);process.exitCode=1;});

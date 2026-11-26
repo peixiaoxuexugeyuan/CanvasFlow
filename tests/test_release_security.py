@@ -79,6 +79,22 @@ class ReleaseSecurityTests(unittest.TestCase):
         self.assertFalse(release.allowed(self.public / 'role-library/_manifest.json'))
         self.assertFalse(release.allowed(self.public / 'role-library/original.png'))
 
+    def test_only_named_role_prompt_catalog_can_be_served(self):
+        source = Path(__file__).resolve().parents[1]
+        release_inputs = (source / 'tools/release/files.txt').read_text(encoding='utf-8').splitlines()
+        for filename in ('role-studio-prompts.json', 'role-studio-prompts.js'):
+            self.assertIn(filename, release_inputs)
+            self.assertTrue((source / filename).is_file())
+        catalog = self.public / 'role-studio-prompts.json'
+        private = self.public / 'dock-prompts.json'
+        for path in (catalog, private):
+            path.write_bytes(b'{}')
+            self.files[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        self.manifest()
+        release = PublicFiles(self.root)
+        self.assertTrue(release.allowed(catalog))
+        self.assertFalse(release.allowed(private))
+
     def test_manifest_cannot_use_absolute_paths(self):
         self.files[str(self.public/'index.html')]=self.files['index.html'];self.manifest()
         with self.assertRaises(RuntimeError): PublicFiles(self.root)

@@ -107,12 +107,13 @@ test('failed project save prevents paid submission', async () => {
 
 test('audio playback binding survives total loss of browser music cache', () => {
   const f = fixture(); f.node.dataset.node = 'audio';
+  f.scope.state.roleSnapshots = new Map();
   Object.assign(f.scope, {
     musicStorage: { get: () => null, set() {} }, demoMusic: [], updateMusicCount() {},
     currentUser: () => ({ id: 'local' }), remember() {}, scheduleSave() {}, refreshQuickToolbarState() {},
     ensureAudioNodeControls() {}, refreshAudioButtons() {}, $$: () => [f.node], nodeLayerOf: () => 0, nodeLabelEl: () => null,
   });
-  load(f.scope, ['saveAudioToLibrary', 'writeMusicLibrary', 'readMusicLibrary', 'applyAudioTrack', 'applyGeneratedAudio', 'nodeSnapshot', 'applyNodeContent', 'audioNodeTrack', 'audioNodeData']);
+  load(f.scope, ['saveAudioToLibrary', 'writeMusicLibrary', 'readMusicLibrary', 'applyAudioTrack', 'applyGeneratedAudio', 'nodeRoleSnapshots', 'nodeRoleReferenceFields', 'nodeSnapshot', 'textNodeText', 'applyNodeContent', 'audioNodeTrack', 'audioNodeData']);
   f.scope.applyGeneratedAudio(f.node, { audio: 'data:audio/wav;base64,bytes', audioUrl: '/media/saved.wav', jobId: 'job' }, 'hello');
   const snapshot = f.scope.nodeSnapshot()[0];
   assert.equal(snapshot.audioUrl, '/media/saved.wav'); assert.equal(snapshot.appliedGenerationJobId, 'job');

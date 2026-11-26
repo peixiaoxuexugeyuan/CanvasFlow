@@ -6,6 +6,7 @@ import socket
 import unittest
 from unittest.mock import patch
 import test_security_audit as fixture
+from local_access import LocalAccess
 
 
 class LocalSecurityAuditTests(unittest.TestCase):
@@ -16,6 +17,23 @@ class LocalSecurityAuditTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls): fixture.SecurityAuditTests.tearDownClass.__func__(cls)
     def setUp(self): fixture.SecurityAuditTests.setUp(self)
+
+    def test_open_browser_can_renew_its_cached_credentials_after_restart(self):
+        origin = f'http://127.0.0.1:{self.http.server_port}'
+        previous = self.http.local_access
+        current = LocalAccess(previous.key, 'relaunch-test', self.http.server_port)
+        stale = {'X-CanvasFlow-Session': '', 'Authorization': previous.basic}
+        active = {'X-CanvasFlow-Session': '', 'Authorization': current.basic}
+        with patch.object(self.http, 'local_access', current):
+            self.assertEqual(self.request('GET', '/api/health', headers=stale)[0], 403)
+            ticket = current.browser_url(origin).split('#')[1]
+            self.assertEqual(self.request('POST', '/api/local/pair', {'ticket': ticket}, headers=stale)[0], 200)
+            for path in ('/?project=my-project', '/app.js', '/api/health'):
+                with self.subTest(path=path):
+                    status, _, headers = self.request('GET', path, headers=stale)
+                    self.assertEqual(status, 401)
+                    self.assertEqual(headers['WWW-Authenticate'], 'Basic realm="CanvasFlow"')
+            self.assertEqual(self.request('GET', '/api/health', headers=active)[0], 200)
 
     test_bad_or_stale_revision_never_overwrites_project = fixture.SecurityAuditTests.test_bad_or_stale_revision_never_overwrites_project
     test_malformed_json_does_not_modify_saved_project = fixture.SecurityAuditTests.test_malformed_json_does_not_modify_saved_project

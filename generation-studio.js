@@ -41,13 +41,13 @@
     input.type = 'file';
     input.hidden = true;
     input.multiple = slot.max > 1;
-    input.accept = slot.kinds.map((k) => window.CanvasFlowFileFormats.accept(formatGroup[k])).join(',');
+    input.accept = slot.accept || slot.kinds.map((k) => window.CanvasFlowFileFormats.accept(formatGroup[k])).join(',');
     input.addEventListener('change', () => {
       if (input.files?.length) selected(Array.from(input.files));
     });
     host.append(button('本机上传', () => input.click()), input);
   }
-  function pickMaterial(host, slot, request, fromLink) {
+  function pickMaterial(host, slot, request, fromLink, canvasRows, referenceOptions) {
     const dialog = element('dialog');
     dialog.className = 'studio-material-picker';
     const heading = element('header');
@@ -68,8 +68,52 @@
     dialog.append(heading, input, list, note);
     host.append(dialog);
     return new Promise((resolve) => {
-      let selected = null,
-        rows = [];
+      let selected = null, rows = [], source = referenceOptions?.source || (canvasRows?.length ? 'canvas' : 'library');
+      let loading = true, libraryError = '';
+      const chosen = new Set(), history = [];
+      let historyOffset = 0, historyTotal = Infinity, historyBusy = false, historyError = '';
+      const more = button('加载更多', loadHistory);
+      const confirm = button('添加所选', () => finish([...chosen]));
+      if (referenceOptions) {
+        const footer = element('footer');
+        footer.append(more, confirm);
+        dialog.append(footer);
+      }
+      async function loadHistory() {
+        if (historyBusy || historyOffset >= historyTotal) return;
+        historyBusy = true; historyError = ''; paint();
+        try {
+          const query = new URLSearchParams({kind:'image',status:'completed',view:'studio',limit:'50',offset:String(historyOffset)});
+          if (referenceOptions.projectId) query.set('projectId',referenceOptions.projectId);
+          const result = await request('/api/jobs?' + query);
+          const jobs = result.jobs || [];
+          for (const job of jobs) {
+            const url = window.CanvasFlowStudioUI.resultUrl(job,'image');
+            if (url && !history.some(row => row.url === url)) history.push({kind:'image',name:job.prompt || '历史图片',url});
+          }
+          historyOffset += jobs.length;
+          historyTotal = jobs.length ? Number(result.total ?? historyOffset) : historyOffset;
+        } catch (error) { historyError = error.message || '历史图片读取失败'; }
+        finally { historyBusy = false; if (dialog.open) paint(); }
+      }
+      if (canvasRows) {
+        const sources = element('nav');
+        sources.className = 'studio-material-sources';
+        sources.setAttribute('aria-label', '参考图来源');
+        const choices = [['canvas','当前画布'], ['library','素材库']];
+        if (referenceOptions) choices.unshift(['history','生成历史']);
+        for (const [key, label] of choices) {
+          const tab = button(label, () => {
+            source = key;
+            input.value = '';
+            paint();
+            if (key === 'history' && !historyOffset) void loadHistory();
+          });
+          tab.dataset.source = key;
+          sources.append(tab);
+        }
+        heading.after(sources);
+      }
       function finish(row) {
         selected = row;
         dialog.close();
@@ -77,11 +121,26 @@
       function paint() {
         const query = input.value.trim().toLowerCase();
         list.replaceChildren();
-        const filtered = rows.filter((r) => !query || r.name?.toLowerCase().includes(query));
+        const onCanvas = source === 'canvas';
+        const fromHistory = source === 'history';
+        const filtered = (fromHistory ? history : onCanvas ? canvasRows : rows).filter((r) => !query || r.name?.toLowerCase().includes(query));
+        if (canvasRows) {
+          input.placeholder = fromHistory ? '搜索已加载的历史图片' : onCanvas ? '搜索当前画布图片' : '搜索工作区素材';
+          input.setAttribute('aria-label', input.placeholder);
+          for (const tab of dialog.querySelectorAll('[data-source]')) tab.setAttribute('aria-pressed', String(tab.dataset.source === source));
+        }
         for (const row of filtered) {
-          const b = button(row.name || mediaNames[row.kind], () => finish(row));
+          const b = button(row.name || mediaNames[row.kind], () => {
+            if (!referenceOptions) return finish(row);
+            if (chosen.has(row)) chosen.delete(row);
+            else if (chosen.size < slot.max) chosen.add(row);
+            else { note.textContent = '最多还可添加 ' + slot.max + ' 张参考图。'; return; }
+            paint();
+            list.children[filtered.indexOf(row)]?.focus({preventScroll:true});
+          });
+          if (referenceOptions) b.setAttribute('aria-pressed',String(chosen.has(row)));
           const src = row.thumbnail || (row.kind === 'image' && row.url);
-          if (src && (usableReference(src) || /^data:image\//.test(src))) {
+          if (src && (usableReference(src) || /^data:image\//.test(src) || (onCanvas && /^(?:blob:|\/?assets\/|\/?role-library\/)/.test(src)))) {
             const img = element('img');
             img.src = src;
             img.loading = 'lazy';
@@ -90,10 +149,20 @@
           }
           list.append(b);
         }
-        note.textContent = filtered.length
+        if (referenceOptions) {
+          more.hidden = !fromHistory || historyOffset >= historyTotal;
+          more.disabled = historyBusy;
+          more.textContent = historyError ? '重试' : '加载更多';
+          confirm.textContent = chosen.size ? '添加所选（' + chosen.size + '）' : '添加所选';
+          confirm.disabled = !chosen.size;
+        }
+        note.textContent = fromHistory && (historyError || historyBusy) ? historyError || '正在读取生成历史…' : filtered.length
           ? ''
+          : !onCanvas && !fromHistory && (loading || libraryError)
+            ? libraryError || '正在读取素材…'
           : query
             ? '没有匹配的素材。'
+            : fromHistory ? '暂无可用的历史图片。' : onCanvas ? '当前画布没有可用的图片。'
             : slot.urlOnly
               ? '暂无可用的链接素材，可直接填写供应商能访问的素材链接。'
               : '当前工作区还没有这类素材，可从本机上传。';
@@ -135,8 +204,9 @@
           }
         });
       } else {
-        if (!slot.urlOnly) addUploadButton(dialog, slot, finish);
-        note.textContent = '正在读取素材…';
+        if (!slot.urlOnly && !referenceOptions) addUploadButton(dialog, slot, finish);
+        paint();
+        if (source === 'history') void loadHistory();
         input.addEventListener('input', paint);
         request('/api/workspace/materials')
           .then((result) => {
@@ -146,10 +216,15 @@
                 slot.kinds.includes(r.kind) &&
                 (slot.urlOnly ? webUrl(r.url) : r.deferred || usableReference(r.url))
             );
+            loading = false;
             paint();
           })
           .catch((error) => {
-            if (dialog.open) note.textContent = error.message;
+            if (dialog.open) {
+              loading = false;
+              libraryError = error.message;
+              paint();
+            }
           });
       }
     });
@@ -573,12 +648,10 @@
       reuse,
       download: deps.download,
       retryLookup: async (job) => {
-        try {
-          await request('/api/jobs/' + encodeURIComponent(job.id) + '?recoverMedia=1');
-          if (live()) void refreshHistory();
-        } catch (e) {
-          if (live()) status.textContent = e.message;
-        }
+        const result = await request('/api/jobs/' + encodeURIComponent(job.id) + '?recoverMedia=1');
+        if (!live()) return;
+        void refreshHistory();
+        return result.job;
       }
     });
     const historyNote = find('[data-history-note]') || status;
@@ -736,5 +809,10 @@
       window.removeEventListener('canvasflow:models-changed', reloadModels);
     };
   }
-  window.CanvasFlowGenerationStudio = { mount };
+  window.CanvasFlowGenerationStudio = {
+    mount,
+    pickImageReference(canvasRows, request, options) {
+      return pickMaterial(document.body, {label:'参考图', kinds:['image'], max:options?.limit || 1, accept:'image/png,image/jpeg,image/webp'}, request, false, canvasRows, options);
+    },
+  };
 })();

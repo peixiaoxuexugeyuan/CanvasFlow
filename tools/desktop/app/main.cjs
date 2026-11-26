@@ -31,7 +31,7 @@ function log(message) {
 }
 function stopHost() {
   quitting = true;
-  // EOF asks the supervisor to close its Job Object. A reused external server survives.
+  // EOF lets the owned backend drain and persist accepted tasks before the supervisor closes its Job Object. A reused external server survives.
   if (host?.stdin && !host.stdin.destroyed) host.stdin.end();
 }
 function validSender(event) {
@@ -122,18 +122,18 @@ async function imageUpdateGate(action) {
     headers:{'Content-Type':'application/json','X-CanvasFlow-Desktop':updateHostToken,'X-CanvasFlow-Session':sessionToken},
     body:JSON.stringify({action})
   });
-  if (!response.ok) throw Error('无法确认图片任务状态，请稍后再更新');
+  if (!response.ok) throw Error('无法确认生成任务状态，请稍后再更新');
   const result = await response.json();
-  if (typeof result.busy !== 'boolean') throw Error('无法确认图片任务状态，请稍后再更新');
+  if (typeof result.busy !== 'boolean') throw Error('无法确认生成任务状态，请稍后再更新');
   return result.busy;
 }
 async function waitForImageJobs() {
   if (!await imageUpdateGate('status')) return true;
   const controller = new AbortController();
   let postponed = false;
-  const postpone = dialog.showMessageBox(mainWindow, {type:'info', title:'等待图片任务完成',
-    message:'图片任务完成后将自动安装更新',
-    detail:'CanvasFlow 会继续生成并保存结果。你也可以返回工作台，稍后在设置中继续安装。',
+  const postpone = dialog.showMessageBox(mainWindow, {type:'info', title:'等待生成任务保存',
+    message:'生成任务可以安全中断后将自动安装更新',
+    detail:'CanvasFlow 会等待图片任务保存结果，并等待动作捕捉任务取得服务商任务号。你也可以返回工作台，稍后在设置中继续安装。',
     buttons:['稍后安装'], cancelId:0, defaultId:0, signal:controller.signal, noLink:true}).then(()=>{postponed = true; return false;});
   try {
     for (;;) {

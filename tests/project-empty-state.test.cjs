@@ -256,3 +256,60 @@ test('retry after a lost create response reuses the existing project rather than
   assert.equal(await env.saveProject(),true);assert.equal(env.state.projectIsDraft,false);
   assert.deepEqual(methods,['GET','POST','GET','PUT']);
 });
+
+test('coalesced saves can restore the last acknowledged references while a different selection is in flight', async()=>{
+  let release;
+  const writes=[];
+  let storedRefs;
+  const {env,nodes}=draftSavingContext(async(_route,options)=>{
+    const body=JSON.parse(options.body);
+    writes.push(body);
+    if (writes.length===2) await new Promise(resolve=>{release=resolve;});
+    if (body.references) storedRefs=body.references;
+    return {project:{id:'draft-uuid',revision:body.revision+1}};
+  });
+  env.state.projectIsDraft=false;
+  env.state.references=[{id:'first'}];
+  assert.equal(await env.saveProject(),true);
+  env.state.references=[{id:'second'}];
+  const inFlight=env.saveProject();
+  env.state.references=[];
+  const removed=env.saveProject();
+  env.state.references=[{id:'first'}];
+  const restored=env.saveProject();
+  release();
+  assert.deepEqual(await Promise.all([inFlight,removed,restored]),[true,true,true]);
+  assert.equal(writes.length,3);
+  assert.deepEqual(storedRefs,[{id:'first'}]);
+  nodes[0].copy='only text changed';
+  await env.saveProject();
+  assert.equal('references' in writes.at(-1),false);
+});
+
+test('offline save reports storage failure, retains the draft, and can persist it on retry',()=>{
+  const {env,labels}=draftSavingContext(()=>{throw Error('unexpected API call');});
+  const storage=new Map([['canvasflow-projects','[]']]);
+  let quotaExceeded=true;
+  env.localStorage={
+    getItem:key=>storage.get(key)??null,
+    setItem:(key,value)=>{
+      if (quotaExceeded && key==='canvasflow-projects') throw Error('QuotaExceededError');
+      storage.set(key,value);
+    },
+  };
+  env.isStandaloneFile=()=>true;
+  env.updateProjectBadge=count=>env.calls.push(['badge',count]);
+  vm.runInContext(source.slice(source.indexOf('    const localProjectsStorage'),source.indexOf('    const sidebarStorage'))
+    + ['readLocalProjects','writeLocalProject','findLocalProject'].map(name=>functions.get(name)).join('\n'),env);
+  assert.equal(env.saveProject(),false);
+  assert.match(labels.saveStatus.textContent,/本机保存失败/);
+  assert.equal(env.state.projectIsDraft,true);
+  assert.equal(env.cached().projectId,'only');
+  assert.equal(env.findLocalProject('draft-uuid'),null);
+  assert.equal(env.calls.length,0);
+  quotaExceeded=false;
+  assert.equal(env.saveProject(),true);
+  assert.equal(env.state.projectIsDraft,false);
+  assert.equal(env.findLocalProject('draft-uuid').nodes[0].copy,'hello');
+  assert.match(labels.saveStatus.textContent,/已保存到本机/);
+});

@@ -20,6 +20,7 @@ async function main() {
   try {
     const page = await browser.newPage({ viewport: {width: 1092, height: 871} });
     await page.route('http://studio.test/**', route => {
+      if (route.request().url().endsWith('/expired.webm')) return route.fulfill({status: 404, body: ''});
       if (route.request().resourceType() === 'media') return route.fulfill({body: video, contentType: 'video/webm'});
       return route.fulfill({body: '<!doctype html><meta charset="utf-8"><main></main>', contentType: 'text/html'});
     });
@@ -31,13 +32,17 @@ async function main() {
       host.innerHTML = CanvasFlowStudioUI.markup('video');
       const panel = CanvasFlowStudioUI.historyController(host, 'video', {
         reuse: job => { window.reused = job.id; },
-        retryLookup: job => { window.lookedUp = job.id; },
+        retryLookup: job => {
+          window.lookedUp = job.id;
+          if (job.id === 'expired') return { ...job, videoUrl: '/media/recovered.webm' };
+        },
         download: job => { window.downloaded = job.id; }
       });
       window.jobs = [
         {id: 'newest', prompt: '测试镜头', status: 'running', progress: 0, modelId: 'm'},
         {id: 'old', prompt: '第一个镜头', status: 'completed', videoUrl: '/media/old.webm', modelId: 'm'},
         {id: 'missing', prompt: '待取回的镜头', status: 'completed', providerJobId: 'provider-missing'},
+        {id: 'expired', prompt: '失效镜头', status: 'completed', providerJobId: 'existing-task', videoUrl: '/media/expired.webm'},
         {id: 'unrecoverable', prompt: '无上游编号的镜头', status: 'completed'}
       ];
       window.refresh = () => panel.render(jobs, [{id: 'm', name: '测试模型'}], {total: jobs.length, submittedIds: ['newest']});
@@ -80,6 +85,12 @@ async function main() {
     });
     await download.click();
     assert.equal(await page.evaluate(() => window.downloaded), 'newest');
+    await page.locator('[data-job-id=expired] [data-view-job]').click();
+    const recover = page.locator('[data-job-id=expired] [data-lookup]');
+    await recover.waitFor();
+    await page.evaluate(() => refresh());
+    await recover.click();
+    await page.waitForFunction(() => document.querySelector('[data-output-media] video')?.src.endsWith('/recovered.webm'));
     await page.setViewportSize({width: 375, height: 700});
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     const embedded = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6vMAAAAAASUVORK5CYII=';

@@ -106,7 +106,7 @@ def build_catalog(workspace_id, projects, assets, music, models, jobs, in_scope,
             add({**record,'modelUrl':obj.get('modelUrl')},'model',project_map.get(str(record.get('projectId') or '')),
                 origin='uploaded' if obj.get('local') and not obj.get('blenderJobId') else 'generated',category=category,object_data=obj,identity='model:'+str(record.get('id')))
 
-    def attachments(value, project, origin, node_id, category=''):
+    def attachments(value, project, origin, node_id, category='', video_poster=''):
         if isinstance(value,str):
             value=decoded(value,[]) if value.lstrip().startswith('[') else decoded(value,{})
         if isinstance(value,list):
@@ -117,7 +117,10 @@ def build_catalog(workspace_id, projects, assets, music, models, jobs, in_scope,
             if value.get(field):resolve(value[field],project=project,origin=origin,category=category,node_id=node_id)
         for field,kind in (('previewMedia','image'),('previewData','image'),('mediaUrl',''),('imageUrl','image'),('videoUrl','video'),('audioUrl','audio'),('modelUrl','model'),('panoramaUrl','image'),('lastCaptureUrl','image'),('url',''),('data','')):
             if safe_url(value.get(field)):
-                add({'url':value[field],'name':value.get('name') or value.get('title') or value.get('previewName')},kind,project,origin,category,node_id)
+                record={'url':value[field],'name':value.get('name') or value.get('title') or value.get('previewName')}
+                if field=='videoUrl' and video_poster and media_kind(value[field],kind)=='video':
+                    record['thumbnail']=video_poster
+                add(record,kind,project,origin,category,node_id)
         for key,child in value.items():
             if isinstance(child,(dict,list)):
                 child_category={'characters':'character','roles':'character','scenes':'scene','props':'prop'}.get(key,category)
@@ -128,7 +131,10 @@ def build_catalog(workspace_id, projects, assets, music, models, jobs, in_scope,
             if not isinstance(node,dict):continue
             origin='generated' if node.get('generated') or node.get('type')=='director' or node.get('sourceDirectorId') or str(node.get('jobId') or '') in job_ids else 'uploaded'
             category='character' if node.get('type')=='charview' else 'scene' if node.get('type') in ('panorama','pano') or node.get('imageProjection')=='equirectangular' else ''
-            attachments(node,project,origin,str(node.get('id') or ''),category)
+            # The canvas stores an output video's poster in the same node's previewMedia.
+            poster=safe_url(node.get('previewMedia')) if node.get('type')=='output' else ''
+            attachments(node,project,origin,str(node.get('id') or ''),category,
+                        video_poster=poster if media_kind(poster)=='image' else '')
             for id in decoded(node.get('imageHistory'),[]):resolve(id,'image',project,'generated',category,str(node.get('id') or ''))
             for key in ('scriptAssets','shots','cells','references'):
                 if node.get(key):attachments(node[key],project,origin,str(node.get('id') or ''),category)

@@ -31,11 +31,11 @@ function fixture() {
     $:selector=>selector==='#promptInput'?input:null, $$:()=>nodes,
     syncPresetDescVisibility(){},renderPromptHighlight(){},promptValueSyncing:false,
     scheduleSave(){saves++;},lastPromptEmpty:false,syncVideoGenModeState(){},
-    scheduleDockQuote(){},dispatchPromptInput(){listeners.input?.();},setDockPresetMode(){},bindAudioDock(){},
+    scheduleDockQuote(){},dispatchPromptInput(bubbles){listeners.input?.({detail:{reflectOnly:!bubbles}});},setDockPresetMode(){},bindAudioDock(){},
     setModelJobState(){},setModelNodeVideo(){},PROMPT_TOKEN_PATTERN:/unused/,deleteWholeTokens(){},
     slashTargetNode:()=>nodes[0],openImageToolbox(){toolboxes++;}};
   vm.createContext(scope);
-  vm.runInContext(['bindPromptInput','syncInspectorToNode','applyNodeVisualState'].map(key=>functions[key]).join('\n'),scope);
+  vm.runInContext(['bindPromptInput','syncInspectorToNode','applyNodeVisualState','mediaNodePrompt','updateMediaMentionsAfterEdit'].map(key=>functions[key]).join('\n'),scope);
   scope.bindPromptInput();
   return {scope,input,nodes,body,listeners,saves:()=>saves,toolboxes:()=>toolboxes};
 }
@@ -65,6 +65,55 @@ test('typing global video instructions schedules persistence',()=>{
   f.input.value='Global video instruction';f.listeners.input();
   assert.equal(f.scope.state.modelPrompt,'Global video instruction');assert.equal(f.saves(),1);
   f.listeners.input();assert.equal(f.saves(),1);
+});
+
+test('image and video prompts stay with their node, including explicit clears and an older shared video prompt',()=>{
+  const f=fixture(), [img,vid]=f.nodes;
+  img.dataset.node='image'; vid.dataset.node='output';
+  f.scope.state.modelPrompt='旧项目提示词'; f.body.textContent='镜头图片.png';
+  img.dataset.previewName=f.body.textContent;
+  f.scope.syncInspectorToNode(img); assert.equal(f.input.value,'');
+  const first='  AI生成图片 · 逐字输入\n第二行\n ';
+  f.input.value=first; f.listeners.input(); assert.equal(img.dataset.mediaPrompt, first);
+  assert.equal(f.body.textContent, '镜头图片.png');
+  f.scope.state.activeNodeId='b'; f.scope.syncInspectorToNode(vid);
+  assert.equal(f.input.value,'旧项目提示词'); assert.equal(vid.dataset.mediaPrompt,undefined);
+  f.input.value=''; f.listeners.input();
+  f.scope.state.activeNodeId='a'; f.scope.syncInspectorToNode(img); assert.equal(f.input.value,first);
+  f.scope.state.activeNodeId='b'; f.scope.syncInspectorToNode(vid); assert.equal(f.input.value,'');
+  assert.equal(f.scope.state.modelPrompt,'旧项目提示词'); assert.equal(f.saves(),2);
+});
+
+test('rich text retains the original plain-text paragraph and list breaks across a snapshot',()=>{
+  const html='<p>第一段<br>次の行</p><ul><li>最后一节</li></ul>';
+  const plain='第一段\n次の行\n\n最后一节';
+  const body={firstElementChild:{},innerHTML:'',innerText:'',textContent:''};
+  const node={dataset:{node:'prompt'},querySelector:()=>body};
+  const scope={restoredPromptBodies:new WeakMap(),window:{CanvasFlowSafeHTML:{sanitize:value=>value}},syncPromptNodeTextState(){}};
+  vm.createContext(scope);
+  vm.runInContext(['applyNodeContent','textNodeText'].map(key=>functions[key]).join('\n'),scope);
+  scope.applyNodeContent(node,{copy:plain,copyHtml:html});
+  assert.equal(scope.textNodeText(node),plain);
+  body.innerHTML='<p>Revised</p>'; body.innerText='Revised';
+  assert.equal(scope.textNodeText(node),'Revised');
+});
+
+test('mention offsets follow edits in UTF-16 and a deleted mention no longer links to its original node',()=>{
+  const f=fixture(), node=f.nodes[0];
+  node.dataset.node='image';
+  node.dataset.mediaPrompt='😀 图片 1 / 图片 2';
+  const refs=[{start:3,end:7,nodeId:'n1',index:1,type:'image'}, {start:10,end:14,nodeId:'n2',index:2,type:'image'}];
+  node.dataset.mediaPromptMentions=JSON.stringify(refs);
+  f.input.value='前\n'+node.dataset.mediaPrompt; f.listeners.input();
+  assert.deepEqual(JSON.parse(node.dataset.mediaPromptMentions),refs.map(ref=>({...ref,start:ref.start+2,end:ref.end+2})));
+  f.input.value=f.input.value.replace('图片 1','海边'); f.listeners.input();
+  assert.deepEqual(JSON.parse(node.dataset.mediaPromptMentions),[refs[1]]);
+});
+test('a script node uses its own editable prompt without altering the storyboard',()=>{
+  const f=fixture(), node=f.nodes[0]; node.dataset.node='script'; node.dataset.scriptTheme='根据剧本和人物参考生成分镜脚本';
+  node.dataset.shots='[{"id":"1"}]'; f.scope.syncInspectorToNode(node); assert.equal(f.input.value,node.dataset.scriptTheme);
+  f.input.value='  更新\n'; f.listeners.input(); assert.equal(node.dataset.scriptTheme,'  更新\n');
+  assert.equal(node.dataset.shots,'[{"id":"1"}]'); assert.equal(f.scope.state.modelPrompt,'');
 });
 
  test('long instructions survive input, node switching and snapshot restoration',()=>{

@@ -1,20 +1,27 @@
 """Regression: large director projects must never be truncated into invalid JSON."""
 import ast
 import json
+import math
 import pathlib
 import re
+import sqlite3
 import unittest
 import uuid
 
 root = pathlib.Path(__file__).resolve().parents[1]
 tree = ast.parse((root / 'server.py').read_text(encoding='utf-8-sig'))
-node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'clean_graph')
-scope = {'re': re, 'json': json, 'uuid': uuid, 'read_music': lambda: [], 'read_models': lambda: []}
-exec(compile(ast.Module(body=[node], type_ignores=[]), str(root / 'server.py'), 'exec'), scope)
-media_node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'media_referenced_by')
-exec(compile(ast.Module(body=[media_node], type_ignores=[]), str(root / 'server.py'), 'exec'), scope)
+names = {'clean_graph', 'finite_canvas_number', 'clean_canvas_role_snapshots', 'role_source_image', 'media_referenced_by'}
+definitions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
+scope = {'re': re, 'math': math, 'json': json, 'uuid': uuid, 'read_music': lambda: [], 'read_models': lambda: []}
+exec(compile(ast.Module(body=definitions, type_ignores=[]), str(root / 'server.py'), 'exec'), scope)
 
 class DirectorPersistenceTest(unittest.TestCase):
+    def setUp(self):
+        db = sqlite3.connect(':memory:')
+        self.addCleanup(db.close)
+        db.execute('CREATE TABLE role_custom_marks (media_id TEXT)')
+        scope['auth_db'] = lambda: db
+
     def test_agent_scene_conversation_and_staged_motion_roundtrip(self):
         scene = {'version':3, 'scene':{'whitebox':True},
                  'objects':[{'id':'house', 'kind':'geometry', 'whitebox':{'type':'building', 'parameters':{'size':[4,5,6], 'floors':2}}}],

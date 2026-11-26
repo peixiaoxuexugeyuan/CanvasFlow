@@ -55,6 +55,8 @@ def public_static_path(target, root):
                      '.gif', '.ico', '.woff', '.woff2', '.ttf', '.eot', '.mp3', '.wav', '.m4a',
                      '.mp4', '.webm', '.mov', '.glb', '.gltf', '.bin', '.hdr', '.exr', '.wasm'}
     if len(parts) == 1:
+        if parts[0] == 'role-studio-prompts.json':
+            return True
         return not parts[0].startswith(('.', '_')) and suffix in {'.html', '.js', '.mjs', '.css', '.ico', '.svg'}
     if any(part.startswith('.') for part in parts):
         return False

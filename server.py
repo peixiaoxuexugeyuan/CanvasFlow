@@ -33,16 +33,19 @@ from urllib import request as urllib_request
 from datetime import datetime, timedelta, timezone
 from http.server import SimpleHTTPRequestHandler
 from bounded_http import ThreadingHTTPServer as BoundedHTTPServer
+import video_reference_store
 from pathlib import Path
 from local_app import LOCAL_ID, LOCAL_CONTEXT, LocalStorage, local_content, local_job, retired_route, installation_id
 from workspace_materials import build_catalog, summary_item, category_list, media_kind as material_media_kind
 from community_skills import CommunitySkills, CommunityError
 from blender_bridge import BlenderBridge, BlenderUnavailable
 from film_workbench import FilmWorkbench, FilmUnavailable
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urljoin, urlparse
 from request_security import RequestBodyError, StorageReadError, request_allowed, public_static_path, byte_range
 from release_security import PublicFiles
 from provider_credentials import protect_rows, unlock_rows
+from mediakit_depth import DepthService, DepthError, DepthPaused, PROTOCOL as DEPTH_PROTOCOL
+from types import SimpleNamespace
 from local_access import CONNECT_PAGE, NATIVE_SERVER_START, LocalAccess, lock_data_directory, set_service_port, user_secret
 from network_security import open_http_url as guarded_open_http_url, http_origin, validate_provider_access, network_access, private_url, NetworkAccessError
 
@@ -76,11 +79,19 @@ class ThreadingHTTPServer(BoundedHTTPServer):
             self._data_lease = data_lease or lock_data_directory(DATA_DIR)
             set_service_port(self._data_lease, self.server_port)
             self.local_access = LocalAccess(access_key or user_secret(), installation_id(ROOT, DATA_DIR), self.server_port)
+            self.role_worker = RoleDerivativeWorker()
+            self.role_worker.resume()
+            self.depth_service = DepthService(DEPTH_HOST)
+            self.depth_service.resume()
         except BaseException:
             self.server_close()
             raise
 
     def server_close(self):
+        if getattr(self, 'depth_service', None):
+            self.depth_service.close()
+        if getattr(self, 'role_worker', None):
+            self.role_worker.close()
         super().server_close()
         if getattr(self, '_data_lease', None):
             self._data_lease.close()
@@ -222,6 +233,9 @@ def init_auth_db():
         hold_id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
         result TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS role_custom_marks (
+        owner_id TEXT NOT NULL, media_id TEXT NOT NULL, PRIMARY KEY (owner_id, media_id)
     );
     -- ★ r886 社交关系与点赞。**刻意不设外键**：被关注 / 被赞的对象可能是演示账号
     --   （`user-canvasflow` / `user-mori`，它们没有 users 行）。加外键会让「关注官方账号」直接 500。
@@ -1172,6 +1186,8 @@ def quote_request(user, path, incoming):
         _,output_limit,_=text_generation_profile(purpose)
         prompt=text_generation_input_text(prompt,purpose)
     extra = VISION_INPUT_TOKEN_ALLOWANCE if source_path=='/api/ai/image-to-text' else 0
+    if source_path == '/api/ai/text-generate' and isinstance(incoming.get('referenceImages'), list):
+        extra = len(incoming['referenceImages']) * VISION_INPUT_TOKEN_ALLOWANCE
     if source_path=='/api/ai/image-to-text':
         output_limit=500
         prompt=str(incoming.get('instruction') or '').strip()
@@ -1292,7 +1308,7 @@ def clone(value):
     return json.loads(json.dumps(value, ensure_ascii=False))
 
 
-CREDENTIAL_FILES = {'ai-models.json', 'ai-providers.json'}
+CREDENTIAL_FILES = {'ai-models.json', 'ai-providers.json', 'mediakit-credentials.json'}
 
 
 def read_file(path: Path, fallback):
@@ -1768,6 +1784,18 @@ def media_referenced_by(media_id, assets=None, projects=None):
     for asset in (read_assets() if assets is None else assets):
         if contains(asset):
             refs.append(f"素材 {asset.get('id')}")
+    read_roles = globals().get('read_preset_roles_raw')
+    if read_roles:
+        roles = read_roles()
+        batches = roles.pop('derivativeBatches', {})
+        if contains(roles):
+            refs.append('角色库')
+        if any(contains(row.get('payload')) for batch in batches.values() if batch['status'] in ('queued','running')
+               for row in batch['items']):
+            refs.append('生成中的角色资产')
+    with auth_db() as db:
+        if db.execute('SELECT 1 FROM role_custom_marks WHERE media_id=? LIMIT 1',(media_id,)).fetchone():
+            refs.append('角色贴图库')
     directory=globals().get('DATA_DIR')
     if directory is not None:
         for workspace,bucket in read_file(directory/'workspace-materials.json',{}).items():
@@ -1833,7 +1861,7 @@ MEDIA_FETCH_TIMEOUT = 180
 MEDIA_FETCH_MAX_BYTES = 250_000_000
 
 
-def persist_media_url(url, mime='', name=''):
+def persist_media_url(url, mime='', name='', *, video_content_headers=None):
     """把**远程媒体地址**下载到本地 media/ 目录，返回 save_media_blob 那种 dict。
 
     为什么需要它：生成的视频原本只在 job/节点里存供应商给的地址，而**那是会过期的**
@@ -1871,6 +1899,7 @@ def persist_media_url(url, mime='', name=''):
     else:
         request = urllib_request.Request(url, headers={
             'Accept': '*/*', 'User-Agent': 'CanvasFlow/1.0',
+            **(video_content_headers.for_url(url) if video_content_headers is not None else {}),
         })
         try:
             with open_media_url(request, timeout=MEDIA_FETCH_TIMEOUT) as response:
@@ -1898,11 +1927,16 @@ def persist_media_url(url, mime='', name=''):
             raise ValueError(f'下载远端媒体失败：{exc}') from exc
     if not raw:
         raise ValueError('远端媒体内容为空')
+    if video_content_headers is not None:
+        detected = sniff_media_mime(raw)
+        if not detected.startswith('video/'):
+            raise ValueError('供应商成片接口返回的内容不是可识别的视频文件')
+        mime = detected
     suffix = Path(urlparse(url).path).suffix or name
     return save_media_blob(raw, mime, name or suffix)
 
 
-def persist_job_video(job):
+def persist_job_video(job, entry=None):
     """把 job 上的供应商视频地址就地换成落盘后的 /media/ 地址。
 
     返回 True 表示发生了替换。失败**只记一笔**（`videoPersistError`），
@@ -1919,10 +1953,20 @@ def persist_job_video(job):
             return False
         job['videoPersistError'] = '本地媒体文件已丢失'
         return False
+    # Only send provider credentials to this task's own content route. Public CDN
+    # links still download anonymously and cross-origin redirects strip credentials.
+    task_id = str(job.get('providerJobId') or '')
+    content_path = 'videos/' + quote(task_id, safe='') + '/content'
+    protected = (entry and task_id and task_id not in {'.', '..'}
+                 and url.partition('?')[0] in endpoint_candidates(provider_base_url(entry), content_path))
     try:
-        saved = persist_media_url(url, name=f"{job.get('id') or 'video'}.mp4")
+        options = {'video_content_headers': auth_headers(entry)} if protected else {}
+        saved = persist_media_url(url, name=f"{job.get('id') or 'video'}.mp4", **options)
     except ValueError as exc:
-        job['videoPersistError'] = str(exc)[:300]
+        if protected:
+            # The browser cannot play this endpoint without the provider key.
+            job['videoUrl'] = ''
+        job['videoPersistError'] = provider_error(str(exc), entry)[:300]
         return False
     job['videoUrl'] = saved['url']
     job['mediaId'] = saved['mediaId']
@@ -2428,10 +2472,15 @@ def model_supports_vision(item):
     return bool(text_params.get('multimodal'))
 
 
+def model_video_understanding(item):
+    from video_prompt import video_transport
+    return bool(model_has_usage(item, 'text') and video_transport(item))
+
+
 
 
 MODEL_PARAM_SPEC = {
-    'text': {'multimodal': 'bool'},
+    'text': {'multimodal': 'bool', 'videoInput': ('enum', ('gemini-native', 'chat-video', 'disabled'))},
     'image': {'transport': 'transport', 'aspectRatio': ('text', 20), 'resolution': ('text', 20),
               'quality': ('text', 20), 'count': ('text', 4)},
     # ★ r872：`durationSteps` = 「可用档位」（逗号串，如 "4,8,12"）。上游只认固定档的模型靠它锁档。
@@ -3671,6 +3720,55 @@ def render_preset_template(template, fields):
 PRESET_ROLES_FILE = DATA_DIR / 'preset-roles.json'
 
 
+ROLE_MEDIA_IMAGE = re.compile(r'/media/media-[0-9a-f]{32}\.(?:png|jpe?g|webp|gif|bmp|heic|tiff)')
+ROLE_CUSTOM_MARK = 'features.marks.customImage'
+ROLE_MARK_ITEMS = 'features.marks.items'
+ROLE_MARK_GEOMETRY = {'x': (0, 100), 'y': (0, 100), 'size': (3, 80), 'turn': (-180, 180)}
+ROLE_MARK_FIELDS = {'id', 'preset', 'src', 'view', *ROLE_MARK_GEOMETRY}
+
+
+def role_mark_items(encoded):
+    if not isinstance(encoded, str):
+        return None
+    try:
+        items = json.loads(encoded)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(items, list):
+        return None
+    ids = set()
+    for item in items:
+        if not isinstance(item, dict) or item.keys() - ROLE_MARK_FIELDS:
+            return None
+        item_id = item.get('id')
+        if not isinstance(item_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', item_id) or item_id in ids:
+            return None
+        ids.add(item_id)
+        preset = item.get('preset')
+        if not isinstance(preset, str) or not preset.strip() or len(preset) > 100:
+            return None
+        src = item.get('src')
+        if preset == '自定义' or src:
+            if preset != '自定义' or not isinstance(src, str) or not ROLE_MEDIA_IMAGE.fullmatch(src):
+                return None
+        if item.get('view', 'half') not in ('half', 'full'):
+            return None
+        for key, (low, high) in ROLE_MARK_GEOMETRY.items():
+            number = item.get(key)
+            if type(number) not in (int, float) or not low <= number <= high:
+                return None
+    return items
+
+
+def role_source_image(value):
+    if not isinstance(value, str):
+        return ''
+    if ROLE_MEDIA_IMAGE.fullmatch(value):
+        return value
+    bundled = re.fullmatch(r'/?(?:role-library|_libtv_roles)/web/(\d{3}-[1-4]\.jpg)', value)
+    return 'role-library/web/' + bundled[1] if bundled else ''
+
+
 def _clean_role(item):
     """把前端传来的角色对象收敛成服务端认可的形状（字段白名单 + 长度夹紧）。"""
     if not isinstance(item, dict):
@@ -3680,13 +3778,68 @@ def _clean_role(item):
     if not role_id or not name:
         return None
     images = item.get('images')
-    return {
+    tags = item.get('tags') if isinstance(item.get('tags'), list) else []
+    role = {
         'id': role_id,
         'name': name,
         'value': str(item.get('value') or item.get('prompt') or '').strip(),
-        'tags': [str(tag).strip()[:20] for tag in (item.get('tags') or []) if str(tag or '').strip()][:8],
-        'images': [str(img or '')[:200000] for img in (images if isinstance(images, list) else [])][:4],
+        'tags': [str(tag).strip()[:20] for tag in tags if str(tag or '').strip()][:8],
+        'images': [img if isinstance(img, str) else '' for img in (images if isinstance(images, list) else [])[:4]],
     }
+    styling = item.get('styling')
+    if isinstance(styling, dict) and styling.get('version') == 1:
+        controls = {}
+        for key, value in (styling['controls'] if isinstance(styling.get('controls'), dict) else {}).items():
+            if not re.fullmatch(r'[A-Za-z0-9_.-]{1,120}', key):
+                continue
+            if type(value) in (str, bool):
+                controls[key] = value
+            elif type(value) in (int, float):
+                controls[key] = max(-100, min(100, value))
+        role['styling'] = {'version': 1, 'controls': controls, 'prompt': str(styling.get('prompt') or '')}
+        batch_id = styling.get('derivativeBatchId')
+        if isinstance(batch_id, str) and re.fullmatch(r'[a-f0-9-]{36}', batch_id):
+            role['styling']['derivativeBatchId'] = batch_id
+        model_id = styling.get('renderModelId')
+        if isinstance(model_id, str) and 0 < len(model_id) <= 200:
+            role['styling']['renderModelId'] = model_id
+        basis = styling.get('renderBasisKey')
+        if isinstance(basis, str) and re.fullmatch(r'[0-9a-f]{32}', basis):
+            role['styling']['renderBasisKey'] = basis
+        models = styling.get('renderSlotModels')
+        if isinstance(models, list) and len(models) == 4 and all(isinstance(m, str) and len(m) <= 200 for m in models):
+            role['styling']['renderSlotModels'] = list(models)
+        ready = styling.get('renderReadySlots')
+        if isinstance(ready, list):
+            role['styling']['renderReadySlots'] = [i for i, image in enumerate(role['images'])
+                                                   if image and any(type(slot) is int and slot == i for slot in ready)]
+        if ROLE_MARK_ITEMS in controls and role_mark_items(controls[ROLE_MARK_ITEMS]) is None:
+            controls.pop(ROLE_MARK_ITEMS)
+        if ROLE_CUSTOM_MARK in controls:
+            mark = controls[ROLE_CUSTOM_MARK]
+            if not isinstance(mark, str) or not ROLE_MEDIA_IMAGE.fullmatch(mark):
+                controls.pop(ROLE_CUSTOM_MARK)
+        if isinstance(styling.get('sourceImages'), list):
+            source_images = [role_source_image(url) for url in styling['sourceImages'][:4]]
+            role['styling']['sourceImages'] = (source_images + [''] * 4)[:4]
+            flags = styling.get('renderedSlots')
+            slots = [i for i, image in enumerate(role['images']) if image and isinstance(flags, list)
+                     and any(type(slot) is int and slot == i for slot in flags)]
+            role['styling']['renderedSlots'] = slots
+            role['styling']['halfPreviewOnly'] = styling.get('halfPreviewOnly') is True and 1 in slots
+            half = role_source_image(styling.get('halfPreviewUrl'))
+            if half:
+                role['styling']['halfPreviewUrl'] = half
+                role['styling']['halfPreviewModel'] = str(styling.get('halfPreviewModel') or '')[:200]
+        outfit = styling.get('outfitUrl')
+        if 'outfitUrls' in styling:
+            urls = styling['outfitUrls']
+            urls = list(dict.fromkeys(u for u in urls if isinstance(u, str) and ROLE_MEDIA_IMAGE.fullmatch(u)))[:16] if isinstance(urls, list) else []
+            role['styling']['outfitUrls'] = urls
+            outfit = urls[0] if urls else ''
+        if isinstance(outfit, str) and ROLE_MEDIA_IMAGE.fullmatch(outfit):
+            role['styling']['outfitUrl'] = outfit
+    return role
 
 
 def read_preset_roles():
@@ -3779,6 +3932,18 @@ def _clean_role_bucket(raw):
     return {'deleted': ids, 'overrides': overrides, 'custom': custom}
 
 
+def role_revision(value):
+    serialized = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()
+    return hashlib.sha256(serialized).hexdigest()
+
+
+def role_bucket_versions(bucket):
+    revisions = {item['id']: role_revision(item) for item in bucket['custom']}
+    revisions.update({key: role_revision(item) for key, item in bucket['overrides'].items()})
+    revisions.update({key: 'deleted' for key in bucket['deleted']})
+    return {**bucket, 'recordRevisions': revisions, 'revision': role_revision(bucket)}
+
+
 def scoped_preset_roles(scope, user_id):
     """取某个作用域那一批（**不合并**）。"""
     stored = read_preset_roles_raw()
@@ -3789,10 +3954,12 @@ def scoped_preset_roles(scope, user_id):
     return _clean_role_bucket(stored)
 
 
-def write_scoped_preset_roles(scope, user_id, payload):
+def write_scoped_preset_roles(scope, user_id, payload, *, derivative=None):
     """**只替换该作用域那一批** —— 别的用户 / 全局那份原样保留（私有隔离的命门）。"""
     bucket = _clean_role_bucket(payload)
     stored = read_preset_roles_raw()
+    if derivative:
+        stored.setdefault('derivativeBatches', {})[derivative['id']] = derivative
     if scope == 'mine':
         if not user_id:
             raise ValueError('missing user')
@@ -3821,15 +3988,286 @@ def visible_preset_roles(user_id):
     custom = [item for item in [*global_bucket['custom'], *mine['custom']] if str(item.get('id') or '') not in gone]
     # `global` 单独回一份：前端要拿它当"官方原版"的基线，判断某张预置卡到底有没有被我改过
     # （不这么做，非管理员保存一次就会把 24 张预置卡全部冻结成自己的旧副本）。
-    return {'deleted': deleted, 'overrides': overrides, 'custom': custom, 'mine': mine, 'global': global_bucket}
+    return {'deleted': deleted, 'overrides': overrides, 'custom': custom, 'mine': role_bucket_versions(mine), 'global': role_bucket_versions(global_bucket), 'imageLineageVersion': 5}
+
+
+def derivative_view(batch):
+    result = {k: batch[k] for k in ('id', 'roleId', 'status', 'initialRevision', 'revision')}
+    result['items'] = [{k: row[k] for k in ('slot', 'status', 'jobId', 'imageUrl', 'error') if k in row}
+                       for row in batch['items']]
+    return result
+
+
+class SharedRoleReferences(ValueError):
+    def __init__(self, urls):
+        super().__init__('请将公开参考图保存到自己的本地媒体库')
+        self.urls = sorted(urls)
+
+
+def prepare_role_derivatives(request, owner, role, workspace, valid_workspaces):
+    if not isinstance(request, dict) or not role or not role.get('styling'):
+        raise ValueError('请选择需要生成资产的角色')
+    batch_id = request.get('id')
+    if not isinstance(batch_id, str) or not re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', batch_id):
+        raise ValueError('角色资产任务标识无效')
+    project = request.get('projectId') or ''
+    if project and not any(p.get('id') == project and p.get('ownerId') == owner
+                           and in_workspace(p, workspace, valid_workspaces) for p in read_projects()):
+        raise ValueError('角色资产所属项目不可用，请切换到正确的工作区')
+    items = request.get('items')
+    if not isinstance(items, list) or not 1 <= len(items) <= 3:
+        raise ValueError('请选择一至三张角色资产图')
+    slots, rows, shared = set(), [], set()
+    for item in items:
+        slot = item.get('slot') if isinstance(item, dict) else None
+        if type(slot) is not int or slot not in (1, 2, 3) or slot in slots:
+            raise ValueError('角色资产图位无效或重复')
+        slots.add(slot)
+        incoming = item.get('payload')
+        if not isinstance(incoming, dict) or not isinstance(incoming.get('modelId'), str) or not incoming['modelId'].strip():
+            raise ValueError('请选择资产生成模型')
+        payload = {key: incoming[key] for key in ('prompt','modelId','size','quality','presetScene','modelOptions','imageSpec',
+                                                   'referenceImages','referenceImage') if key in incoming}
+        if 'modelOptions' not in payload and isinstance(incoming.get('generationSettings'), dict):
+            payload['modelOptions'] = incoming['generationSettings'].get('modelOptions') or {}
+        if len(json.dumps(payload, ensure_ascii=False)) > 256 * 1024:
+            raise ValueError('角色资产请求过大，请先保存参考图')
+        refs = payload.get('referenceImages', [])
+        if not isinstance(refs, list) or len(refs) > 32:
+            raise ValueError('角色参考图列表无效')
+        for url in [*refs, *([payload['referenceImage']] if payload.get('referenceImage') else [])]:
+            media = ACCOUNT_STORAGE.file_row(url[7:]) if isinstance(url, str) and ROLE_MEDIA_IMAGE.fullmatch(url) else None
+            if (not media or not str(media.get('mime', '')).startswith('image/')
+                    or not ACCOUNT_STORAGE.can_read(url[7:], owner)):
+                raise ValueError('请先将角色参考图保存到自己的本地媒体库')
+            if media['ownerId'] != owner:
+                shared.add(url)
+        payload['projectId'] = project
+        rows.append({'slot':slot, 'status':'queued', 'payload':payload, 'modelId':payload['modelId']})
+    if shared:
+        raise SharedRoleReferences(shared)
+    role['styling']['derivativeBatchId'] = batch_id
+    rev = role_revision(role)
+    return {'id':batch_id, 'owner':owner, 'workspace':workspace, 'roleId':role['id'],
+            'status':'queued', 'items':rows, 'revision':rev, 'initialRevision':rev}
+
+
+class RoleDerivativeWorker:
+    """Keep the receipt and role in the same atomic file. Submit each paid job at most once."""
+    def __init__(self):
+        self.stop = threading.Event()
+        self.thread = None
+
+    def close(self):
+        self.stop.set()
+        if self.thread:
+            self.thread.join()
+
+    def resume(self):
+        with LOCK:
+            if self.stop.is_set() or (self.thread and self.thread.is_alive()):
+                return
+            if any(b['status'] in ('queued','running') for b in read_preset_roles_raw().get('derivativeBatches', {}).values()):
+                self.thread = threading.Thread(target=self.run, name='role-asset-queue', daemon=True)
+                self.thread.start()
+
+    def run(self):
+        while not self.stop.is_set():
+            with LOCK:
+                batches = read_preset_roles_raw().get('derivativeBatches', {})
+                active = [key for key, b in batches.items() if b['status'] in ('queued', 'running')]
+                if not active:
+                    self.thread = None
+                    return
+            for key in active:
+                if self.stop.is_set():
+                    return
+                self.advance(key)
+            self.stop.wait(2)
+
+    @staticmethod
+    def current(stored, key):
+        batch = stored['derivativeBatches'][key]
+        bucket = stored.get('users', {}).get(batch['owner'], {})
+        role = next((r for r in bucket.get('custom', []) if r.get('id') == batch['roleId']), None)
+        if not role or role_revision(role) != batch['revision'] or role['id'] in bucket.get('deleted', []):
+            batch['status'] = 'superseded'
+            for row in batch['items']:
+                if row['status'] in ('queued', 'running'):
+                    row['status'] = 'superseded'
+                row.pop('payload', None)
+            write_file(PRESET_ROLES_FILE, stored)
+            return batch, None
+        return batch, role
+
+    def advance(self, key):
+        with LOCK:
+            stored = read_preset_roles_raw()
+            batch, role = self.current(stored, key)
+            if not role:
+                return
+            row = next(r for r in batch['items'] if r['status'] in ('queued', 'running'))
+            submit = row['status'] == 'queued'
+            if submit:
+                if IMAGE_UPDATE_LEASE_UNTIL > time.monotonic():
+                    return
+                # Persist the local receipt before contacting the provider. After an ambiguous
+                # crash, a missing job is reported for review instead of spending credits again.
+                row.update(status='running', jobId='job-' + uuid.uuid4().hex)
+                batch['status'] = 'running'
+                write_file(PRESET_ROLES_FILE, stored)
+            previous = index_jobs().get(row['jobId']) if not submit else None
+        token = STORAGE_ACTOR.set(batch['owner'])
+        try:
+            if submit:
+                job, failure = create_image_job({'id':batch['owner']}, row['payload'], batch['workspace'], job_id=row['jobId'])
+                if failure:
+                    raise ValueError(failure.get('message') or '提交角色资产任务失败')
+            elif previous and previous.get('userId') == batch['owner']:
+                if not previous.get('providerJobId') and previous.get('status') == 'running':
+                    with IMAGE_JOB_LOCK:
+                        executing = row['jobId'] in IMAGE_JOB_PAYLOADS
+                    if not executing:
+                        with LOCK:
+                            previous = index_jobs().get(row['jobId']) or previous
+                        if previous.get('status') == 'running':
+                            raise ValueError('应用已中断该同步任务，请在生成历史核对后重试')
+                job = _refresh_job_view(dict(previous))
+            else:
+                raise ValueError('上次提交回执不完整，请先到生成历史核对，以免重复生成')
+            if job.get('status') in ('running', 'queued'):
+                return
+            url = job.get('imageUrl') or ''
+            if job.get('status') != 'completed' or not ROLE_MEDIA_IMAGE.fullmatch(url) or not ACCOUNT_STORAGE.can_read(url[7:], batch['owner']):
+                raise ValueError(job.get('error') or job.get('imagePersistError') or '角色资产未返回可保存的图片')
+            self.finish(key, row['slot'], url)
+        except ImageUpdateReserved:
+            # The update guard ran before create_image_job contacted the provider.
+            with LOCK:
+                stored = read_preset_roles_raw()
+                current = stored['derivativeBatches'][key]
+                item = next(r for r in current['items'] if r['slot'] == row['slot'])
+                item['status'] = 'queued'
+                item.pop('jobId', None)
+                write_file(PRESET_ROLES_FILE, stored)
+        except Exception as exc:
+            self.finish(key, row['slot'], '', str(exc)[:400] or '角色资产生成失败')
+        finally:
+            STORAGE_ACTOR.reset(token)
+
+    def finish(self, key, slot, url, error=''):
+        with LOCK:
+            stored = read_preset_roles_raw()
+            batch, role = self.current(stored, key)
+            if not role:
+                return
+            row = next(r for r in batch['items'] if r['slot'] == slot)
+            row.pop('payload', None)
+            if error:
+                row.update(status='failed', error=error)
+                for other in batch['items']:
+                    if other['status'] == 'queued':
+                        other.update(status='failed', error='前一张资产图失败，尚未提交此图')
+                        other.pop('payload', None)
+                batch['status'] = 'failed'
+            else:
+                row.update(status='completed', imageUrl=url)
+                role['images'] = (role['images'] + [''] * 4)[:4]
+                role['images'][slot] = url
+                style = role['styling']
+                for field in ('renderedSlots', 'renderReadySlots'):
+                    style[field] = sorted(set(style.get(field, [])) | {slot})
+                style['renderSlotModels'] = (style.get('renderSlotModels', []) + [''] * 4)[:4]
+                style['renderSlotModels'][slot] = row['modelId']
+                if slot == 1:
+                    style['halfPreviewOnly'] = False
+                # Older clients may omit provenance fields that the role normalizer drops.
+                cleaned = _clean_role(role)
+                role.clear()
+                role.update(cleaned)
+                batch['revision'] = role_revision(role)
+                if all(r['status'] == 'completed' for r in batch['items']):
+                    batch['status'] = 'completed'
+            write_file(PRESET_ROLES_FILE, stored)
+
+
+def role_image_references(role):
+    if not isinstance(role, dict):
+        return []
+    images = list(role.get('images') or [])
+    styling = role.get('styling') or {}
+    if isinstance(styling, dict):
+        images.extend(styling.get('sourceImages') or [])
+        images.append(styling.get('halfPreviewUrl'))
+        controls = styling.get('controls') or {}
+        images.extend(styling.get('outfitUrls') or [])
+        images.extend([styling.get('outfitUrl'), controls.get(ROLE_CUSTOM_MARK)])
+        if ROLE_MARK_ITEMS in controls:
+            images.extend(mark.get('src') for mark in role_mark_items(controls[ROLE_MARK_ITEMS]) or [])
+    return list(dict.fromkeys(image for image in images if isinstance(image, str) and image))
+
+
+def role_custom_marks(owner):
+    # Include uploads placed in private roles before the account's mark library existed.
+    mine = scoped_preset_roles('mine', owner)
+    older = set()
+    for role in [*mine['custom'], *mine['overrides'].values()]:
+        controls = (role.get('styling') or {}).get('controls') or {}
+        urls = [controls.get(ROLE_CUSTOM_MARK)]
+        urls.extend(item.get('src') for item in (role_mark_items(controls.get(ROLE_MARK_ITEMS)) or []))
+        older.update(url[7:] for url in urls if isinstance(url, str) and ROLE_MEDIA_IMAGE.fullmatch(url))
+    with auth_db() as db:
+        query = '''SELECT f.media_id, f.name, m.rowid FROM media_storage f
+                   LEFT JOIN role_custom_marks m ON m.owner_id=f.owner_id AND m.media_id=f.media_id
+                   WHERE f.owner_id=? AND f.expires_at>? AND f.mime IN ('image/jpeg','image/png','image/webp')
+                   ORDER BY m.rowid DESC, f.created_at DESC'''
+        return [{'url':'/media/'+mid, 'name':name} for mid, name, registered in db.execute(query, (owner, time.time()))
+                if (registered is not None or mid in older) and (MEDIA_DIR/mid).is_file()]
+
+
+def role_image_validation(raw_role, user_id):
+    if not isinstance(raw_role, dict):
+        return ''
+    style = raw_role.get('styling')
+    if isinstance(style, dict):
+        sources = style.get('sourceImages')
+        if style.get('halfPreviewUrl') and not role_source_image(style['halfPreviewUrl']):
+            return '半身预览图无效'
+        if sources is not None and (not isinstance(sources, list) or len(sources) > 4
+                or any(url and not role_source_image(url) for url in sources)):
+            return '原始身份图无效'
+        controls = style.get('controls')
+        if isinstance(controls, dict) and ROLE_MARK_ITEMS in controls and role_mark_items(controls[ROLE_MARK_ITEMS]) is None:
+            return '特征贴图列表无效，请重新选择本地图片'
+        if 'outfitUrls' in style:
+            urls = style['outfitUrls']
+            if not isinstance(urls, list) or len(urls) > 16 or any(not isinstance(url, str) or not ROLE_MEDIA_IMAGE.fullmatch(url) for url in urls):
+                return '服装参考图无效，请选择最多 16 张本地图片'
+        mark = controls.get(ROLE_CUSTOM_MARK) if isinstance(controls, dict) else None
+        for image in (mark, style.get('outfitUrl')):
+            if image and (not isinstance(image, str) or not ROLE_MEDIA_IMAGE.fullmatch(image)):
+                return '自定义特征图或服装参考图无效'
+    role = _clean_role(raw_role)
+    cleaned_style = (role or {}).get('styling') or {}
+    outfits = set(cleaned_style.get('outfitUrls') or [])
+    if cleaned_style.get('outfitUrl'):
+        outfits.add(cleaned_style['outfitUrl'])
+    for image in role_image_references(role):
+        if image.startswith('/media/'):
+            media_id = urlparse(image).path[7:]
+            if not ACCOUNT_STORAGE.can_read(media_id, user_id):
+                return '角色引用的本地媒体不存在或不可访问'
+            if image in outfits:
+                mime = (ACCOUNT_STORAGE.file_row(media_id) or {}).get('mime', '').lower().partition(';')[0]
+                if mime not in {'image/png','image/jpeg','image/webp','image/gif','image/bmp','image/heic','image/tiff'}:
+                    return '服装参考文件必须是图片'
+    return ''
 
 
 def role_storage_bytes(role):
-    """角色卡素材的字节数。口径与素材一致：内联 base64 按**解码后**体积算。"""
-    if not isinstance(role, dict):
-        return 0
+    """Count each media image once across the card, its original views, wardrobe and custom stickers."""
     total = 0
-    for image in (role or {}).get('images') or []:
+    for image in role_image_references(role):
         value = str(image or '')
         if value.startswith('data:'):
             _, _, payload = value.partition(',')
@@ -4113,6 +4551,7 @@ DOCK_PROMPT_DEFAULTS = {
     'camera': CAMERA_PROMPT_DEFAULTS,
     'emotion': EMOTION_PROMPT_DEFAULTS,
     'emotionDynamic': EMOTION_DYNAMIC_PROMPT_DEFAULTS,
+    'roleStudio': json.loads((PUBLIC_DIR / 'role-studio-prompts.json').read_text(encoding='utf-8')),
 }
 ### DOCK_PROMPT_DEFAULTS_END ###
 
@@ -4157,6 +4596,15 @@ def write_dock_prompts(incoming):
     prompts = incoming.get('prompts') if isinstance(incoming, dict) else None
     if not isinstance(prompts, dict):
         return None
+    partial = incoming.get('partial', False)
+    if not isinstance(partial, bool) or (partial and set(prompts) != {'roleStudio'}):
+        return None
+    if 'roleStudio' in prompts:
+        edits = prompts['roleStudio']
+        if not isinstance(edits, dict) or any(
+                key not in DOCK_PROMPT_DEFAULTS['roleStudio'] or not isinstance(value, str)
+                for key, value in edits.items()):
+            return None
     stored = read_file(DOCK_PROMPTS_FILE, {})
     overrides = {}
     if isinstance(stored, dict) and isinstance(stored.get('prompts'), dict):
@@ -4165,13 +4613,14 @@ def write_dock_prompts(incoming):
         incoming_kind = prompts.get(kind)
         if not isinstance(incoming_kind, dict):
             continue
-        kind_overrides = {}
+        # Role editor tabs share one kind, so a partial save starts with existing overrides.
+        kind_overrides = overrides.get(kind, {}).copy() if partial else {}
         for key, value in incoming_kind.items():
-            key = str(key)[:80]
             if key not in defaults:
                 continue
             text = str(value or '').strip()
             if not text or text == defaults[key]['prompt']:
+                kind_overrides.pop(key, None)
                 continue
             kind_overrides[key] = text
         if kind_overrides:
@@ -4213,8 +4662,7 @@ def dock_prompts_payload():
         table = {}
         for key, item in merged.get(kind, {}).items():
             table[key] = {
-                'title': item.get('title') or '',
-                'prompt': item.get('prompt') or '',
+                **item,
                 # 让管理员一眼看出哪些项被改过（前端给这些项打「已自定义」标记）
                 'custom': item.get('prompt') != (defaults.get(key) or {}).get('prompt'),
             }
@@ -4444,11 +4892,27 @@ def provider_timeout_value(entry, key, fallback):
 # （含 assistant.tool_calls 与 tool 消息），这样「刷新页面 / 重启服务后继续」都不丢上下文。
 
 @lru_cache(maxsize=1)
-def _agent_project_workspaces(projects_path, revision):
-    # Keyed by the atomically replaced project file so chat polling need not
+def _project_workspaces(projects_path, revision):
+    # Keyed by the atomically replaced project file so polling need not
     # parse large canvas snapshots again until a project changes.
     return {(row.get('ownerId'), row.get('id')): item_workspace_id(row)
             for row in read_projects() if row.get('id')}
+
+
+def project_workspaces():
+    try:
+        stat = PROJECTS_FILE.stat()
+        revision = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+    except FileNotFoundError:
+        revision = None
+    return _project_workspaces(PROJECTS_FILE, revision)
+
+
+def apply_project_workspace(row, workspaces):
+    workspace = workspaces.get((row.get('userId'), row.get('projectId')))
+    if workspace:
+        row['workspaceId'] = workspace
+    return row
 
 
 def read_agent_sessions():
@@ -4456,16 +4920,9 @@ def read_agent_sessions():
     if not isinstance(items, list):
         return []
     if any(row.get('projectId') for row in items):
-        try:
-            stat = PROJECTS_FILE.stat()
-            revision = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
-        except FileNotFoundError:
-            revision = None
-        workspaces = _agent_project_workspaces(PROJECTS_FILE, revision)
+        workspaces = project_workspaces()
         for row in items:
-            workspace = workspaces.get((row.get('userId'), row.get('projectId')))
-            if workspace:
-                row['workspaceId'] = workspace
+            apply_project_workspace(row, workspaces)
     return items
 
 
@@ -4827,7 +5284,7 @@ class ProviderHeaders(dict):
         super().__init__(values);self.base_url=base_url
     def for_url(self,url):
         if http_origin(url)==http_origin(self.base_url):return dict(self)
-        return {key:value for key,value in self.items() if key.lower() not in {'authorization','proxy-authorization','api-key','x-api-key','cookie'}}
+        return {key:value for key,value in self.items() if key.lower() not in {'authorization','proxy-authorization','api-key','x-api-key','xi-api-key','cookie'}}
 
 
 def auth_headers(entry, api_key=None, extra=None):
@@ -4906,7 +5363,7 @@ def read_upstream_response(response, limit):
 def diagnostic_credentials(headers):
     tokens = []
     for name, value in headers:
-        if name.lower() in {'authorization', 'proxy-authorization', 'api-key', 'x-api-key', 'cookie'}:
+        if name.lower() in {'authorization', 'proxy-authorization', 'api-key', 'x-api-key', 'xi-api-key', 'cookie'}:
             tokens.append(value)
             if name.lower().endswith('authorization') and ' ' in value:
                 tokens.append(value.split(' ', 1)[1])
@@ -4916,7 +5373,7 @@ def diagnostic_credentials(headers):
 _DIAGNOSTIC_URL = re.compile(r"""https?://[^\s"'<>]+""", re.I)
 _DIAGNOSTIC_AUTH = re.compile(r'(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=%-]+')
 _DIAGNOSTIC_SECRET = re.compile(
-    r"""(?ix)(\b(?:authorization|api[_-]?key|x-api-key|access[_-]?token|refresh[_-]?token|token|"""
+    r"""(?ix)(\b(?:authorization|api[_-]?key|xi?-api-key|access[_-]?token|refresh[_-]?token|token|"""
     r"""secret(?:[_-]?key)?|signature|password|cookie|set-cookie|credential)\b["']?\s*[:=]\s*)"""
     r"""(?:\[已隐藏\]|"[^"\r\n]*"?|'[^'\r\n]*'?|[^\s,;&}\]]+)""")
 
@@ -4947,7 +5404,7 @@ def send_request(req, timeout=120):
         req.add_header('User-Agent', 'CanvasFlow/1.0')
     try:
         with open_http_url(req, timeout=timeout) as response:
-            raw = read_upstream_response(response, UPSTREAM_JSON_MAX_BYTES)
+            raw = read_upstream_response(response, getattr(req, 'json_byte_limit', UPSTREAM_JSON_MAX_BYTES))
             if not raw:
                 return response.status, {}, None
             try:
@@ -4975,6 +5432,9 @@ def http_json_request(url, payload=None, headers=None, method=None, timeout=120)
         body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
         request_headers.setdefault('Content-Type', 'application/json')
     req = urllib_request.Request(url, data=body, method=method or ('POST' if body is not None else 'GET'), headers=request_headers)
+    if getattr(headers, 'voice_catalog', False):
+        req.same_origin_only = True
+        req.json_byte_limit = 4 * 1024 * 1024
     return send_request(req, timeout)
 
 
@@ -5408,7 +5868,14 @@ def extract_provider_job_id(payload):
     return extract_task_id(payload)
 
 
-def extract_provider_video_url(payload):
+def extract_provider_video_url(payload, response_url=''):
+    value = response_value(payload, 'video_url', 'videoUrl', 'watermark_free_url', 'video')
+    if isinstance(value, dict):
+        value = value.get('url')
+    if (isinstance(response_url, str) and response_url.startswith(('https://', 'http://'))
+            and isinstance(value, str) and value.startswith('/') and not value.startswith('//')
+            and '\\' not in value and not any(ord(c) < 32 for c in value)):
+        return urljoin(response_url, value)
     return extract_video_url(payload)
 
 
@@ -5744,8 +6211,18 @@ VIDEO_INPUT_VIDEO_MAX_LEN = 4000
 VIDEO_PROVIDER_UPLOAD_LIMIT = 25 * 1024 * 1024
 
 
+def accepts_video_reference_url(entry):
+    if media_generate_entry(entry):
+        return True
+    profile = entry.get('requestProfile')
+    if profile in ('zhongheng-video', 'sanyuan-video'):
+        return False
+    protocol = 'openai-video' if profile == 'async-video-task' else entry.get('protocol') or 'openai-video'
+    return protocol == 'openai-video' and entry_needs_input_video(entry)
+
+
 def video_job_sources(entry, user_id, values):
-    """Accept a local video only on transports that upload it before generation."""
+    """Keep validated local asset IDs in durable jobs, not expiring delivery URLs."""
     if not isinstance(values, list) or not values:
         return []
     sources = []
@@ -5754,7 +6231,12 @@ def video_job_sources(entry, user_id, values):
             if source.startswith(('https://', 'http://')):
                 sources.append(source)
                 continue
-            if entry.get('requestProfile') == 'zhongheng-video' and source.startswith('/media/'):
+            if source.startswith('/media/'):
+                direct_upload = entry.get('requestProfile') == 'zhongheng-video'
+                if not direct_upload and not (video_reference_store.configured() or video_reference_store.can_use_original(entry.get('id'))):
+                    raise ValueError('该供应商需要 HTTPS 直链。可配置私有视频中转存储，或选择支持直接上传的供应商。')
+                if not direct_upload and not accepts_video_reference_url(entry):
+                    raise ValueError('该模型接口未声明可接收参考视频的 HTTPS 字段，请选择支持参考视频的模型。')
                 media_id = source.removeprefix('/media/')
                 if not MEDIA_SAFE_NAME.fullmatch(media_id):
                     raise ValueError('参考视频文件地址无效')
@@ -5762,7 +6244,7 @@ def video_job_sources(entry, user_id, values):
                 file = resolve_media_file(media_id)
                 if not file:
                     raise ValueError('参考视频文件不存在')
-                if file.stat().st_size > VIDEO_PROVIDER_UPLOAD_LIMIT:
+                if direct_upload and file.stat().st_size > VIDEO_PROVIDER_UPLOAD_LIMIT:
                     raise ValueError('参考视频超过上游 25 MB 限制')
                 from file_formats import validate_asset_media
                 validate_asset_media('video', path=file)
@@ -5770,6 +6252,39 @@ def video_job_sources(entry, user_id, values):
                 continue
         raise ValueError('源视频需要有效的 HTTP 链接，且不得超过允许的长度')
     return sources
+
+
+def deliver_video_sources(entry, job):
+    sources = job['sourceVideos']
+    if not any(source.startswith('/media/') for source in sources) or entry.get('requestProfile') == 'zhongheng-video':
+        return sources
+    if media_generate_entry(entry):
+        schema = media_model_schema(entry, entry.get('model'))
+        # Check the selected mode before uploading user media.
+        probe = 'https://reference.invalid/video.mp4'
+        params = build_media_video_params(entry, {**job, 'sourceVideos': [probe]}, schema or {})
+        if not any(value == probe or value == [probe] for value in params.values()):
+            raise ValueError('所选模型和模式未提供参考视频输入，请选择支持视频参考的模式。')
+    enabled_hevc = video_reference_store.can_use_original(entry.get('id'))
+    delivered = []
+    for source in sources:
+        if not source.startswith('/media/'):
+            delivered.append(source)
+            continue
+        if enabled_hevc:
+            with LOCK:
+                prior = next((row for row in index_jobs().values()
+                              if row.get('userId') == job['userId'] and row.get('videoUrl') == source
+                              and row.get('depthOriginalUrl', '').startswith('https://')
+                              and float(row.get('depthExpiresAt') or 0) > time.time() + 3600), None)
+            if prior:
+                delivered.append(prior['depthOriginalUrl'])
+                continue
+        file = resolve_media_file(source.removeprefix('/media/'))
+        if not file:
+            raise ValueError('参考视频文件不存在')
+        delivered.append(video_reference_store.publish(file, job['userId']))
+    return delivered
 
 # 上游对「源视频」这类参数的命名比图片更不统一：单数 `video_url` / 复数 `videos` 都有，
 # 还有 `video` 这种裸名。按优先级依次试（`spec_field_candidates` 里登记表声明的 field 排第一）。
@@ -6327,7 +6842,7 @@ def call_video_submit(entry, job, trace=None):
         trace['endpoint'] = hit_url
     if error: return None, provider_error(error)
     provider_id = extract_provider_job_id(result)
-    video_url = extract_provider_video_url(result)
+    video_url = extract_provider_video_url(result, hit_url)
     # 任务模式=同步：提交就该拿到成片地址。拿不到就直接说清楚，
     # 而不是偷偷退回异步轮询 —— 那会让「我明明配了同步」变成一条查不出来的行为差异。
     if str(entry.get('videoTaskMode') or '').strip() == 'sync' and not video_url:
@@ -6338,7 +6853,7 @@ def call_video_submit(entry, job, trace=None):
     # 少数供应商是同步返回成片的（提交即有地址）。这条路同样要落盘，
     # 否则「同步返回」这一支会绕过 refresh_video_job 的落盘逻辑，留下会过期的链接。
     if video_url:
-        persist_job_video(submitted)
+        persist_job_video(submitted, entry)
     return submitted, None
 
 
@@ -6501,7 +7016,7 @@ def refresh_video_job(job):
         current['statusPathHit'] = status_path_hit
     capture_job_metering(current, result)
     provider_status = normalize_provider_status(result)
-    video_url = result.get('canvasflow_local_video') or (media_video_result_url(result) if media_generate_entry(entry) else '') or extract_provider_video_url(result)
+    video_url = result.get('canvasflow_local_video') or (media_video_result_url(result) if media_generate_entry(entry) else '') or extract_provider_video_url(result, status_path_hit)
     current['progress'] = extract_provider_progress(result) or (100 if video_url else int(current.get('progress') or 0))
     current['status'] = 'completed' if video_url or provider_status == 'completed' else provider_status
     if current['status'] == 'completed':
@@ -6511,7 +7026,7 @@ def refresh_video_job(job):
         # **拿到地址的这一刻就落盘。** 供应商给的链接会过期，晚存不如早存 ——
         # 而且这里已经处在「正在等视频生成」的用户可接受延迟里，多花几秒下载不会更糟。
         # 失败不影响任务成功（视频确实生成好了），只留一笔 videoPersistError。
-        persist_job_video(current)
+        persist_job_video(current, entry)
     if current['status'] == 'failed': current['error'] = provider_error(str(result.get('error') or '') or extract_failure_reason(result) or '供应商生成失败', entry)
     current['simulated'] = False
     return current
@@ -6534,8 +7049,11 @@ def completed_media_update(previous, incoming):
                      and previous.get('providerJobId') == incoming.get('providerJobId'))
         if (not source and not recovered) or (source.startswith('/media/') and resolve_media_file(source.rsplit('/', 1)[-1])):
             continue
-        if not source and recovered and incoming.get('_studioLookup') and target.startswith(('https://', 'http://')):
+        if (recovered and incoming.get('_studioLookup') and source == incoming.get('_studioSource', '')
+                and target.startswith(('https://', 'http://'))):
             merged[url_key] = target
+            merged.pop('mediaId', None)
+            merged.pop('videoPersistError', None)
             if incoming.get('videoPersistError'):
                 merged['videoPersistError'] = incoming['videoPersistError']
             continue
@@ -6604,7 +7122,7 @@ def index_jobs():
     return snapshots
 
 
-def append_job(job):
+def append_job(job, *, voice_registration=None, depth_recovery=False):
     """Persist a single changed snapshot; periodically compact atomically."""
     global _JOB_SIGNATURE, _JOB_EXTRA_ROWS, _JOB_NEEDS_COMPACTION, _JOB_NEEDS_NEWLINE
     # A live task restored from an older journal may still carry inline references.
@@ -6625,10 +7143,19 @@ def append_job(job):
         snapshots = index_jobs()
         previous = snapshots.get(job['id'])
         job.update(scrub_job_diagnostics(job))
-        if previous and previous.get('status') in {'completed', 'failed'}:
+        resume_depth = (depth_recovery and previous and previous.get('status') == 'failed'
+                        and previous.get('providerProtocol') == DEPTH_PROTOCOL and previous.get('recoverable')
+                        and previous.get('providerJobId') == job.get('providerJobId'))
+        if previous and previous.get('status') in {'completed', 'failed'} and not resume_depth:
             merged = completed_media_update(previous, job)
+            if voice_registration is not None and previous.get('roleVoiceProfile', {}).get('kind') == 'preview':
+                merged['roleVoiceRegistration'] = voice_registration
             job.clear()
             job.update(merged)
+        job.pop('_studioLookup', None)
+        job.pop('_studioSource', None)
+        if job.get('projectId'):
+            apply_project_workspace(job, project_workspaces())
         if previous == job and not _JOB_NEEDS_COMPACTION:
             return
         if job.get('charge') and job.get('status') in {'completed', 'failed'}:
@@ -6837,6 +7364,7 @@ def create_video_job(user, incoming, workspace_id='', *, retry_of=None):
                 stored_refs[key].append(stored)
                 wire_refs[key].append(wire)
         job.update(stored_refs)
+        wire_refs['sourceVideos'] = deliver_video_sources(entry, job)
     except ValueError as error:
         return None, {'error':'invalid_reference', 'message':str(error), 'status':400}
     # ★★ r884：视频在**提交时预扣**（按次 = perCall；按秒 = 请求时长 × perSecond）。
@@ -6858,8 +7386,8 @@ def create_video_job(user, incoming, workspace_id='', *, retry_of=None):
     if trace.get('usage') is not None:
         job['upstreamUsage'] = trace['usage']
     job.update(submitted)
-    job['status'] = 'completed' if job.get('videoUrl') else 'queued'
-    job['progress'] = 100 if job.get('videoUrl') else 0
+    job['status'] = 'completed' if job.get('videoUrl') or submitted.get('videoPersistError') else 'queued'
+    job['progress'] = 100 if job['status'] == 'completed' else 0
     job['workspaceId'] = workspace_id
     append_job(job)
     return {key: value for key, value in job.items() if key != 'referenceImages'}, None
@@ -6869,9 +7397,10 @@ def latest_jobs(user_id=None, limit=100, project_id=None, workspace_id=None, val
     """Read one latest snapshot per job, scoped to the signed-in user（以及所在工作区）。"""
     with LOCK:
         rows = list(index_jobs().values())
+        workspaces = project_workspaces() if any(row.get('projectId') for row in rows) else {}
     jobs = []
     for snapshot in rows:
-        job = local_job(dict(snapshot))
+        job = apply_project_workspace(local_job(dict(snapshot)), workspaces)
         if user_id and job.get('userId') != user_id:
             continue
         if workspace_id and not in_workspace(job, workspace_id, valid_ids):
@@ -6881,6 +7410,31 @@ def latest_jobs(user_id=None, limit=100, project_id=None, workspace_id=None, val
         jobs.append(job)
     jobs.sort(key=lambda item: str(item.get('createdAt') or ''), reverse=True)
     return clone(jobs if limit is None else jobs[:max(1, min(int(limit or 100), 200))])
+
+
+def role_voice_history(jobs, project_id, project=None):
+    """Keep distinct designed voices even if the provider returned identical preview bytes."""
+    fields = ('id', 'status', 'roleVoiceName', 'roleVoiceProfile', 'audioUrl', 'createdAt', 'error', 'progress', 'prompt')
+    rows = [{key: job[key] for key in fields if key in job} for job in jobs
+            if job.get('kind') == 'audio' and job.get('roleVoiceName')]
+    seen = {row.get('audioUrl') for row in rows}
+    if project_id:
+        for job in jobs:
+            url = job.get('audioUrl')
+            if (job.get('kind') == 'audio' and job.get('projectId') == project_id
+                    and job.get('status') == 'completed' and url and url not in seen):
+                row = {key: job[key] for key in fields if key in job}
+                row['audioName'] = str(job.get('prompt') or '项目音频')[:100]
+                rows.append(row)
+                seen.add(url)
+        for node in (project or {}).get('nodes', []):
+            url = node.get('audioUrl')
+            if node.get('type') == 'audio' and url and url not in seen:
+                rows.append({'id': 'node:' + str(node.get('id')), 'status': 'completed', 'audioUrl': url,
+                             'audioName': node.get('audioName') or node.get('title') or '项目音频',
+                             'createdAt': node.get('createdAt') or ''})
+                seen.add(url)
+    return sorted(rows, key=lambda row: str(row.get('createdAt') or ''), reverse=True)
 
 
 # ---------------------------------------------------------------- 图片生成任务（轮询式）
@@ -6900,13 +7454,19 @@ IMAGE_UPDATE_LEASE_UNTIL = 0.0
 def desktop_image_update_gate(action):
     """The desktop reserves an idle host immediately before opening its installer."""
     global IMAGE_UPDATE_LEASE_UNTIL
-    with IMAGE_JOB_LOCK:
-        busy = bool(IMAGE_CALLS_ACTIVE or IMAGE_JOB_PAYLOADS)
+    with LOCK, IMAGE_JOB_LOCK:
+        busy = bool(IMAGE_CALLS_ACTIVE or IMAGE_JOB_PAYLOADS) or any(
+            job.get('providerProtocol') == DEPTH_PROTOCOL and job.get('status') in ('queued', 'running')
+            and not job.get('providerJobId') for job in index_jobs().values())
         if action == 'reserve' and not busy:
             IMAGE_UPDATE_LEASE_UNTIL = time.monotonic() + 60
         elif action == 'release':
             IMAGE_UPDATE_LEASE_UNTIL = 0
         return {'busy': busy}
+
+
+class ImageUpdateReserved(ValueError):
+    """The updater reserved the model service before a request was submitted."""
 
 
 def track_image_call(function):
@@ -6915,7 +7475,7 @@ def track_image_call(function):
         global IMAGE_CALLS_ACTIVE
         with IMAGE_JOB_LOCK:
             if IMAGE_UPDATE_LEASE_UNTIL > time.monotonic():
-                raise ValueError('CanvasFlow 正在安装更新，请在重新打开应用后提交图片任务')
+                raise ImageUpdateReserved('CanvasFlow 正在安装更新，请在重新打开应用后提交图片任务')
             IMAGE_CALLS_ACTIVE += 1
         try:
             return function(*args, **kwargs)
@@ -7090,8 +7650,45 @@ def finish_background_image(payload):
         pass
 
 
+ROLE_STYLING_SKILLS = {
+    'libtv-7efd8f0969b04bf391dc3589f8aebdc9': ('妆造复刻', '三视图+换装+换发型'),
+    'libtv-2247c88d1ecc496abdd7d8246eead1bb': ('人设定制造型', '角色一致性定妆师'),
+}
+
+
+def role_styling_prompt(selection, prompt):
+    """Resolve the studio action to its packaged Skill and the current image operation."""
+    if selection is None:
+        return prompt, None
+    skill_id = selection.get('skillId') if isinstance(selection, dict) else None
+    if not isinstance(skill_id, str) or skill_id not in ROLE_STYLING_SKILLS:
+        raise ValueError('所选造型技能不可用，请重新选择。')
+    action, title = ROLE_STYLING_SKILLS[skill_id]
+    template = skill_id.removeprefix('libtv-')
+    try:
+        bundle_file = PUBLIC_DIR / 'assets' / 'agent-skills' / 'libtv' / template / 'bundle.bin'
+        if not PUBLIC_FILES.allowed(bundle_file):
+            raise ValueError()
+        bundle = json.loads(bundle_file.read_text(encoding='utf-8'))
+        files = bundle['files']
+        if bundle.get('templateUuid') != template or not any(f['path'] == bundle['primarySkillFilePath'] for f in files):
+            raise ValueError()
+        documents = []
+        for f in files:
+            if not isinstance(f['content'], str) or not f['content'].strip():
+                raise ValueError()
+            documents.append(f"【{f['path']}】\n{f['content']}")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise ValueError('本地造型技能包不完整，请修复应用或选择其他技能。') from exc
+    requirements = ('本次交付为下述当前视角的一张角色图。采用文件中的造型方法，'
+                    '按当前参考图顺序与用户要求执行，保持角色身份；省略示例里的额外交付、拼版和文字。')
+    return '\n\n'.join([f'{action} · {title}', *documents, requirements, prompt or '']), {
+        'skillId': skill_id, 'name': action, 'title': title, 'version': bundle.get('version', '')
+    }
+
+
 @track_image_call
-def create_image_job(user, incoming, workspace_id=''):
+def create_image_job(user, incoming, workspace_id='', *, job_id=None):
     """提交一个图片生成任务。返回 (public_job, failure)。
 
     与 /api/ai/image-generate 的同步路径共用同一套模型校验与预设注入规则，
@@ -7101,6 +7698,10 @@ def create_image_job(user, incoming, workspace_id=''):
     preset_text = preset_prompt_text(preset_scene) if preset_scene else ''
     user_text = str(incoming.get('prompt') or '').strip()
     prompt_text = '\n'.join([part for part in (preset_text, user_text) if part]) or None
+    try:
+        prompt_text, role_skill = role_styling_prompt(incoming.get('roleStyling'), prompt_text)
+    except ValueError as exc:
+        return None, {'status': 400, 'error': 'invalid_role_styling_skill', 'message': str(exc)}
     model_id = str(incoming.get('modelId') or '').strip()
     entry = next((m for m in visible_ai_models(user['id'])
                   if m.get('id') == model_id and m.get('enabled') and model_has_usage(m, 't2i')), None) if model_id else None
@@ -7113,7 +7714,7 @@ def create_image_job(user, incoming, workspace_id=''):
     references = [item for item in raw_references if isinstance(item, str) and item.strip()] if isinstance(raw_references, list) else []
     quality = incoming.get('quality') if isinstance(incoming.get('quality'), str) else None
     job = {
-        'id': f'job-{uuid.uuid4().hex[:10]}', 'kind': 'image', 'userId': user['id'],
+        'id': job_id or f'job-{uuid.uuid4().hex[:10]}', 'kind': 'image', 'userId': user['id'],
         'projectId': incoming.get('projectId'), 'outputId': str(incoming.get('outputId') or '')[:100],
         'modelId': model_id, 'provider': entry.get('provider') or entry.get('protocol') or 'image',
         'prompt': str(prompt_text or ''), 'size': size,
@@ -7124,6 +7725,8 @@ def create_image_job(user, incoming, workspace_id=''):
     job['inputSummary'] = {'referenceCount': len(references) if references else int(bool(reference_image)),
                            'size': size, 'quality': entry.get('_imageNativeQuality') or image_quality_value(entry.get('model'), quality, entry.get('name')),
                            'modelOptions': incoming.get('modelOptions') or {}}
+    if role_skill:
+        job['roleStyling'] = role_skill
     job['charge'] = open_generation_charge(user, entry, prompt_text=prompt_text or '', calls=1, label=entry.get('name'))
     # ★ 异步能力判定：显式 `imageTaskMode=async` 优先；没配时**自动探测**
     #   （一次带假任务号的 GET，零额度消耗，按 baseUrl 缓存）——用户不需要手动填配置，
@@ -7344,6 +7947,9 @@ def run_audio_job_in_background(job_id):
     STORAGE_ACTOR.set(job.get('userId') or job.get('ownerId') or '')
     entry = payload.get('entry') or {}
     try:
+        if job.get('roleVoiceProfile', {}).get('kind') == 'preview':
+            save_eleven_voice_previews(job, entry)
+            return
         audio_data, error = call_tts(
             entry, payload.get('text'),
             voice=payload.get('voice') or 'alloy',
@@ -7388,6 +7994,17 @@ def create_audio_job(user, incoming, workspace_id=''):
         'status': 'queued', 'stage': 'submitted', 'progress': None,
         'simulated': False, 'createdAt': now(), 'workspaceId': workspace_id,
     }
+    if isinstance(incoming.get('roleVoiceName'), str) and incoming['roleVoiceName'].strip():
+        job['roleVoiceName'] = incoming['roleVoiceName'].strip()[:100]
+        job['roleVoiceProfile'] = {'modelId': model_id, 'voice': str(incoming.get('voice') or '')[:160],
+                                   'description': str(incoming.get('roleVoiceDescription') or '')[:8000]}
+        if eleven_voice_model(entry):
+            if not str(entry.get('apiKey') or '').strip():
+                return None, {'error':'missing_voice_key','message':'请先在模型配置中填写 ElevenLabs API Key。','status':400}
+            description = job['roleVoiceProfile']['description'].strip()
+            if not 20 <= len(description) <= 1000 or not 100 <= len(text) <= 1000:
+                return None, {'error':'invalid_voice_design','message':'音色描述需 20–1000 字，试听台词需 100–1000 字。','status':400}
+            job['roleVoiceProfile'].update(kind='preview', voice='', provider='elevenlabs')
     job['charge'] = open_generation_charge(user, entry, prompt_text=text, calls=1, label=entry.get('name'))
     # ★★ 统一媒体端点（`POST /v1/media/generate`）是**天生异步**的：提交拿任务号，进度靠轮询。
     #    与图片那边（create_image_job）同款分流 —— 不进「后台线程 + 无任务号」的同步模式。
@@ -7572,23 +8189,45 @@ def _coarse_progress_view(view):
     return True
 
 
-def recover_studio_video(job):
+def recover_studio_video(job, depth_service=None):
     """Re-query the existing provider task without re-submitting generation."""
-    if (job.get('kind', 'video') != 'video' or job.get('status') != 'completed'
-            or job.get('videoUrl') or not job.get('providerJobId')):
+    if job.get('kind', 'video') != 'video' or job.get('status') != 'completed':
+        return {**job, 'videoUrl': '', 'videoPersistError': '任务尚无已完成的视频'}
+    source = job.get('videoUrl') or ''
+    if source.startswith('/media/') and resolve_media_file(source.removeprefix('/media/')):
         return job
+    if not job.get('providerJobId'):
+        return {**job, 'videoUrl': '', 'videoPersistError': '没有可查询的供应商任务编号'}
+    if job.get('providerProtocol') == DEPTH_PROTOCOL:
+        if depth_service is None:
+            return {**job, 'videoUrl': '', 'videoPersistError': 'MediaKit 服务暂不可用'}
+        current = dict(job)
+        try:
+            depth_service.fetch_result(current)
+        except DepthPaused:
+            return {**job, 'videoUrl': '', 'videoPersistError': 'MediaKit 服务正在关闭，请在重新打开画布后取回'}
+        except (DepthError, ValueError, OSError) as error:
+            return {**job, 'videoUrl': '', 'videoPersistError': str(error)}
+        return current
     # Only the status lookup uses this copy. The original terminal state is authoritative.
-    result = refresh_video_job({**job, 'status': 'running', 'submittedAt': ''})
+    lookup = {**job, 'videoUrl': '', 'status': 'running', 'submittedAt': ''}
+    lookup.pop('videoPersistError', None)
+    result = refresh_video_job(lookup)
     target = result.get('videoUrl') or ''
     if (target.startswith('/media/') and resolve_media_file(target.removeprefix('/media/'))
-            or target.startswith(('https://', 'http://'))):
-        current = {**job, 'videoUrl': target, '_studioLookup': True}
+            or (target.startswith(('https://', 'http://')) and (target != source or not result.get('videoPersistError')))):
+        current = {**job, 'videoUrl': target, '_studioLookup': True, '_studioSource': source}
+        current.pop('videoPersistError', None)
         if result.get('videoPersistError'):
             current['videoPersistError'] = result['videoPersistError']
         append_job(current)
         current.pop('_studioLookup', None)
+        current.pop('_studioSource', None)
         return current
-    return job
+    failure = result.get('videoPersistError') or result.get('pollError') or result.get('error')
+    if failure:
+        return {**job, 'videoUrl': '', 'videoPersistError': failure}
+    return {**job, 'videoUrl': ''}
 
 
 def studio_job_view(job):
@@ -7628,6 +8267,8 @@ def job_view(job, sync=True):
 def _refresh_job_view(job, sync=True):
     if not job:
         return None
+    if job.get('providerProtocol') == DEPTH_PROTOCOL:
+        return dict(job)
     is_real = job.get('simulated') is False or job.get('providerJobId') or job.get('providerProtocol')
     if is_real:
         if not sync:
@@ -7798,6 +8439,41 @@ def sanitize_rich_text(raw, limit=None):
     return cleaned if limit is None else cleaned[:limit]
 
 
+def clean_canvas_role_snapshots(value):
+    snapshots = []
+    seen = set()
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        ref = item.get('ref')
+        if not isinstance(ref, str) or not re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', ref) or ref in seen:
+            continue
+        if not all(isinstance(item.get(k), str) and item[k] for k in ('name','roleId','version')):
+            continue
+        seen.add(ref)
+        raw = item.get('images')
+        images = [role_source_image(url) or (url if isinstance(url, str) and len(url) <= 5600000 and
+                  re.fullmatch(r'data:image/(?:png|jpeg|webp|gif|bmp|heic|tiff);base64,[A-Za-z0-9+/]+=*',url) else '')
+                  for url in (raw if isinstance(raw, list) else [])[:4]]
+        snapshots.append({'ref':ref,'roleId':item['roleId'][:80],'name':item['name'][:40],'version':item['version'][:200],
+                          'stateId':'default','stateName':'默认状态','originalPrompt':str(item.get('originalPrompt') or ''),
+                          'prompt':str(item.get('prompt') or ''),'images':(images + [''] * 4)[:4],
+                          'mainReferenceImageUrl':next((url for url in images if url), ''),
+                          'voice':item['voice'][:20000] if isinstance(item.get('voice'), str) else ''})
+        batch_id = item.get('derivativeBatchId')
+        if isinstance(batch_id, str) and re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', batch_id):
+            snapshots[-1]['derivativeBatchId'] = batch_id
+    return snapshots
+
+
+def finite_canvas_number(value, default=0.0):
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return number if math.isfinite(number) else default
+
+
 def clean_graph(incoming):
     incoming = incoming if isinstance(incoming, dict) else {}
     for field in ('nodes', 'edges', 'groups'):
@@ -7814,15 +8490,52 @@ def clean_graph(incoming):
         if not node_id or node_id in seen_nodes:
             continue
         seen_nodes.add(node_id)
-        try:
-            left, top = float(item.get('left', 0)), float(item.get('top', 0))
-        except (TypeError, ValueError):
-            left, top = 0, 0
-        node = {'id': node_id, 'type': node_type, 'left': round(max(-10000, min(10000, left)), 2), 'top': round(max(-10000, min(10000, top)), 2)}
+        node = {'id': node_id, 'type': node_type,
+                'left': round(finite_canvas_number(item.get('left')), 2),
+                'top': round(finite_canvas_number(item.get('top')), 2)}
         # 前端总是发送字符串（可能为空）：空值代表用户清空了文案，必须落盘，否则刷新后旧文字会回来。
-        title, copy_text = str(item.get('title') or '').strip()[:120], str(item.get('copy') or '').strip()
+        snapshots = clean_canvas_role_snapshots(item.get('roleSnapshots'))
+        if snapshots:
+            node['roleSnapshots'] = snapshots
+            asset = item.get('roleAsset')
+            if isinstance(asset, dict) and any(s['ref'] == asset.get('ref') for s in snapshots) and type(asset.get('slot')) is int and 0 <= asset['slot'] <= 3:
+                node['roleAsset'] = {'ref':asset['ref'],'slot':asset['slot']}
+        title, copy_text = str(item.get('title') or ''), str(item.get('copy') or '')
         if item.get('title') is not None: node['title'] = title
         if item.get('copy') is not None: node['copy'] = copy_text
+        if node_type in ('image', 'model', 'output') and 'mediaPrompt' in item and (item['mediaPrompt'] is None or isinstance(item['mediaPrompt'], str)):
+            node['mediaPrompt'] = item['mediaPrompt']
+            mentions = item.get('mediaPromptMentions')
+            if isinstance(mentions, list) and isinstance(item['mediaPrompt'], str):
+                end_limit = len(item['mediaPrompt'].encode('utf-16-le', errors='surrogatepass')) // 2
+                saved_mentions = []
+                for mention in mentions:
+                    if not isinstance(mention, dict):
+                        continue
+                    start, end = mention.get('start'), mention.get('end')
+                    if type(start) is not int or type(end) is not int or not 0 <= start < end <= end_limit:
+                        continue
+                    entry = {'start': start, 'end': end, 'nodeId': str(mention.get('nodeId') or '')[:100],
+                             'type': str(mention.get('type') or '')[:40]}
+                    if type(mention.get('index')) is int and mention['index'] > 0:
+                        entry['index'] = mention['index']
+                    if mention.get('mediaType'):
+                        entry['mediaType'] = str(mention['mediaType'])[:40]
+                    saved_mentions.append(entry)
+                if saved_mentions: node['mediaPromptMentions'] = saved_mentions
+        profile = item.get('generationProfile')
+        if node_type in ('image', 'model', 'output', 'script') and isinstance(profile, dict) and isinstance(profile.get('model'), str):
+            cleaned = {'model': profile['model'][:128], 'specs': []}
+            for key in ('mode', 'operation'):
+                if isinstance(profile.get(key), str):
+                    cleaned[key] = profile[key][:80]
+            if isinstance(profile.get('specs'), list):
+                cleaned['specs'] = [s[:80] for s in profile['specs'][:12] if isinstance(s, str)]
+            for key in ('audio', 'useWorkspace', 'firstFrameOnly'):
+                if isinstance(profile.get(key), bool):
+                    cleaned[key] = profile[key]
+            if cleaned['model']:
+                node['generationProfile'] = cleaned
         # Text generation instructions and generated body are independent fields.
         if node_type == 'prompt' and item.get('textInstruction') is not None:
             node['textInstruction'] = str(item.get('textInstruction') or '')
@@ -7835,6 +8548,8 @@ def clean_graph(incoming):
             node['audioUrl'] = audio_url
         if item.get('audioName'):
             node['audioName'] = str(item['audioName'])[:200]
+        if item.get('type') == 'audio' and isinstance(item.get('roleVoice'), str):
+            node['roleVoice'] = item['roleVoice'][:20000]
         for field in ('generationJobId', 'appliedGenerationJobId'):
             if item.get(field):
                 node[field] = str(item[field])[:100]
@@ -7844,8 +8559,9 @@ def clean_graph(incoming):
         if generated is True: node['generated'] = True
         preview_asset = str(item.get('previewAsset') or '').strip()[:100]
         if preview_asset: node['previewAsset'] = preview_asset
-        preview_name = str(item.get('previewName') or '').strip()[:200]
-        if preview_name: node['previewName'] = preview_name
+        preview_name = item.get('previewName')
+        if isinstance(preview_name, str) and preview_name:
+            node['previewName'] = preview_name
         # 落盘直链（r685）。**必须存**：`clean_graph` 是字段白名单，漏了就等于静默丢弃。
         # 「Agent 生成的图」这条链路只有 previewMedia、没有 previewAsset，
         # 服务端不存它 → 刷新后这个节点没有任何图片来源 → 空白卡。
@@ -7883,6 +8599,14 @@ def clean_graph(incoming):
         # 输出节点的成片与任务状态：丢了它们，刷新后下载/重试就永久不可用。
         video_url = str(item.get('videoUrl') or '').strip()[:200_000]
         if video_url: node['videoUrl'] = video_url
+        if item.get('videoTool') == 'depth':
+            node['videoTool'] = 'depth'
+        try:
+            start, end = float(item['trimStart']), float(item['trimEnd'])
+            if math.isfinite(start) and math.isfinite(end) and 0 <= start < end:
+                node.update(trimStart=start, trimEnd=end)
+        except (KeyError, TypeError, ValueError, OverflowError):
+            pass
         source_director = str(item.get('sourceDirectorId') or '').strip()[:100]
         if source_director: node['sourceDirectorId'] = source_director
         job_id = str(item.get('jobId') or '').strip()[:100]
@@ -7926,7 +8650,7 @@ def clean_graph(incoming):
         script_assets = str(item.get('scriptAssets') or '')
         if script_assets:
             node['scriptAssets'] = script_assets
-        script_theme = str(item.get('scriptTheme') or '').strip()[:120]
+        script_theme = str(item.get('scriptTheme') or '')
         if script_theme:
             node['scriptTheme'] = script_theme
         script_style = str(item.get('scriptStyle') or '').strip()[:120]
@@ -8003,6 +8727,8 @@ def clean_graph(incoming):
         entry = {'id': str(group.get('id') or '').strip()[:60], 'name': str(group.get('name') or '').strip()[:40], 'color': str(group.get('color') or '').strip()[:10], 'collapsed': bool(group.get('collapsed'))}
         if not entry['id']:
             continue
+        if group.get('showNodeCount') is False:
+            entry['showNodeCount'] = False
         # ★★★ 生成器组的身份字段（r802）：这里是**字段白名单**，漏一个就是静默丢弃 ——
         #   漏掉的后果是「刷新后生成器组退回普通组」：外观（浮在框上的标题）、
         #   以及「整组执行」要靠的 `scriptNodeId` / `memberShots` 全没了。
@@ -8023,10 +8749,7 @@ def clean_graph(incoming):
             if member_shots:
                 entry['memberShots'] = member_shots
         for field in ('x', 'y', 'w', 'h'):
-            try:
-                entry[field] = round(float(group.get(field, 0)), 2)
-            except (TypeError, ValueError):
-                entry[field] = 0.0
+            entry[field] = round(finite_canvas_number(group.get(field)), 2)
         groups.append(entry)
     node_ids, edges, seen_edges = {item['id'] for item in nodes}, [], set()
     for item in incoming.get('edges') or []:
@@ -8052,6 +8775,9 @@ def clean_project(incoming, project_id=None):
     project['projectName'] = str(incoming.get('projectName') or '未命名创作项目').strip()[:120] or '未命名创作项目'
     nodes, edges, groups = clean_graph(incoming)
     project['nodes'], project['edges'] = nodes, edges
+    snapshots = clean_canvas_role_snapshots(incoming.get('roleSnapshots'))
+    if snapshots:
+        project['roleSnapshots'] = snapshots
     if 'groups' in incoming:
         project['groups'] = groups
     if 'nodes' in incoming:
@@ -8062,10 +8788,10 @@ def clean_project(incoming, project_id=None):
         except (TypeError, ValueError):
             raw_count = 0
         project['nodeCount'] = max(0, min(500, raw_count))
-    for key, low, high, default in [('zoom', .1, 8, 1), ('panX', -10000, 10000, 0), ('panY', -10000, 10000, 0)]:
-        try: value = float(incoming.get(key, default))
-        except (TypeError, ValueError): value = default
-        project[key] = round(max(low, min(high, value)), 3)
+    zoom = finite_canvas_number(incoming.get('zoom'), 1.0)
+    project['zoom'] = round(max(.1, min(8, zoom)), 3)
+    for key in ('panX', 'panY'):
+        project[key] = round(finite_canvas_number(incoming.get(key)), 3)
     generation = incoming.get('generationSettings')
     if isinstance(generation, dict):
         model_id = str(generation.get('modelId') or 'wan-2.1').strip()[:80]
@@ -8118,7 +8844,7 @@ def clean_project(incoming, project_id=None):
 
     # Dock 里针对模型/输出节点写的提示词也随项目保存，刷新后可复现已提交过的生成。
     if incoming.get('modelPrompt') is not None:
-        project['modelPrompt'] = str(incoming.get('modelPrompt') or '').strip()
+        project['modelPrompt'] = str(incoming.get('modelPrompt') or '')
     advanced = incoming.get('advancedSettings')
     if isinstance(advanced, dict):
         motion = str(advanced.get('motion') or 'medium').strip().lower()
@@ -8328,7 +9054,7 @@ def text_generation_input_text(prompt, purpose='text'):
     return f'{hint}\n\n用户要求：{prompt}'
 
 
-def generate_text_with_model(prompt, entry, trace=None, purpose='text'):
+def generate_text_with_model(prompt, entry, trace=None, purpose='text', reference_images=()):
     """文本节点底部面板的「发送」：交给接入的语言大模型把用户输入生成成节点正文。
 
     `trace` 传入 dict 时会带回上游 `usage`（r884：按 token 准确扣费的依据）。
@@ -8336,7 +9062,8 @@ def generate_text_with_model(prompt, entry, trace=None, purpose='text'):
     _, max_tokens, timeout = text_generation_profile(purpose)
     return call_chat_completion(
         entry,
-        [{'type': 'text', 'text': text_generation_input_text(prompt, purpose)}],
+        [{'type': 'text', 'text': text_generation_input_text(prompt, purpose)},
+         *({'type': 'image_url', 'image_url': {'url': image, 'detail': 'auto'}} for image in reference_images)],
         trace=trace,
         # ★ 这里必须**留足** max_tokens：本机启用的 `deepseek-v4-flash-0731` 是**推理模型**，
         #   思考 token 会把预算吃光 → 上游只回 reasoning、content 为空 →
@@ -8511,6 +9238,125 @@ def probe_models_endpoint_cached(entry, timeout=15):
 
 
 
+def eleven_voice_model(entry):
+    """Voice Design and speech are enabled only on the native ElevenLabs TTS API."""
+    if not entry or media_generate_entry(entry) or not re.fullmatch(r'eleven_(?:v4(?:_turbo)?|v3(?:_conversational)?|multilingual_v2|(?:flash|turbo)_v2(?:_5)?|monolingual_v1)', str(entry.get('model') or '')):
+        return False
+    try:
+        return http_origin(entry.get('baseUrl')) == ('https','api.elevenlabs.io',443) and urlparse(entry['baseUrl']).path.rstrip('/') in ('','/v1')
+    except (ValueError, urllib_error.URLError):
+        return False
+
+
+def eleven_headers(entry):
+    return ProviderHeaders({'xi-api-key': entry.get('apiKey') or ''}, entry['baseUrl'])
+
+
+def save_eleven_voice_previews(job, entry):
+    profile = job['roleVoiceProfile']
+    _, response, error = http_json_request('https://api.elevenlabs.io/v1/text-to-voice/design',
+        {'voice_description':profile['description'], 'text':job['prompt']}, eleven_headers(entry), timeout=120)
+    if error:
+        raise ValueError(error)
+    candidates = []
+    previews = response.get('previews') if isinstance(response,dict) else None
+    for preview in previews[:3] if isinstance(previews,list) else []:
+        if not isinstance(preview,dict):
+            continue
+        voice_id = preview.get('generated_voice_id')
+        if not isinstance(voice_id, str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,160}',voice_id):
+            continue
+        sample = preview.get('audio_base_64')
+        if not isinstance(sample,str):
+            continue
+        try:
+            raw = base64.b64decode(sample,validate=True)
+        except ValueError:
+            continue
+        if sniff_media_mime(raw) != 'audio/mpeg':
+            continue
+        media = save_media_blob(raw,'audio/mpeg','voice-preview.mp3',job['userId'])
+        candidates.append((voice_id,media))
+    if not candidates:
+        raise ValueError('供应商没有返回可注册的音色样本。')
+    for i in [*range(1,len(candidates)),0]:
+        voice_id,media = candidates[i]
+        candidate = {**job,'roleVoiceName':job['roleVoiceName'] + (' · ' + str(i+1) if len(candidates)>1 else ''),
+                     'status':'completed','stage':'completed','progress':100,'completedAt':now(),
+                     'roleVoiceProfile':{**profile,'previewId':voice_id},'audioUrl':media['url'],'mediaId':media['mediaId']}
+        if i:
+            candidate['id'] = 'job-' + uuid.uuid4().hex[:10]
+            candidate.pop('charge',None)
+        append_job(candidate)
+
+
+_VOICE_SAVE_LOCKS = [threading.Lock() for _ in range(32)]
+
+
+def find_eleven_registration(name, marker, headers):
+    params = {'search':name,'voice_type':'personal','page_size':100}
+    seen = set()
+    deadline = time.monotonic() + 30
+    for _ in range(10):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        _, result, error = http_json_request('https://api.elevenlabs.io/v2/voices?'+urlencode(params), headers=headers, timeout=remaining)
+        if error or not isinstance(result,dict):
+            break
+        for voice in result.get('voices') or []:
+            if isinstance(voice,dict) and isinstance(voice.get('labels'),dict) and voice['labels'].get('canvasflow_id') == marker:
+                return voice.get('voice_id')
+        token = result.get('next_page_token')
+        if not result.get('has_more') or not isinstance(token,str) or not token or token in seen:
+            break
+        seen.add(token)
+        params['next_page_token'] = token
+    return None
+
+
+def registered_role_voice(job, user_id, name, metadata):
+    """Persist the remote ID before committing the local asset, even after an interrupted save."""
+    with _VOICE_SAVE_LOCKS[hash(job['id']) % len(_VOICE_SAVE_LOCKS)]:
+        with LOCK:
+            current = dict(index_jobs().get(job['id']) or {})
+        profile = current.get('roleVoiceProfile') or {}
+        if current.get('userId') != user_id or not profile.get('previewId'):
+            raise ValueError('找不到自己的候选音色。')
+        state = current.get('roleVoiceRegistration') or {}
+        if not state.get('voiceId'):
+            entry = next((m for m in visible_ai_models(user_id) if m.get('id') == profile.get('modelId') and m.get('enabled')), None)
+            if not eleven_voice_model(entry):
+                raise ValueError('请先重新接入生成这段试听的 ElevenLabs 模型。')
+            headers = eleven_headers(entry)
+            marker = hashlib.sha256((current['id']+'|'+profile['previewId']).encode()).hexdigest()[:24]
+            if state.get('submitted'):
+                # Lost replies must be reconciled without creating a second paid/account resource.
+                voice_id = find_eleven_registration(state.get('name',''),marker,headers)
+                if not voice_id:
+                    raise ValueError('供应商尚未确认上次注册结果，请稍后重试核对；不会重复创建音色。')
+            else:
+                state = {'submitted':True,'name':name}
+                append_job(current,voice_registration=state)
+                description = metadata.get('description') or profile['description']
+                if len(description.strip())<20:
+                    description = profile['description']
+                body = {'voice_name':name,'voice_description':description[:1000], 'generated_voice_id':profile['previewId'],
+                        'labels':{'canvasflow_id':marker, **{('age' if k=='ageGroup' else k):v for k,v in metadata.items() if k in ('language','gender','ageGroup','accent') and v}}}
+                status, response, error = http_json_request('https://api.elevenlabs.io/v1/text-to-voice',body,headers,timeout=60)
+                if error:
+                    if 400 <= status < 500 and status not in (408,409):
+                        append_job(current,voice_registration={})
+                        raise ValueError(error)
+                    raise ValueError(error+'。再次保存将先向供应商核对本次注册结果。')
+                voice_id = response.get('voice_id') if isinstance(response,dict) else None
+            if not isinstance(voice_id,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,160}',voice_id):
+                raise ValueError('供应商尚未返回有效的已注册音色 ID。')
+            state = {**state,'voiceId':voice_id}
+            append_job(current,voice_registration=state)
+        return {'kind':'registered','provider':'elevenlabs','modelId':profile['modelId'],'voice':state['voiceId']}
+
+
 def call_tts(entry, text, voice='alloy', speed=1.0, pitch=0, volume=1.0, mode='speech', timeout=None, trace=None, spec=None):
     """OpenAI Audio Speech 协议（POST {baseUrl}/audio/speech），返回 mp3 的 data URI。"""
     timeout = timeout or provider_timeout_value(entry, 'textExec', 60)
@@ -8522,6 +9368,12 @@ def call_tts(entry, text, voice='alloy', speed=1.0, pitch=0, volume=1.0, mode='s
         return None, '模型配置不完整（接口地址 / API Key / 模型标识）'
     if not text:
         return None, '请输入要转换的文字'
+    if eleven_voice_model(entry):
+        if not isinstance(voice,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,160}',voice) or voice=='alloy':
+            return None, '请先选择 ElevenLabs 的供应商音色或已注册的角色音色。'
+        url = 'https://api.elevenlabs.io/v1/text-to-speech/'+quote(voice,safe='')
+        data, _, error = request_bytes_candidates([url],{'text':text,'model_id':model},eleven_headers(entry),timeout,expected_audio=True)
+        return ('data:audio/mpeg;base64,'+base64.b64encode(data).decode(),None) if data else (None,error)
     try:
         safe_speed = max(0.25, min(4.0, float(speed) or 1.0))
     except (TypeError, ValueError):
@@ -9290,6 +10142,10 @@ def media_model_schema(entry, model):
 #   所以这里失败时返回空列表 + 原因，而不是把弹层整块判死。
 VOICE_LIST_PATH = 'skills/voices'
 VOICE_LIST_CACHE = {}
+VOICE_LIST_PENDING = {}
+VOICE_LIST_LOCK = threading.Lock()
+VOICE_LIST_MAX_PAGES = 40
+VOICE_LIST_MAX_ROWS = 5000
 VOICE_LIST_TTL = 600   # 10 分钟：音色表基本静态，但也别做成进程级缓存（供应商加音色要看得见）
 
 
@@ -9300,15 +10156,22 @@ def normalize_voice_item(raw):
     voice_id = _spec_text(raw.get('voice_id') or raw.get('id'), 120)
     if not voice_id:
         return None
+    labels = raw.get('labels') if isinstance(raw.get('labels'),dict) else {}
+    language = raw.get('language') or labels.get('language')
+    if not language and isinstance(raw.get('verified_languages'),list):
+        language = '、'.join(dict.fromkeys(v['language'] for v in raw['verified_languages']
+                            if isinstance(v,dict) and isinstance(v.get('language'),str) and v['language']))
     return {
         'id': voice_id,
         'name': _spec_text(raw.get('name'), 60) or voice_id,
         'description': _spec_text(raw.get('description'), 80),
-        'gender': _spec_text(raw.get('gender'), 20),
-        'language': _spec_text(raw.get('language'), 80),
-        'scene': _spec_text(raw.get('scene'), 40),
+        'gender': _spec_text(raw.get('gender') or labels.get('gender'), 20),
+        'language': _spec_text(language, 200),
+        'ageGroup': _spec_text(raw.get('ageGroup') or raw.get('age_group') or labels.get('age'), 40),
+        'accent': _spec_text(raw.get('accent') or labels.get('accent'), 80),
+        'scene': _spec_text(raw.get('scene') or labels.get('use_case'), 40),
         'capability': _spec_text(raw.get('capability'), 120),
-        'demo': _spec_text(raw.get('demo_audio'), 400),
+        'demo': _spec_text(raw.get('demo_audio') or raw.get('preview_url'), 400),
     }
 
 
@@ -9333,34 +10196,193 @@ def voice_filter_options(voices):
             'scenes': collect('scene'), 'capabilities': collect('capability', split=True)}
 
 
+_ROLE_VOICE_LANGUAGES = {
+    alias: name for name, aliases in {
+        '中文':'zh chinese 中文 汉语', '英文':'en english 英语', '日文':'ja japanese 日语', '韩文':'ko korean 韩语',
+        '西班牙文':'es spanish 西班牙语', '葡萄牙文':'pt portuguese 葡萄牙语', '法文':'fr french 法语', '印尼文':'id indonesian 印尼语',
+        '德文':'de german 德语', '俄文':'ru russian 俄语', '意大利文':'it italian 意大利语', '阿拉伯文':'ar arabic 阿拉伯语',
+        '土耳其文':'tr turkish 土耳其语', '乌克兰文':'uk ukrainian 乌克兰语', '荷兰文':'nl dutch 荷兰语', '越南文':'vi vietnamese 越南语',
+        '泰文':'th thai 泰语', '波兰文':'pl polish 波兰语', '罗马尼亚文':'ro romanian 罗马尼亚语', '希腊文':'el greek 希腊语',
+        '捷克文':'cs czech 捷克语', '芬兰文':'fi finnish 芬兰语', '印地文':'hi hindi 印地语',
+    }.items() for alias in aliases.split()
+}
+_ROLE_VOICE_ALIASES = {
+    'language':_ROLE_VOICE_LANGUAGES, 'gender':{'female':'女','male':'男'},
+    'ageGroup':{'young':'青年','middle-aged':'成年','middle_aged':'成年','old':'老年','elderly':'老年','child':'儿童'},
+    'accent':{'mandarin':'普通话','cantonese':'粤语'},
+}
+
+
+def role_voice_page(voices, query):
+    """Filter the complete provider catalog before returning a page."""
+    fields = ('gender', 'language', 'ageGroup', 'accent', 'scene', 'capability')
+
+    def values(voice, key):
+        text = str(voice.get(key) or '').strip()
+        parts = [v.strip() for v in re.split(r'[,，、]', text) if v.strip()] if key in ('language', 'capability') else ([text] if text else [])
+        aliases = _ROLE_VOICE_ALIASES.get(key,{})
+        return [aliases.get(v.casefold(),v) for v in parts]
+
+    facets = {key: sorted({v for item in voices for v in values(item, key)}) for key in fields}
+    accents = {}
+    for item in voices:
+        for language in values(item, 'language'):
+            accents.setdefault(language, set()).update(values(item, 'accent'))
+    q = (query.get('q') or [''])[0].strip().casefold()
+    matches = [item for item in voices if all(not query.get(key) or
+               set(values(item, key)).intersection(query[key]) for key in fields)
+               and q in ' '.join(str(item.get(key) or '') for key in ('name','id','description', *fields)).casefold()]
+    try:
+        page = max(1, int((query.get('page') or ['1'])[0]))
+    except ValueError:
+        page = 1
+    start = (page - 1) * 20
+    return {'voices': matches[start:start + 20], 'total': len(matches), 'page': page,
+            'hasMore': start + 20 < len(matches), 'facets': facets,
+            'accentsByLanguage': {language: sorted(options) for language, options in accents.items()}}
+
+
+def next_voice_page(payload, records, current_url, page_number, rows_seen, page_length):
+    meta = {}
+    for level in (payload, records):
+        meta.update(level)
+        for key in ('meta', 'pagination', 'links'):
+            if isinstance(level.get(key), dict):
+                meta.update(level[key])
+                if isinstance(level[key].get('pagination'), dict):
+                    meta.update(level[key]['pagination'])
+
+    def number(value):
+        return int(value) if re.fullmatch(r'\d{1,12}', str(value)) else None
+
+    more = next((meta[k] for k in ('has_more','hasMore','has_next','hasNext','has_next_page','hasNextPage') if k in meta),None)
+    if more is False or str(more).lower() in ('false', '0'):
+        return ''
+    url = urlparse(current_url)
+    query = parse_qs(url.query, keep_blank_values=True)
+    nxt = next((meta[k] for k in ('next_url','nextUrl','next_page_url','nextPageUrl','next','next_page','nextPage') if meta.get(k)), None)
+    if isinstance(nxt, dict):
+        nxt = nxt.get('href') or nxt.get('url')
+    if isinstance(nxt, str) and number(nxt) is None:
+        target = urlparse(urljoin(current_url, nxt))
+        if http_origin(target.geturl()) != http_origin(current_url):
+            raise ValueError('供应商返回了不同来源的音色续页地址。')
+        params = parse_qs(target.query, keep_blank_values=True)
+        if 'model' in query:
+            params['model'] = query['model']
+        return target._replace(query=urlencode(params, doseq=True), fragment='').geturl()
+    for token, param in (('next_cursor','cursor'), ('nextCursor','cursor'),
+                         ('next_page_token','page_token'), ('nextPageToken','pageToken'), ('next_offset','offset'), ('nextOffset','offset')):
+        if meta.get(token) not in (None, ''):
+            query[param] = [str(meta[token])]
+            return url._replace(query=urlencode(query, doseq=True)).geturl()
+    current = next((n for k in ('page','current_page','currentPage') if (n := number(meta.get(k))) is not None), page_number)
+    last = next((n for k in ('totalPages','total_pages','lastPage','last_page') if (n := number(meta.get(k))) is not None), None)
+    total = next((n for k in ('total','total_count','totalCount') if (n := number(meta.get(k))) is not None), None)
+    following = number(meta.get('nextPage',meta.get('next_page',nxt)))
+    if following is None and not (more is True or str(more).lower() in ('true','1') or
+                                   last is not None and current < last or total is not None and rows_seen < total):
+        return ''
+    offset = number(meta.get('offset', (query.get('offset') or [''])[0]))
+    if offset is not None and following is None:
+        query['offset'] = [str(offset + page_length)]
+    else:
+        query['page'] = [str(following if following is not None else current + 1)]
+    return url._replace(query=urlencode(query, doseq=True)).geturl()
+
+
 def fetch_model_voices(entry, model, timeout=20):
-    """取某个上游模型的预置音色列表。返回 `(voices, error)`；失败返回 `([], 原因)`。"""
+    """Return normalized voices and a diagnostic if the upstream catalog was incomplete."""
     base_url = str((entry or {}).get('baseUrl') or '').rstrip('/')
     api_key = str((entry or {}).get('apiKey') or '').strip()
     model = str(model or '').strip()
     if not base_url or not provider_has_credentials(entry) or not model:
         return [], '模型配置不完整（接口地址 / API Key / 模型标识）'
-    documented=upstream_contract(entry).get('voices') or []
-    if documented:return [v for v in (normalize_voice_item(r) for r in documented) if v],''
-    cache_key = (base_url, model)
-    cached = VOICE_LIST_CACHE.get(cache_key)
-    if cached and time.monotonic() - cached[0] < VOICE_LIST_TTL:
-        return cached[1], ''
-    urls = endpoint_candidates(base_url, f'{VOICE_LIST_PATH}?model={quote(model, safe="")}')
-    _status, payload, error, _hit = request_json_first_hit(urls, auth_headers(entry, api_key), timeout)
-    if error:
-        return [], str(error)[:200]
-    raw = payload.get('voices') if isinstance(payload, dict) else None
-    if not isinstance(raw, list):
-        return [], '上游没有返回音色列表'
-    voices, seen = [], set()
-    for item in raw:
-        voice = normalize_voice_item(item)
-        if voice and voice['id'] not in seen:
-            seen.add(voice['id'])
-            voices.append(voice)
-    VOICE_LIST_CACHE[cache_key] = (time.monotonic(), voices)
-    return voices, ''
+    documented = upstream_contract(entry).get('voices') or []
+    if documented:
+        unique = {}
+        for item in documented:
+            voice = normalize_voice_item(item)
+            if voice:
+                unique.setdefault(voice['id'], voice)
+        return list(unique.values()), ''
+    native = eleven_voice_model(entry)
+    headers = eleven_headers(entry) if native else auth_headers(entry, api_key)
+    headers.voice_catalog = True
+    cache_key = (base_url, model, hashlib.sha256(json.dumps(headers, sort_keys=True).encode()).hexdigest())
+    with VOICE_LIST_LOCK:
+        cached = VOICE_LIST_CACHE.get(cache_key)
+        if cached and time.monotonic() - cached[0] < (30 if cached[2] else VOICE_LIST_TTL):
+            return cached[1:]
+        pending = VOICE_LIST_PENDING.get(cache_key)
+        if not pending:
+            event = VOICE_LIST_PENDING[cache_key] = threading.Event()
+    if pending:
+        if pending.wait(timeout):
+            with VOICE_LIST_LOCK:
+                cached = VOICE_LIST_CACHE.get(cache_key)
+                if cached:
+                    return cached[1:]
+        return [], '供应商音色目录仍在读取，请稍后重试。'
+    voices, visited, signatures = {}, set(), set()
+    rows_seen = 0
+    warning = ''
+    try:
+        urls = ['https://api.elevenlabs.io/v2/voices?page_size=100'] if native else endpoint_candidates(base_url, f'{VOICE_LIST_PATH}?model={quote(model, safe="")}')
+        deadline = time.monotonic() + timeout
+        for page in range(1, VOICE_LIST_MAX_PAGES + 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                warning = '音色目录读取超时。'
+                break
+            _, payload, error, hit = request_json_first_hit(urls, headers, remaining / max(1,len(urls)))
+            if error:
+                warning = str(error)[:200]
+                break
+            if isinstance(payload, list):
+                payload = {'voices': payload}
+            container = payload.get('data') if isinstance(payload, dict) and isinstance(payload.get('data'), dict) else payload
+            raw = next((container[k] for k in ('voices','items','results','data') if isinstance(container.get(k), list)), None) if isinstance(container, dict) else None
+            if not isinstance(raw, list):
+                warning = '上游没有返回音色列表。'
+                break
+            visited.add(hit)
+            slots = VOICE_LIST_MAX_ROWS - rows_seen
+            ids = []
+            for item in raw[:slots]:
+                voice = normalize_voice_item(item)
+                if voice:
+                    ids.append(voice['id'])
+                    voices.setdefault(voice['id'], voice)
+            rows_seen += len(raw)
+            if len(raw) > slots:
+                warning = f'单次读取最多 {VOICE_LIST_MAX_ROWS} 条音色记录。'
+                break
+            if native:
+                page_token = container.get('next_page_token')
+                next_url = ('https://api.elevenlabs.io/v2/voices?'+urlencode({'page_size':100,'next_page_token':page_token})) if container.get('has_more') and page_token else ''
+            else:
+                next_url = next_voice_page(payload, container, hit, page, rows_seen, len(raw))
+            if not next_url:
+                break
+            signature = tuple(ids)
+            if next_url in visited or signature in signatures:
+                warning = '供应商返回了重复的音色分页。'
+                break
+            if rows_seen >= VOICE_LIST_MAX_ROWS or page == VOICE_LIST_MAX_PAGES:
+                warning = f'单次读取最多 {VOICE_LIST_MAX_PAGES} 页、{VOICE_LIST_MAX_ROWS} 条音色记录。'
+                break
+            signatures.add(signature)
+            urls = [next_url]
+    except (ValueError, urllib_error.URLError) as exc:
+        warning = str(exc)[:200]
+    finally:
+        with VOICE_LIST_LOCK:
+            items = list(voices.values())
+            VOICE_LIST_CACHE[cache_key] = (time.monotonic(), items, warning)
+            VOICE_LIST_PENDING.pop(cache_key, None)
+            event.set()
+    return items, warning
 
 
 def media_param_options(schema, name):
@@ -10777,7 +11799,51 @@ def signed_media_payload(value):
     return re.sub(r'/media/(media-[a-f0-9]{32}\.[a-z0-9]{1,5})(?![a-z0-9?])',lambda match:ACCOUNT_STORAGE.signed_url(match[1]),value)
 
 
+DEPTH_HOST = SimpleNamespace(
+    ROOT=ROOT, DATA_DIR=DATA_DIR, LOCK=LOCK, STORAGE_ACTOR=STORAGE_ACTOR,
+    MEDIA_SAFE_NAME=MEDIA_SAFE_NAME, MEDIA_MAX_BYTES=MEDIA_MAX_BYTES, read_file=read_file, write_file=write_file,
+    resolve_media_file=resolve_media_file, validate_new_media=validate_new_media, sniff_media_mime=sniff_media_mime,
+    index_jobs=index_jobs, append_job=append_job, persist_media_url=persist_media_url, open_media_url=open_media_url,
+    save_media_blob=save_media_blob, now=now, update_reserved=lambda: IMAGE_UPDATE_LEASE_UNTIL > time.monotonic())
+
+
 class Handler(SimpleHTTPRequestHandler):
+    def depth_api(self, path, method):
+        user = self.authenticated_user()
+        if not user:
+            return self.send_json({'error': 'unauthenticated', 'message': '请先登录'}, 401)
+        try:
+            owner = user['id']
+            if path == '/api/media-tools/depth/settings':
+                if method == 'GET':
+                    configured = self.server.depth_service.credential(owner)
+                else:
+                    data = self.read_json()
+                    if not isinstance(data, dict) or not isinstance(data.get('apiKey'), str):
+                        raise DepthError('请输入 MediaKit API Key')
+                    configured = self.server.depth_service.credential(owner, data['apiKey'].strip())
+                return self.send_json({'configured': bool(configured)})
+            if method != 'POST':
+                return self.send_json({'error': 'not_found'}, 404)
+            data = self.read_json()
+            if not isinstance(data, dict):
+                raise DepthError('请求内容无效')
+            if path == '/api/media-tools/depth/recover':
+                job = self.find_job(data.get('jobId'), owner)
+                if not job or job.get('providerProtocol') != DEPTH_PROTOCOL:
+                    raise DepthError('深度任务不存在', 404)
+                job = self.server.depth_service.recover(job)
+            elif path == '/api/media-tools/depth':
+                workspace, valid = self.workspace_scope(user)
+                project = self.find_project(data.get('projectId'))
+                if not project or project.get('ownerId') != owner or not in_workspace(project, workspace, valid):
+                    raise DepthError('请先保存并打开当前工作区中的项目', 404)
+                job = self.server.depth_service.submit(data, owner, workspace)
+            else:
+                return self.send_json({'error': 'not_found'}, 404)
+            return self.send_json({'jobId': job['id'], 'job': job}, 202)
+        except DepthError as exc:
+            return self.send_json({'message': str(exc)}, exc.status)
     def __init__(self, *args, **kwargs): super().__init__(*args, directory=str(PUBLIC_DIR), **kwargs)
     def setup(self):
         super().setup()
@@ -10814,7 +11880,9 @@ class Handler(SimpleHTTPRequestHandler):
             else:
                 self.send_json({'error': 'invalid_ticket'}, 403)
             return False
-        if self.command == 'GET' and (path == '/local-connect' or path == '' and not access.accepts(self.headers)):
+        authorized = access.accepts(self.headers)
+        retry_browser_auth = not authorized and access.should_retry_browser_auth(self.headers)
+        if self.command == 'GET' and (path == '/local-connect' or path == '' and not authorized and not retry_browser_auth):
             page = CONNECT_PAGE.encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
@@ -10823,11 +11891,11 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(page)
             return False
-        if not access.accepts(self.headers):
+        if not authorized:
             self.close_connection = True
-            if path == '/local-session' and self.command == 'GET':
+            if path == '/local-session' and self.command == 'GET' or retry_browser_auth:
                 self.send_json({'error':'local_auth_required'}, 401,
-                               headers={'WWW-Authenticate':f'Basic realm="CanvasFlow-{access.instance}"'})
+                               headers={'WWW-Authenticate':'Basic realm="CanvasFlow"', 'Cache-Control':'no-store'})
             else:
                 self.send_json({'error':'local_auth_required','message':'请从 CanvasFlow 启动器打开工作台'}, 403)
             return False
@@ -11015,6 +12083,8 @@ class Handler(SimpleHTTPRequestHandler):
             if not row:
                 return None
             job = local_job(clone(row))
+            if job.get('projectId'):
+                apply_project_workspace(job, project_workspaces())
         if user_id and job.get('userId') != user_id:
             return None
         if workspace_id and not in_workspace(job, workspace_id, valid_ids):
@@ -12120,6 +13190,8 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = unquote(urlparse(self.path).path).rstrip('/')
+        if path == '/api/media-tools/depth/settings':
+            return self.depth_api(path, 'GET')
         if path == '/api/blender' or path.startswith('/api/blender/'):
             return self.blender_api(path, 'GET')
         if path == '/api/workspace/materials' or path.startswith('/api/workspace/materials/'):
@@ -12228,6 +13300,10 @@ class Handler(SimpleHTTPRequestHandler):
                 # ★ r884：定价也要下发到**画布**（不只后台）—— 用户有权在生成前看到「这个模型多少钱」。
                 #   这就是 `billing` 当年漏掉的那个「第三个投影」，别再漏第二次。
                 payload['pricing'] = model_pricing(item)
+                if model_video_understanding(item):
+                    payload['videoPromptInput'] = 'native'
+                if eleven_voice_model(item):
+                    payload['roleVoiceRegistration'] = 'elevenlabs'
                 qualities = supported_image_qualities(item.get('model'), item.get('name'))
                 if qualities is not None:
                     payload['qualities'] = qualities
@@ -12236,6 +13312,9 @@ class Handler(SimpleHTTPRequestHandler):
                     payload['chatImage'] = item.get('requestProfile') == 'chat-image'
                 if model_has_usage(item, 'video'):
                     payload['videoProfile'] = item.get('requestProfile') or ''
+                    payload['videoLocalReferences'] = (item.get('requestProfile') == 'zhongheng-video' or
+                        ((video_reference_store.configured() or video_reference_store.can_use_original(item.get('id')))
+                         and accepts_video_reference_url(item)))
                     payload['videoProtocol'] = 'openai-video' if item.get('requestProfile') == 'async-video-task' else (item.get('protocol') or 'openai-video')
                 return payload
 
@@ -12243,6 +13322,8 @@ class Handler(SimpleHTTPRequestHandler):
                               for item in visible
                               if item.get('enabled') and (model_supports_vision(item) if kind == 'i2t' else model_has_usage(item, kind))]
                        for kind in AI_MODEL_TYPES}
+            grouped['videoUnderstanding'] = [model_payload(m) for m in visible
+                                             if m.get('enabled') and model_video_understanding(m)]
             return self.send_json({'models': grouped})
 
 
@@ -12262,10 +13343,21 @@ class Handler(SimpleHTTPRequestHandler):
                                        'message': '所选音频模型不存在或未启用'}, 400)
             upstream = str(entry.get('model') or '').strip()
             voices, error = fetch_model_voices(entry, upstream)
-            if error:
+            if 'page' in query:
+                source = 'provider'
+                if not voices:
+                    rows = (spec_rows_for_entry(entry, 'audio') or []) if spec_rows_registered_for_entry(entry, 'audio') else []
+                    row = next((r for r in rows if (r.get('field') or r.get('key')) in SPEC_FREETEXT_PARAMS), {})
+                    voices = [{'id': str(v['value']), 'name': str(v.get('label') or v['value'])}
+                              for v in row.get('options', []) if v.get('value') not in ('', None)]
+                    source = 'spec' if voices else ''
+                return self.send_json({'model': upstream, 'source': source, 'error': '' if voices else error,
+                                       'warning': error if voices and source == 'provider' else '',
+                                       **role_voice_page(voices, query)}, 200)
+            if error and not voices:
                 return self.send_json({'model': upstream, 'voices': [], 'error': error}, 200)
             return self.send_json({'model': upstream, 'voices': voices,
-                                   'filters': voice_filter_options(voices)}, 200)
+                                   'warning': error, 'filters': voice_filter_options(voices)}, 200)
         # 画布「登记表」（规格表）：**登录即可读** —— 画布靠它渲染所有选项面板（音频规格 /
         # 视频规格 / 摄像机库）。2026-09-25 从 `app.js` 与 `camera-library.js` 迁入服务端。
         # ★ 单开一个接口而不是塞进 `/api/ai/models`：那个接口的返回结构被多处依赖；
@@ -12295,9 +13387,11 @@ class Handler(SimpleHTTPRequestHandler):
         if path == '/api/dock-prompts':
             user = self.authenticated_user()
             if not user: return self.send_json({'error': 'unauthenticated', 'message': '请先登录'}, 401)
+            with LOCK:
+                prompts = dock_prompts_payload()
             return self.send_json({
                 'ok': True,
-                'prompts': dock_prompts_payload(),
+                'prompts': prompts,
                 'canEdit': user.get('role') == 'admin',
             })
         # 预置角色的**全局**删除记录（只有管理员删过的会在这里）。
@@ -12305,6 +13399,20 @@ class Handler(SimpleHTTPRequestHandler):
         #   这样他们那边也不会再显示。
         # ★★ r796：这里下发的是**合并视图**（全局 + 该账号私有的那份），另外多回一个 `mine`
         #   给前端区分「我的角色库」的卡、以及给配额只算私有那一份用。
+        if path == '/api/preset-roles/derivatives':
+            user = self.authenticated_user()
+            if not user:
+                return self.send_json({'error':'unauthenticated'}, 401)
+            key = (parse_qs(urlparse(self.path).query).get('id') or [''])[0]
+            with LOCK:
+                batch = read_preset_roles_raw().get('derivativeBatches', {}).get(key)
+            if not batch or batch['owner'] != user['id']:
+                return self.send_json({'error':'not_found', 'message':'未找到这次角色资产任务'}, 404)
+            return self.send_json(derivative_view(batch))
+        if path == '/api/preset-roles/marks':
+            user = self.authenticated_user()
+            if not user: return self.send_json({'error':'unauthenticated'}, 401)
+            return self.send_json({'marks':role_custom_marks(user['id'])})
         if path == '/api/preset-roles':
             user = self.authenticated_user()
             if not user: return self.send_json({'error': 'unauthenticated', 'message': '请先登录'}, 401)
@@ -12503,6 +13611,14 @@ class Handler(SimpleHTTPRequestHandler):
                     jobs = [job for job in jobs if job.get('status') == status_filter]
                 if kind_filter in {'image', 'video', 'audio'}:
                     jobs = [job for job in jobs if (job.get('kind') or 'video') == kind_filter]
+                if query.get('view') == ['role-voices']:
+                    if query.get('unassignedOnly') == ['1']:
+                        jobs = [job for job in jobs if not job.get('projectId')]
+                    project = self.find_project(project_id) if project_id else None
+                    if project and (project.get('ownerId') != user['id'] or not in_workspace(project, workspace_id, valid)):
+                        project = None
+                    rows = role_voice_history(jobs, project_id, project)
+                    return self.send_json({'jobs': rows[offset:offset+limit], 'total': len(rows)})
                 page = [job_view(job, sync=False) for job in jobs[offset:offset+limit]]
                 if query.get('view') == ['studio']:
                     page = [studio_job_view(job) for job in page]
@@ -12520,9 +13636,10 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json({'error': 'job_not_found'}, 404)
             query = parse_qs(urlparse(self.path).query)
             if query.get('recoverMedia') == ['1']:
-                current = recover_studio_video(job)
+                current = recover_studio_video(job, self.server.depth_service)
                 if not current.get('videoUrl'):
-                    return self.send_json({'error': 'video_not_available', 'message': '暂未取回视频文件，可稍后再次查询。'}, 409)
+                    detail = current.get('videoPersistError') or '成片暂不可用'
+                    return self.send_json({'error': 'video_not_available', 'message': f'视频尚未取回：{detail}。可稍后重试取回。'}, 409)
                 return self.send_json({'job': studio_job_view(current)})
             current = job_view(job)
             return self.send_json({'job': studio_job_view(current) if query.get('view') == ['studio'] else current})
@@ -12776,13 +13893,16 @@ class Handler(SimpleHTTPRequestHandler):
         # 运镜 / 表情的提示词（r832）：只有管理员能改（**全局一套**，所有账号/项目共用）。
         if path == '/api/dock-prompts':
             if user.get('role') != 'admin':
-                return self.send_json({'error': 'forbidden', 'message': '需要管理员权限才能修改运镜 / 表情提示词'}, 403)
-            payload = write_dock_prompts(self.read_json())
+                return self.send_json({'error': 'forbidden', 'message': '需要管理员权限才能修改提示词模板'}, 403)
+            incoming = self.read_json()
+            with LOCK:
+                payload = write_dock_prompts(incoming)
             if payload is None:
-                return self.send_json({'error': 'bad_request', 'message': '请求体缺少 prompts'}, 400)
+                return self.send_json({'error': 'bad_request', 'message': '提示词模板或更新格式无效'}, 400)
             custom = payload.get('prompts') or {}
             return self.send_json({
                 'ok': True,
+                'partial': incoming.get('partial', False),
                 'updatedAt': payload.get('updatedAt'),
                 'customCount': sum(len(table) for table in custom.values()),
             })
@@ -12820,7 +13940,22 @@ class Handler(SimpleHTTPRequestHandler):
         #   · global（**官方角色库**）：仅管理员 → 对所有账号生效；
         #   · mine（**我的角色库**）：任何登录用户 → 只对自己生效（自建角色 + 对官方卡的私有改动）。
         #   ★ 不传 scope 时：管理员按 global（与升级前行为一致），其他人按 mine。
-        if path == '/api/preset-roles':
+        if path == '/api/preset-roles/marks':
+            payload = self.read_json()
+            url = payload.get('url') if isinstance(payload, dict) else None
+            if not isinstance(url, str) or not ROLE_MEDIA_IMAGE.fullmatch(url):
+                return self.send_json({'message':'请选择已上传的特征图片'}, 400)
+            media_id = url[7:]
+            owner = user['id']
+            row = ACCOUNT_STORAGE.file_row(media_id)
+            if not row or row['ownerId'] != owner or not ACCOUNT_STORAGE.can_read(media_id, owner):
+                return self.send_json({'message':'这张图片不可用'}, 404)
+            if row['mime'] not in ('image/png', 'image/jpeg', 'image/webp'):
+                return self.send_json({'message':'请选择 PNG、JPG 或 WebP 图片'}, 400)
+            with auth_db() as db:
+                db.execute('INSERT OR IGNORE INTO role_custom_marks(owner_id,media_id) VALUES (?,?)', (owner, media_id))
+            return self.send_json({'mark':{'url':url,'name':row['name']}})
+        if path in ('/api/preset-roles', '/api/preset-roles/record'):
             query = parse_qs(urlparse(self.path).query)
             raw_scope = str((query.get('scope') or [''])[0]).strip().lower()
             if raw_scope not in ROLE_SCOPES:
@@ -12830,22 +13965,80 @@ class Handler(SimpleHTTPRequestHandler):
             payload = self.read_json()
             if not isinstance(payload, dict):
                 return self.send_json({'error': 'bad_request', 'message': '请求体格式不正确'}, 400)
-            # ★★ 私有角色卡的素材**计入个人配额**（官方角色库不计入）。超限就拒绝，
-            #    口径与 `POST /api/assets` 完全一致（先扣掉已有的角色占用，避免重复计算）。
-            if raw_scope == 'mine':
-                user_id = user.get('id')
-                already_roles = user_role_storage_bytes(user_id)
-                assets_only = user_storage_usage(user_id) - already_roles
-                custom_list = payload.get('custom') if isinstance(payload.get('custom'), list) else []
-                overrides_map = payload.get('overrides') if isinstance(payload.get('overrides'), dict) else {}
-                incoming = sum(role_storage_bytes(role) for role in [*custom_list, *overrides_map.values()])
-                limit=ACCOUNT_STORAGE.quota(user_id)
-                if assets_only + incoming > limit:
-                    return self.send_json({
-                        'error': 'storage_quota_exceeded',
-                        'message': f'个人存储空间不足，请删除部分素材（已用 {human_bytes(assets_only + incoming)} / {human_bytes(limit)}）',
-                    }, 413)
-            return self.send_json({'ok': True, 'scope': raw_scope, **write_scoped_preset_roles(raw_scope, user.get('id'), payload)})
+            user_id = user.get('id')
+            with LOCK:
+                single = path.endswith('/record')
+                bucket = scoped_preset_roles(raw_scope, user_id)
+                derivative = None
+                if 'derivatives' in payload:
+                    spec = payload['derivatives']
+                    if not single or raw_scope != 'mine' or payload.get('remove') or not isinstance(spec, dict):
+                        return self.send_json({'error':'invalid_derivatives','message':'请保存为自己的角色后生成资产'}, 400)
+                    fingerprint = role_revision(payload)
+                    prior = read_preset_roles_raw().get('derivativeBatches', {}).get(str(spec.get('id') or ''))
+                    if prior:
+                        if prior['owner'] != user_id or prior['fingerprint'] != fingerprint:
+                            return self.send_json({'error':'derivative_conflict', 'message':'资产任务标识已使用，请刷新角色资料'},409)
+                        return self.send_json({'ok':True, 'scope':raw_scope, 'derivatives':derivative_view(prior),
+                                               **role_bucket_versions(bucket)})
+                if 'expectedRevision' in payload:
+                    versions = role_bucket_versions(bucket)
+                    current = versions['recordRevisions'].get(str(payload.get('id') or ''), '') if single else versions['revision']
+                    if current != payload['expectedRevision']:
+                        return self.send_json({'error':'role_revision_conflict',
+                            'message':'角色已在其他窗口更新。当前编辑仍保留，请另存为新角色，或重新打开最新版本。'}, 409)
+                if single:
+                    incoming_roles = [payload.get('record')] if not payload.get('remove') else []
+                else:
+                    custom = payload.get('custom') if isinstance(payload.get('custom'), list) else []
+                    overrides = payload.get('overrides') if isinstance(payload.get('overrides'), dict) else {}
+                    incoming_roles = [*custom[:200], *list(overrides.values())[:500]]
+                for raw_role in incoming_roles:
+                    validation = role_image_validation(raw_role, user_id)
+                    if validation:
+                        return self.send_json({'error': 'invalid_role_image', 'message': validation}, 400)
+                if single:
+                    role = _clean_role(payload.get('record'))
+                    role_id = str(payload.get('id') or '').strip()[:80]
+                    if not role_id or (not payload.get('remove') and (not role or role['id'] != role_id)):
+                        return self.send_json({'error': 'invalid_role', 'message': '请填写有效的角色名称和标识'}, 400)
+                    if 'derivatives' in payload:
+                        try:
+                            derivative = prepare_role_derivatives(spec, user_id, role, *self.workspace_scope(user))
+                        except SharedRoleReferences as exc:
+                            return self.send_json({'error':'copy_shared_role_references','message':str(exc),'references':exc.urls},400)
+                        except ValueError as exc:
+                            return self.send_json({'error':'invalid_derivatives', 'message':str(exc)}, 400)
+                        derivative['fingerprint'] = fingerprint
+                    existing = next((item for item in bucket['custom'] if item['id'] == role_id), None)
+                    if payload.get('remove'):
+                        bucket['custom'] = [item for item in bucket['custom'] if item['id'] != role_id]
+                        bucket['overrides'].pop(role_id, None)
+                        if role_id not in bucket['deleted']:
+                            bucket['deleted'] = [role_id, *bucket['deleted'][:499]]
+                    else:
+                        if role_id.startswith('libtv-') or role_id in bucket['deleted']:
+                            return self.send_json({'error': 'invalid_role_id', 'message': '该角色已删除或需要另存副本'}, 409)
+                        if not existing and len(bucket['custom']) >= 200:
+                            return self.send_json({'error': 'role_limit', 'message': '角色库已达到 200 个角色的上限'}, 409)
+                        bucket['custom'] = [role] + [item for item in bucket['custom'] if item['id'] != role_id]
+                    payload = bucket
+                if raw_scope == 'mine':
+                    limit = ACCOUNT_STORAGE.quota(user_id)
+                    if limit != float('inf'):
+                        assets_only = user_storage_usage(user_id) - user_role_storage_bytes(user_id)
+                        cleaned = _clean_role_bucket(payload)
+                        incoming = sum(role_storage_bytes(role) for role in [*cleaned['custom'], *cleaned['overrides'].values()])
+                        if assets_only + incoming > limit:
+                            return self.send_json({
+                                'error': 'storage_quota_exceeded',
+                                'message': f'个人存储空间不足，请删除部分素材（已用 {human_bytes(assets_only + incoming)} / {human_bytes(limit)}）',
+                            }, 413)
+                result = write_scoped_preset_roles(raw_scope, user_id, payload, derivative=derivative)
+            if derivative:
+                self.server.role_worker.resume()
+            return self.send_json({'ok': True, 'scope': raw_scope, **role_bucket_versions(result),
+                                   **({'derivatives':derivative_view(derivative)} if derivative else {})})
         if path == '/api/preset-prompts/reset':
             if user.get('role') != 'admin':
                 return self.send_json({'error': 'forbidden', 'message': '需要管理员权限才能恢复默认提示词'}, 403)
@@ -12857,9 +14050,10 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json({'error': 'forbidden', 'message': '需要管理员权限才能恢复默认提示词'}, 403)
             incoming = self.read_json()
             kind = incoming.get('kind') if isinstance(incoming, dict) else None
-            payload = reset_dock_prompts(kind)
+            with LOCK:
+                payload = reset_dock_prompts(kind)
             if payload is None:
-                return self.send_json({'error': 'bad_request', 'message': 'kind 只能是 camera / emotion / emotionDynamic'}, 400)
+                return self.send_json({'error': 'bad_request', 'message': '未知的提示词模板类别'}, 400)
             return self.send_json({'ok': True, 'updatedAt': payload.get('updatedAt')})
         # 重命名对话（历史面板里的行内改名）。写操作必须校验工作区：读宽写严。
         if path.startswith('/api/agent/sessions/'):
@@ -13123,6 +14317,8 @@ class Handler(SimpleHTTPRequestHandler):
             GENERATION_REQUEST_CHARGE.reset(billing_token)
     def _route_post(self):
         path = unquote(urlparse(self.path).path).rstrip('/')
+        if path in ('/api/media-tools/depth', '/api/media-tools/depth/settings', '/api/media-tools/depth/recover'):
+            return self.depth_api(path, 'POST')
         if path == '/api/local/desktop-update':
             secret = os.environ.get('CANVASFLOW_DESKTOP_UPDATE_TOKEN', '')
             supplied = self.headers.get('X-CanvasFlow-Desktop', '')
@@ -13502,6 +14698,12 @@ class Handler(SimpleHTTPRequestHandler):
             original_id = path.split('/')[-2]
             original = self.find_job(original_id, user['id'])
             if not original: return self.send_json({'error': 'job_not_found', 'message': '任务不存在'}, 404)
+            if original.get('providerProtocol') == DEPTH_PROTOCOL:
+                try:
+                    recovered = self.server.depth_service.recover(original)
+                except DepthError as exc:
+                    return self.send_json({'message': str(exc)}, exc.status)
+                return self.send_json({'job': recovered}, 202)
             current = job_view(original)
             if current.get('status') != 'failed': return self.send_json({'error': 'job_not_retryable', 'message': '只有失败任务可以重试'}, 409)
             # Reuse the normal submit validation/adapter and copy all generation
@@ -13631,6 +14833,47 @@ class Handler(SimpleHTTPRequestHandler):
                                        output_text=description or '',
                                        extra_input_tokens=VISION_INPUT_TOKEN_ALLOWANCE,
                                        label=(entry or {}).get('name'))})
+        if path in ('/api/ai/video-to-prompt', '/api/ai/video-prompt-frames'):
+            from video_prompt import INSTRUCTION, VideoServiceError, extract_frames, generate, selected_video_file, source_video_file
+            frames_only = path == '/api/ai/video-prompt-frames'
+            if not frames_only:
+                if incoming.get('mode') != 'video':
+                    return self.send_json({'message':'请选择整段视频分析模式'}, 400)
+                model_id = str(incoming.get('modelId') or '').strip()
+                entry = next((m for m in visible_ai_models(user['id']) if m.get('enabled')
+                              and m.get('id') == model_id and model_video_understanding(m)), None)
+                if not entry:
+                    return self.send_json({'message':'所选模型未启用或不支持整段视频理解'}, 400)
+                if not provider_has_credentials(entry):
+                    return self.send_json({'message':'请在供应商设置中配置视频理解接口凭证'}, 400)
+            workspace, valid = self.workspace_scope(user)
+            if self.request_workspace_id() and self.request_workspace_id() != workspace:
+                return self.send_json({'message':'工作区不存在'}, 404)
+            if incoming.get('projectId'):
+                project = next((p for p in read_projects() if p.get('id') == incoming['projectId']
+                                and p.get('ownerId') == user['id'] and in_workspace(p, workspace, valid)), None)
+                if not project:
+                    return self.send_json({'message':'项目不存在或不属于当前工作区'}, 404)
+            try:
+                with source_video_file(incoming.get('videoUrl'), user['id'], check_media=validate_new_media,
+                        resolve_media=resolve_media_file, media_opener=open_media_url, size_limit=MEDIA_FETCH_MAX_BYTES) as source:
+                    if frames_only:
+                        frames = extract_frames(source, ROOT, incoming.get('trimStart'), incoming.get('trimEnd'), incoming.get('frameCount'))
+                        return self.send_json(frames)
+                    timeout = provider_timeout_value(entry, 'textExec', 120)
+                    with selected_video_file(source, ROOT, incoming.get('trimStart'), incoming.get('trimEnd')) as selected:
+                        charge = open_generation_charge(user, entry, prompt_text=INSTRUCTION)
+                        try:
+                            text, usage = generate(selected, entry, open_http_url, auth_headers(entry), timeout)
+                        except Exception:
+                            settle_generation_charge(charge, failed=True)
+                            raise
+                settlement = settle_generation_charge(charge, usage)
+                return self.send_json({'text':text, 'model':entry.get('name'), 'billing':billing_payload(charge, settlement, usage)})
+            except StorageError as error:
+                return self.send_json({'message':str(error)}, error.status)
+            except VideoServiceError as error:
+                return self.send_json({'message':str(error)}, 502)
         if path == '/api/ai/text-generate':
             # 文本节点底部面板的「发送」：用户输入的是要求，交给语言大模型生成正文后再写回节点。
             prompt = str(incoming.get('prompt') or '').strip()
@@ -13657,6 +14900,20 @@ class Handler(SimpleHTTPRequestHandler):
             #   却收到「未配置语言模型」—— 要求每个调用点都知道 modelId 太脆了。
             if not entry:
                 entry = next((m for m in visible_ai_models(user['id']) if m.get('enabled') and model_has_usage(m, 'text')), None)
+            references = incoming.get('referenceImages', [])
+            if references and not (entry and model_supports_vision(entry)):
+                return self.send_json({'message': '当前文本模型无法读取参考图，请选择支持多模态的文本模型'}, 400)
+            try:
+                if incoming.get('purpose') == 'video_prompt_frames':
+                    from video_prompt import validate_frame_images
+                    validate_frame_images(references)
+                    images = references
+                else:
+                    if not isinstance(references, list) or len(references) > 16:
+                        return self.send_json({'message': '每次最多可引用 16 张图片'}, 400)
+                    images = [video_reference_values(user['id'], ref, 'image')[1] for ref in references]
+            except ValueError as error:
+                return self.send_json({'message': str(error)}, 400)
             charge, settlement, trace = None, None, {}
             if entry:
                 # ★ r884 两阶段：预扣（按提示词估算 + max_tokens 上限）→ 上游 usage → 结算多退少补。
@@ -13666,8 +14923,9 @@ class Handler(SimpleHTTPRequestHandler):
                 #   否则系统提示那几十个 token 会被漏算，预扣系统性偏低。
                 charge = open_generation_charge(user, entry,
                                                 prompt_text=text_generation_input_text(prompt, purpose),
+                                                extra_input_tokens=len(images) * VISION_INPUT_TOKEN_ALLOWANCE,
                                                 max_tokens=output_limit, label=entry.get('name'))
-                text, error = generate_text_with_model(prompt, entry, trace=trace, purpose=purpose)
+                text, error = generate_text_with_model(prompt, entry, trace=trace, purpose=purpose, reference_images=images)
                 settlement = settle_generation_charge(charge, trace.get('usage'), failed=bool(error),
                                                       label=entry.get('name'))
                 model_name = entry.get('name')
@@ -14043,9 +15301,41 @@ class Handler(SimpleHTTPRequestHandler):
             asset['workspaceId'] = self.workspace_scope(user)[0]
             asset['createdAt'] = now()
             if incoming.get('origin') in ('generated','uploaded'):asset['origin']=incoming['origin']
+            voice_job = incoming.get('roleVoiceJobId')
+            if kind == 'audio' and isinstance(voice_job, str) and voice_job:
+                source = self.find_job(voice_job, user['id'])
+                if source and source.get('workspaceId') == asset['workspaceId'] and source.get('audioUrl') == asset.get('mediaUrl') and source.get('roleVoiceProfile'):
+                    asset['roleVoiceProfile'] = source['roleVoiceProfile']
+                    metadata = incoming.get('roleVoiceMetadata', {})
+                    limits = {'language': 80, 'ageGroup': 40, 'gender': 40, 'accent': 80, 'description': 2000}
+                    if not isinstance(metadata, dict) or any(not isinstance(metadata.get(k, ''), str) or
+                            len(metadata.get(k, '')) > limit for k, limit in limits.items()):
+                        return self.send_json({'error': 'invalid_voice_metadata', 'message': '音色资料格式不正确或超过长度限制。'}, 400)
+                    asset['roleVoiceMetadata'] = {k: metadata[k].strip() for k in limits if metadata.get(k, '').strip()}
+                    if not all(asset['roleVoiceMetadata'].get(k) for k in ('language','ageGroup','gender')) or not str(incoming.get('name','')).removeprefix('角色音色 · ').strip():
+                        return self.send_json({'error':'missing_voice_metadata','message':'请填写名称、语言、年龄段和性别。'},400)
+                    if asset['roleVoiceProfile'].get('kind') == 'preview':
+                        try:
+                            asset['roleVoiceProfile'] = registered_role_voice(source,user['id'],name.removeprefix('角色音色 · '),asset['roleVoiceMetadata'])
+                        except (ValueError,OSError) as exc:
+                            return self.send_json({'error':'voice_registration_failed','message':str(exc)},409)
+                    asset['roleVoiceJobId'] = voice_job
+                else:
+                    return self.send_json({'error': 'invalid_voice_source', 'message': '未找到此工作区对应的音色生成记录。'}, 400)
             validate_new_media(user['id'],asset)
-            with LOCK: assets = read_assets(); assets.append(asset); write_file(ASSETS_FILE, assets)
-            return self.send_json({'asset': asset}, 201)
+            with LOCK:
+                assets = read_assets()
+                existing = None
+                if asset.get('roleVoiceProfile'):
+                    existing = next((entry for entry in assets if entry.get('ownerId') == user['id']
+                                     and entry.get('workspaceId') == asset['workspaceId']
+                                     and entry.get('mediaId') == media_id and
+                                     (entry.get('roleVoiceJobId') == voice_job or
+                                      (not entry.get('roleVoiceJobId') and entry.get('roleVoiceProfile') == asset['roleVoiceProfile']))), None)
+                if not existing:
+                    assets.append(asset)
+                    write_file(ASSETS_FILE, assets)
+            return self.send_json({'asset': existing or asset}, 200 if existing else 201)
         if path == '/api/music':
             incoming.update({'ownerId': user['id'], 'ownerName': user['nickname'], 'ownerAvatar': user['avatar']})
             if 'shared' in incoming and not isinstance(incoming['shared'],bool):
@@ -14382,6 +15672,14 @@ def main():
         print('CanvasFlow 本机访问链接（两分钟内有效）：', server.local_access.browser_url(origin))
     else:
         print(f'CanvasFlow local server running at {origin}')
+    if os.environ.get('CANVASFLOW_DESKTOP_PARENT_PIPE') == '1':
+        def watch_desktop_host():
+            try:
+                while sys.stdin.buffer.read(1):
+                    pass
+            finally:
+                server.shutdown()
+        threading.Thread(target=watch_desktop_host, daemon=True).start()
     try: server.serve_forever()
     except KeyboardInterrupt: pass
     finally:

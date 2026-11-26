@@ -114,7 +114,7 @@
     function display(entry, bringIntoView = false) {
       if (!entry?.url) return;
       const { job, url } = entry;
-      if (currentId !== job.id || currentUrl !== url) {
+      if (currentId !== job.id || currentUrl !== url || (bringIntoView && entry.playbackFailed)) {
         const media = document.createElement(image ? 'img' : 'video');
         if (image) media.alt = job.prompt || '生成的图片';
         else {
@@ -122,6 +122,19 @@
           media.playsInline = true;
           media.preload = 'metadata';
           media.setAttribute('aria-label', job.prompt || '生成的视频');
+          media.addEventListener('error', () => {
+            if (previewBox.firstElementChild !== media || entry.url !== url) return;
+            entry.playbackFailed = true;
+            entry.error.textContent = '当前视频无法播放。';
+            entry.error.hidden = false;
+            entry.lookup.hidden = !(job.providerJobId && actions.retryLookup);
+          });
+          media.addEventListener('loadeddata', () => {
+            if (previewBox.firstElementChild !== media || !entry.playbackFailed) return;
+            entry.playbackFailed = false;
+            entry.error.hidden = true;
+            entry.lookup.hidden = true;
+          });
         }
         media.src = url;
         previewBox.replaceChildren(media);
@@ -172,7 +185,15 @@
       entry.reuse.onclick = () => actions.reuse?.(entry.job);
       entry.lookup.onclick = async () => {
         entry.lookup.disabled = true;
-        try { await actions.retryLookup(entry.job); }
+        try {
+          const recovered = await actions.retryLookup(entry.job);
+          const recoveredUrl = recovered && resultUrl(recovered, kind);
+          if (recoveredUrl && rows.get(entry.job.id) === entry && currentId === entry.job.id) {
+            entry.job = { ...entry.job, ...recovered };
+            entry.url = recoveredUrl;
+            display(entry, true);
+          }
+        }
         catch (error) { find('[data-history-note]').textContent = error.message || '查询失败，请重试。'; }
         finally { entry.lookup.disabled = false; }
       };
@@ -184,6 +205,7 @@
       entry.element.dataset.jobId = job.id;
       entry.element.dataset.status = job.status;
       if (entry.url !== url || !entry.job) {
+        entry.playbackFailed = false;
         if (image && url) {
           const thumbnail = document.createElement('img');
           thumbnail.src = url;
@@ -199,11 +221,11 @@
       entry.title.title = title;
       const meta = [statusText(job, url), modelNames.get(job.modelId) || job.modelId].filter(Boolean).join(' · ');
       if (entry.meta.textContent !== meta) entry.meta.textContent = meta;
-      const message = job.error || (job.status === 'completed' && !url ? '供应商暂未返回可用的媒体地址。' : '');
+      const message = job.error || (entry.playbackFailed ? '当前视频无法播放。' : '') || (job.status === 'completed' && !url ? '供应商暂未返回可用的媒体地址。' : '');
       entry.error.hidden = !message;
       if (entry.error.textContent !== message) entry.error.textContent = message;
       entry.view.hidden = !url;
-      entry.lookup.hidden = !(!image && job.status === 'completed' && !url && job.providerJobId && actions.retryLookup);
+      entry.lookup.hidden = !(!image && job.status === 'completed' && (!url || entry.playbackFailed) && job.providerJobId && actions.retryLookup);
       entry.reuse.hidden = !actions.reuse || (actions.canReuse && !actions.canReuse(job));
     }
 
@@ -249,5 +271,5 @@
     return { render };
   }
 
-  window.CanvasFlowStudioUI = { markup, examplePrompt, historyController, icon };
+  window.CanvasFlowStudioUI = { markup, examplePrompt, historyController, resultUrl, icon };
 })();

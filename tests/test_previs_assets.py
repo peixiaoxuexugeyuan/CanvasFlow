@@ -1,5 +1,6 @@
 import copy
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -65,6 +66,10 @@ class RouteTests(unittest.TestCase):
         references=next(n for n in source.body if isinstance(n,ast.FunctionDef) and n.name=='media_referenced_by')
         scope={'PREVIS_ASSETS':self.store,'LOCK':threading.Lock(),'json':json,'re':__import__('re'),'read_assets':lambda:[],'read_projects':lambda:[],'read_music':lambda:[],'read_models':self.store.models}
         from account_storage import StorageError
+        db = sqlite3.connect(':memory:')
+        self.addCleanup(db.close)
+        db.execute('CREATE TABLE role_custom_marks (media_id TEXT)')
+        scope['auth_db'] = lambda: db
         scope.update(StorageError=StorageError,validate_new_media=lambda *args:None,
                      in_workspace=lambda row,workspace,valid=None:row.get('workspaceId')==workspace)
         exec(compile(ast.Module(body=[route,references],type_ignores=[]),'asset-routes','exec'),scope)

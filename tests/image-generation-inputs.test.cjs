@@ -87,13 +87,36 @@ function fixture(){
  runImageGenerationJob:async p=>{calls.push(p);return {image:'data:image/png;base64,RESULT'};},
  applyGeneratedImage(){},appendNode:()=>node('extra'),scheduleSave(){},saveProject(){},workspaceHeader:()=>({}),
  document:{contains:()=>true},nodeLabelEl:()=>null,GROUP_COLORS:['blue'],clearNodeSelection(){},renderGroups(){},syncNodeOverlays(){},revealBounds(){},updateNodeCount(){}};
- vm.createContext(scope);vm.runInContext(['generationContext','generationContextActive','collectImageReferenceImages','generateImage'].map(n=>functions[n]).join('\n'),scope);
+ scope.state.roleSnapshots=new Map();
+ vm.createContext(scope);vm.runInContext(['generationContext','generationContextActive','roleInputsForGeneration','collectImageReferenceImages','generateImage'].map(n=>functions[n]).join('\n'),scope);
  return {scope,target,up,edges,calls,toasts};
 }
 test('default text-to-image still submits upstream reference, full prompt, quality, size and requested count',async()=>{
  const f=fixture();await f.scope.generateImage(f.target);
  assert.equal(f.calls.length,2);
  for(const p of f.calls){assert.deepEqual(Array.from(p.referenceImages),['data:image/png;base64,up']);assert.equal(p.size,'2731x4096');assert.equal(p.quality,'max');assert.equal(p.modelId,'model');assert.equal(p.prompt,'完整提示词'.repeat(500));assert.equal(p.modelOptions.style,'natural');}
+});
+test('a copied image node sends its saved model and specs; a missing model never silently submits to another', async () => {
+  const f = fixture();
+  vm.runInContext(['nodeGenerationProfile','findSourceGenerationModel','sourceGenerationPlan'].map(n => functions[n]).join('\n'), f.scope);
+  f.target.dataset.generationProfile = JSON.stringify({model:'Lib Image',specs:['16:9','标准画质','2K','4张']});
+  await f.scope.generateImage(f.target);
+  assert.equal(f.calls.length, 0);
+  assert.match(f.toasts.at(-1)[0], /尚未接入原模型/);
+  f.scope.state.t2iModels.push({id:'lib-local-id', name:'Lib Image'});
+  f.scope.createStudioImageAdapter = () => studioImage([
+    studioRow('aspectRatio','aspect_ratio',['16:9']), studioRow('quality','quality',['standard']),
+    studioRow('resolution','resolution',['2K']), studioRow('count','n',['1','4'])
+  ]);
+  await f.scope.generateImage(f.target);
+  assert.equal(f.calls.length, 4);
+  for (const req of f.calls) {
+    assert.equal(req.modelId, 'lib-local-id');
+    assert.equal(req.quality, 'standard');
+    assert.equal(req.size, '2048x1152');
+    assert.equal(req.modelOptions.style, undefined);
+    assert.deepEqual(Array.from(req.referenceImages), ['data:image/png;base64,up']);
+  }
 });
 test('target-scoped manual images, local media and multiple upstream images; exclude text, video, downstream and other-node refs',async()=>{
  const f=fixture();f.edges.push({source:'other',target:'target'},{source:'up',target:'target'});
@@ -114,8 +137,13 @@ test('text-to-image with no image references stays text-only',async()=>{
 test('long upstream and dock prompts retain camera instructions at the end',()=>{
  const f=fixture(),upstream='上游文字'.repeat(600),own='本次提示'.repeat(600);
  Object.assign(f.scope,{collectUpstreamInputs:()=>({prompt:upstream}),resolvePromptTokens:x=>x,sanitizePromptSource:x=>x,cameraControlPromptText:()=> '35mm f/2.8',promptInput:{value:own}});
- vm.runInContext(['collectGenerationPrompt','collectImagePrompt'].map(n=>functions[n]).join('\n'),f.scope);
+ f.scope.state.activeNodeId=f.target.dataset.nodeId;
+ vm.runInContext(['mediaNodePrompt','collectGenerationPrompt','collectImagePrompt'].map(n=>functions[n]).join('\n'),f.scope);
  assert.equal(f.scope.collectImagePrompt(f.target),upstream+' / '+own+'，35mm f/2.8');
+ f.scope.state.activeNodeId='another'; f.target.dataset.mediaPrompt='  另一张图\n尾行  ';
+ assert.equal(f.scope.collectImagePrompt(f.target),upstream+' / '+f.target.dataset.mediaPrompt+'，35mm f/2.8');
+ f.target.dataset.mediaPrompt='';
+ assert.equal(f.scope.collectImagePrompt(f.target),upstream+'，35mm f/2.8');
 });
 
 test('registered image quality works even without a separate provider contract',()=>{

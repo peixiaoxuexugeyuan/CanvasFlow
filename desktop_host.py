@@ -101,8 +101,9 @@ def run(root, data, preferred):
             with (logs/'server.log').open('ab') as output:
                 command = [str(native), 'serve', str(port)] if native.is_file() else [sys.executable, '-u', str(root/'server.py'), str(port)]
                 process = subprocess.Popen(command, cwd=root,
-                    env=dict(os.environ, CANVASFLOW_DATA_DIR=str(data), PYTHONIOENCODING='utf-8'),
-                    stdin=subprocess.DEVNULL, stdout=output, stderr=output,
+                    env=dict(os.environ, CANVASFLOW_DATA_DIR=str(data), PYTHONIOENCODING='utf-8',
+                             CANVASFLOW_DESKTOP_PARENT_PIPE='1'),
+                    stdin=subprocess.PIPE, stdout=output, stderr=output,
                     creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             job.assign(process)
             for _ in range(300):
@@ -111,6 +112,7 @@ def run(root, data, preferred):
                     # A simultaneous launcher may have acquired this data directory.
                     url, access = discover_existing(client, preferred, data, expected, key)
                     if access:
+                        process.stdin.close()
                         process = None
                         reused = True
                         break
@@ -132,11 +134,19 @@ def run(root, data, preferred):
             elif process.poll() is not None:
                 raise RuntimeError('本地服务意外退出，请查看 local-logs/server.log')
     finally:
-        if job: job.close()
-        if process and process.poll() is None:
-            process.terminate()
-            try: process.wait(timeout=5)
-            except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=5)
+        try:
+            if process:
+                process.stdin.close()
+                # On a normal window close the server may still be recording an accepted
+                # provider task. Keep the Job Object alive until server_close has drained it.
+                if stopped.is_set():
+                    process.wait()
+        finally:
+            if job: job.close()
+            if process and process.poll() is None:
+                process.terminate()
+                try: process.wait(timeout=5)
+                except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=5)
 
 
 def main():

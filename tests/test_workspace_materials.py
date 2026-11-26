@@ -45,6 +45,20 @@ class WorkspaceMaterialsTest(unittest.TestCase):
         model=next(r for r in rows if r['kind']=='model')
         self.assertEqual(model['category'],'prop');self.assertEqual(model['object']['geometryType'],'box')
 
+    def test_output_video_keeps_its_own_poster_when_merged_with_library_or_references(self):
+        clip,poster=media('a','mp4'),media('b','jpg')
+        reference,other=media('c','mp4'),media('d','mp4')
+        wrong_type=media('e','png')
+        nodes=[{'id':'output','type':'output','videoUrl':clip,'previewMedia':poster,'references':[{'videoUrl':reference}]},
+               {'id':'second','type':'output','videoUrl':other,'previewMedia':media('f','wav')},
+               {'id':'invalid','type':'output','videoUrl':wrong_type,'previewMedia':poster}]
+        rows=self.catalog([{'id':'p','workspaceId':'a','nodes':nodes}],
+                          assets=[{'id':'saved','kind':'video','workspaceId':'a','mediaUrl':clip}])
+        videos={r['url']:summary_item(r)['thumbnail'] for r in rows if r['kind']=='video'}
+        self.assertEqual(videos,{clip:poster,reference:'',other:''})
+        self.assertFalse(next(r for r in rows if r['url']==wrong_type)['thumbnail'])
+        self.assertEqual(sum(r['url']==clip for r in rows),1)
+
     def test_nested_script_assets_history_and_director_background(self):
         project={'id':'p','workspaceId':'a','nodes':[
             {'id':'script','scriptAssets':json.dumps({'characters':[{'name':'Actor','url':media('a','png')}],

@@ -11,7 +11,7 @@ tools/native/.venv/Scripts/python.exe -m pip install -r tools/native/requirement
 ```
 
 1. 执行 `tools/native/build.ps1` 生成原生后端。
-2. 执行 `node tools/desktop/build.cjs dist-v1.0.0 --protect`。输出目录须为新目录。
+2. 执行 `node tools/desktop/build.cjs --protect`。输出目录默认为 `dist-v<当前版本>`，需使用新目录。构建会检查原生后端与本次版本、编译输入的指纹。
 3. 执行 `node tools/desktop/package-release.cjs` 生成 NSIS 安装程序和安全删除清单。默认读取 `tools/desktop/app/package.json` 的版本。
 4. 在干净的 Windows 环境完成首次启动、安装、升级和卸载验收，再生成发行文件校验值。发行版本应对应实际构建所用的源码提交。
 
