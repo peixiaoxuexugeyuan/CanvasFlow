@@ -40,3 +40,18 @@ CANVASFLOW_PYTHON_RUNTIME=/path/to/python node tools/desktop/build-mac.cjs
 
 - Python：46 个文件里 45 个通过（共 365 个用例，其中 32 个是原本就标记跳过的）；`test_local_release.py` 需要传发布目录，没单独跑。要带 `PYTHONPATH=tests` 运行。
 - Node：69 个文件里 65 个通过。没过的 4 个：3 个是成片编辑器的测试，缺 `tools/openfilm` 的依赖；1 个是 `agent-public-skills` 里按字节数断言，换行符不同导致差 68 字节。
+
+## Full-feature build (film workbench + bundled Blender)
+
+`build-mac.cjs` bundles these when they exist under `.runtime/` (git-ignored), and lists whatever is missing in the build report:
+
+| Folder | Contents |
+|---|---|
+| `.runtime/node/bin/node` | Node.js 24 for macOS (same version as the Windows runtime) |
+| `.runtime/openfilm-browser/` | `PLAYWRIGHT_BROWSERS_PATH=.runtime/openfilm-browser pnpm dlx playwright-core@1.61.1 install chromium --only-shell` |
+| `.runtime/openfilm-ffmpeg/<any>/bin/{ffmpeg,ffprobe}` | Self-contained (static) macOS builds; Homebrew binaries are not portable |
+| `.runtime/blender-mac/blender-<version>/Blender.app` | Optional. Without it the app uses an installed `/Applications/Blender.app` |
+
+Git is taken from the system on macOS, so `.runtime/openfilm-git` is only needed on Windows. Run `pnpm --dir tools/openfilm install --frozen-lockfile` before building.
+
+Checked on Apple Silicon with only the bundled runtimes on a minimal `PATH`: open a film project, import a clip, edit, export 1080x1920 H.264; Blender desk example builds `.blend` + `.glb`. The arm64 zip is about 1.4 GB with everything bundled.

@@ -82,6 +82,7 @@ class BlenderBridge:
             runtime=parent/'.runtime'/'blender'
             candidates.extend(str(p) for p in sorted(runtime.glob('blender-*/blender.exe'),reverse=True))
             candidates.extend(str(p) for p in runtime.glob('blender-*/blender'))
+            candidates.extend(str(p) for p in sorted(runtime.glob('blender-*/Blender.app/Contents/MacOS/Blender'),reverse=True))
         if sys.platform=='darwin':
             # Blender.app keeps its executable inside the bundle and is not on PATH.
             for apps in (Path('/Applications'),Path.home()/'Applications'):
